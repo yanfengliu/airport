@@ -148,7 +148,7 @@ function stripsOf(net: TaxiNet): Strip[] {
 }
 
 /** A stretch of a path over which the fuselage is on a runway's strip. */
-interface Stretch {
+export interface Stretch {
   runway: string;
   refEnd: string;
   /** Distance along the runway from `refEnd` where the fuselage comes nearest its centreline. */
@@ -164,7 +164,7 @@ interface Stretch {
  * its centreline and between its ends. This is the ground the tower gives out, whatever lines the
  * map draws on it: a taxiway mapped along the pavement is the runway as much as the runway is.
  */
-function runwayStretches(net: TaxiNet, path: Path, from: number): Stretch[] {
+export function runwayStretches(net: TaxiNet, path: Path, from: number): Stretch[] {
   const body = newFuselage();
   const open = new Map<string, Stretch>();
   const done: Stretch[] = [];
