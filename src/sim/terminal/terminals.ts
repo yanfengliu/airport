@@ -170,6 +170,10 @@ export class Terminals {
       left: () => undefined,
       serviceTime: (person, queue) => this.serviceTime(person, queue),
     };
+    // Every desk, lane, booth and gate exists from the start, so the place can be drawn whole.
+    for (const place of this.plan.places) {
+      if (place.kind === 'checkpoint' || place.kind === 'checkin' || place.kind === 'customs' || place.kind === 'holdroom') this.queueAt(place);
+    }
     this.housekeeping(true);
   }
 
@@ -195,8 +199,9 @@ export class Terminals {
         const angle = this.rng.range(0, Math.PI * 2);
         const r = Math.sqrt(this.rng.next()) * radius;
         const cell = grid.cellAt(place.x + Math.cos(angle) * r, place.y + Math.sin(angle) * r);
-        if (cell < 0) continue;
-        list.push(this.people.addPoint(grid.cx[cell] + this.rng.range(-1, 1), grid.cy[cell] + this.rng.range(-1, 1)));
+        // Not against a wall: a party standing there would poke through it.
+        if (cell < 0 || grid.edge[cell]) continue;
+        list.push(this.people.addPoint(grid.cx[cell] + this.rng.range(-0.6, 0.6), grid.cy[cell] + this.rng.range(-0.6, 0.6)));
       }
       if (!list.length) list.push(this.people.addPoint(place.x, place.y));
       this.pointsAround.set(place.id, list);
@@ -233,11 +238,40 @@ export class Terminals {
       length = 10;
       width = 3;
     }
+    const spacing = place.kind === 'holdroom' ? 1.6 : 2.4;
+    // Of the four ways the line could face, the one whose desks and waiting area lie most inside
+    // the floor; if none fits well, a shorter line.
+    const grid = this.plan.grids[place.floor];
+    const fit = (h: number, len: number): number => {
+      const ux = Math.cos(h);
+      const uy = Math.sin(h);
+      let inside = 0;
+      let total = 0;
+      const halfWide = Math.max(width, servers * spacing) / 2;
+      for (let a = 0; a <= len + 2; a += 3) {
+        for (let b = -halfWide; b <= halfWide; b += 3) {
+          total += 1;
+          if (grid.cellAt(place.x - ux * a - uy * b, place.y - uy * a + ux * b) >= 0) inside += 1;
+        }
+      }
+      return inside / Math.max(1, total);
+    };
+    let best = { heading, length, score: -1 };
+    for (const len of [length, length / 2]) {
+      for (const turn of [0, Math.PI, Math.PI / 2, -Math.PI / 2]) {
+        const score = fit(heading + turn, len) - (turn === 0 ? 0 : 0.02);
+        if (score > best.score) best = { heading: heading + turn, length: len, score };
+      }
+      if (best.score > 0.85) break;
+    }
+    heading = best.heading;
+    length = best.length;
+    place.heading = heading;
     const ux = Math.cos(heading);
     const uy = Math.sin(heading);
     const front: { x: number; y: number }[] = [];
     for (let i = 0; i < servers; i += 1) {
-      const across = (i - (servers - 1) / 2) * (place.kind === 'holdroom' ? 1.6 : 2.4);
+      const across = (i - (servers - 1) / 2) * spacing;
       front.push({ x: place.x - uy * across, y: place.y + ux * across });
     }
     const queue = new ServiceQueue({ x: place.x - ux * (length / 2 + 2), y: place.y - uy * (length / 2 + 2), heading, length, width }, front);
@@ -525,14 +559,25 @@ export class Terminals {
   private spawnArriving(visit: Visit, size: number): void {
     const holdroom = this.holdroomOf(visit);
     if (!holdroom) return;
-    const area = holdroom.area;
-    const id = this.addParty(KIND.arriving, FLOOR.airside, holdroom.x, holdroom.y, size, visit);
+    const international = visit.rotation.customs;
+    // From a gate with no customs hall of its own, international passengers are bussed to the
+    // nearest one, and leave the building from there.
+    let start: Place = holdroom;
+    let area = holdroom.area;
+    if (international && !this.plan.customs.has(area)) {
+      let best: Place | null = null;
+      for (const c of this.plan.customs.values()) if (!best || Math.hypot(c.x - holdroom.x, c.y - holdroom.y) < Math.hypot(best.x - holdroom.x, best.y - holdroom.y)) best = c;
+      if (best) {
+        start = best;
+        area = best.area;
+      }
+    }
+    const id = this.addParty(KIND.arriving, FLOOR.airside, start.x, start.y, size, visit);
     this.stats.arriving.created += size;
     if (id < 0) {
       this.stats.arriving.left += size;
       return;
     }
-    const international = visit.rotation.customs;
     const hasBags = this.rng.chance(international ? 0.85 : 0.5);
     const bags = hasBags ? Math.max(1, Math.round(size * this.rng.range(0.6, 1.2))) : 0;
     this.bags[id] = bags;
@@ -814,7 +859,11 @@ export class Terminals {
 
   private roam(person: number): void {
     const floor = this.people.floor[person];
-    const options = this.shops.filter((s) => s.floor === floor);
+    // Somewhere in the same concourse: within a few hundred metres, and reachable on foot.
+    const x = this.people.x[person];
+    const y = this.people.y[person];
+    const cell = this.plan.grids[floor].cellAt(x, y);
+    const options = this.shops.filter((s) => s.floor === floor && Math.hypot(s.x - x, s.y - y) < 350 && (cell < 0 || this.plan.field(s)[cell] !== 0xffff));
     if (!options.length) {
       this.people.setScript(person, [STEP.leave, 0]);
       return;

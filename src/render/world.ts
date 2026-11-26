@@ -48,13 +48,35 @@ export function buildStaticWorld(layout: Layout): StaticWorld {
   const [towerX, towerY] = layout.airfield.tower;
   // The mapped shaft and cab of the tower are replaced by the modelled one.
   const nearTower = (flat: number[]): boolean => Math.hypot(flat[0] - towerX, flat[1] - towerY) < 40;
-  const buildings = buildBuildings(layout.buildings, facades, (b) => b.height > 40 && nearTower(b.poly.outer));
+  // Parts of a terminal's roof mapped as buildings of their own belong to the terminal, and come
+  // off with its roof in the cut-away view.
+  const footprints = layout.terminals.buildings.map((t) => t.poly.outer);
+  const inTerminal = (outer: number[]): boolean => {
+    let x = 0;
+    let y = 0;
+    for (let i = 0; i < outer.length; i += 2) {
+      x += outer[i];
+      y += outer[i + 1];
+    }
+    x /= outer.length / 2;
+    y /= outer.length / 2;
+    return footprints.some((ring) => {
+      let inside = false;
+      for (let i = 0, j = ring.length - 2; i < ring.length; j = i, i += 2) {
+        if (ring[i + 1] > y !== ring[j + 1] > y && x < ((ring[j] - ring[i]) * (y - ring[i + 1])) / (ring[j + 1] - ring[i + 1]) + ring[i]) inside = !inside;
+      }
+      return inside;
+    });
+  };
+  const buildings = buildBuildings(layout.buildings, facades, (b) => inTerminal(b.poly.outer) || (b.height > 40 && nearTower(b.poly.outer)));
   group.add(buildings.group);
   glows.push(...buildings.glows);
 
   const terminals = buildTerminalShells(layout.terminals, layout.airfield, facades);
+  const roofParts = buildBuildings(layout.buildings, facades, (b) => !inTerminal(b.poly.outer));
+  terminals.shell.add(roofParts.group);
   group.add(terminals.shell, terminals.fixtures);
-  glows.push(...terminals.glows);
+  glows.push(...terminals.glows, ...roofParts.glows);
 
   const tower = buildTower(towerX, towerY);
   group.add(tower);

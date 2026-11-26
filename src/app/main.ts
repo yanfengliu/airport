@@ -3,14 +3,16 @@
 import * as THREE from 'three';
 import { MapCamera } from '../render/camera.ts';
 import { AircraftLayer } from '../render/dynamic/aircraft-layer.ts';
+import { PeopleLayer } from '../render/dynamic/people-layer.ts';
 import { TrainLayer } from '../render/dynamic/train-layer.ts';
+import { buildInteriors } from '../render/static/interiors.ts';
 import { VehicleLayer } from '../render/dynamic/vehicle-layer.ts';
 import { Stage } from '../render/stage.ts';
 import { buildStaticWorld } from '../render/world.ts';
 import { formatClock } from '../shared/sun.ts';
 import { CONFIG } from '../sim/config.ts';
 import { Sim } from '../sim/sim.ts';
-import { SPEEDS, createHud } from '../ui/hud.ts';
+import { INSIDE, SPEEDS, createHud, type Inside } from '../ui/hud.ts';
 import { loadLayout } from './layout-loader.ts';
 import { PRESETS, presetById } from './presets.ts';
 
@@ -62,7 +64,7 @@ async function start(): Promise<void> {
   const WARM_UP = 30 * 60;
   const ROAD_WARM_UP = 7 * 60;
   const startSim = (at: number): Sim => {
-    const fresh = new Sim(layout, { seed, startTime: at - WARM_UP, roads: true });
+    const fresh = new Sim(layout, { seed, startTime: at - WARM_UP, roads: true, people: true });
     // The roads fill in a few minutes; the airfield needs longer to get its aircraft into place.
     fresh.roadsRunning = false;
     fresh.run(WARM_UP - ROAD_WARM_UP);
@@ -78,7 +80,21 @@ async function start(): Promise<void> {
   const aircraftLayer = new AircraftLayer();
   const vehicleLayer = new VehicleLayer();
   const trainLayer = new TrainLayer();
-  stage.scene.add(aircraftLayer.group, vehicleLayer.group, trainLayer.group);
+  const peopleLayer = new PeopleLayer(60_000);
+  const interiors = buildInteriors(layout, sim.terminals!);
+  stage.scene.add(aircraftLayer.group, vehicleLayer.group, trainLayer.group, peopleLayer.group, interiors.departures, interiors.arrivals);
+  let inside: Inside = 'off';
+  /** Lift the terminal roofs and show one level inside, or put them back. */
+  const setInside = (next: Inside): void => {
+    inside = next;
+    world.terminalShell.visible = next === 'off';
+    interiors.departures.visible = next === 'departures';
+    interiors.arrivals.visible = next === 'arrivals';
+    peopleLayer.group.visible = next !== 'off';
+    peopleLayer.floors = [next === 'arrivals', next === 'departures', next === 'departures'];
+  };
+  const asked = params.get('inside');
+  if (asked === 'departures' || asked === 'arrivals') setInside(asked);
   let speed = Number(params.get('speed') ?? 1);
   if (!Number.isFinite(speed) || speed < 0) speed = 1;
   let resumeSpeed = speed || 1;
@@ -109,6 +125,7 @@ async function start(): Promise<void> {
       owed = 0;
     },
     goToPreset: (id) => goToPreset(id),
+    setInside,
   });
   if (params.get('hud') === '0') hud.setVisible(false);
 
@@ -126,6 +143,9 @@ async function start(): Promise<void> {
       const index = SPEEDS.indexOf(speed as (typeof SPEEDS)[number]);
       const step = event.code === 'BracketRight' ? 1 : -1;
       setSpeed(SPEEDS[Math.max(0, Math.min(SPEEDS.length - 1, (index === -1 ? 1 : index) + step))]);
+    } else if (event.code === 'KeyI') {
+      const order = INSIDE.map((o) => o.id);
+      setInside(order[(order.indexOf(inside) + 1) % order.length]);
     } else if (event.code === 'KeyH') {
       const root = document.querySelector<HTMLElement>('#hud')!;
       hud.setVisible(root.style.display === 'none');
@@ -150,9 +170,13 @@ async function start(): Promise<void> {
     aircraftLayer.update(sim.airside.aircraft, owed / CONFIG.dt, lamps);
     if (sim.roads) vehicleLayer.update(sim.roads.traffic.vehicles, owed / CONFIG.dt, camera.distance, lamps);
     if (sim.transit) trainLayer.update(sim.transit, owed / CONFIG.dt);
+    if (sim.terminals && inside !== 'off') {
+      peopleLayer.update(sim.terminals.people, owed / CONFIG.dt, camera.distance);
+      interiors.update(sim.terminals, realSeconds);
+    }
     world.update(realSeconds, stage.day, { height: canvas.height, fov: stage.camera.fov, fog: stage.fogDensity, lamp: stage.lampGain });
     stage.render();
-    hud.update({ secondsOfDay, speed, fps, presetId });
+    hud.update({ secondsOfDay, speed, fps, presetId, inside });
   };
 
   /** Run the simulation on by a span of simulated time, in whole steps, keeping the remainder. */

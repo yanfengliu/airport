@@ -208,7 +208,8 @@ export function buildTerminalPlan(layout: Layout, airlines: readonly { code: str
   const holdroom = new Map<string, Place>();
   for (const s of layout.airfield.stands) {
     if (!s.contact || !s.door) continue;
-    const place = add('holdroom', `Gate ${s.id}`, FLOOR.airside, s.door[0], s.door[1], { area: s.area });
+    // People boarding face the jet bridge: away from the terminal, the way the aircraft's nose points back.
+    const place = add('holdroom', `Gate ${s.id}`, FLOOR.airside, s.door[0], s.door[1], { area: s.area, heading: s.heading + Math.PI });
     if (place) holdroom.set(s.id, place);
   }
 

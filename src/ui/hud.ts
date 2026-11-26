@@ -13,10 +13,19 @@ export const DAY_JUMPS: { id: string; label: string; seconds: number }[] = [
   { id: 'night', label: 'Night', seconds: 22.5 * 3600 },
 ];
 
+/** What the view shows of the terminals: their roofs, or one level inside them. */
+export type Inside = 'off' | 'departures' | 'arrivals';
+export const INSIDE: { id: Inside; label: string; title: string }[] = [
+  { id: 'off', label: 'Roofs', title: 'Show the terminals from outside (I cycles)' },
+  { id: 'departures', label: 'Departures', title: 'Lift the roofs: check-in, security, shops and gates (I cycles)' },
+  { id: 'arrivals', label: 'Arrivals', title: 'Lift the roofs: baggage claim and the way out (I cycles)' },
+];
+
 export interface HudActions {
   setSpeed(speed: number): void;
   jumpTo(secondsOfDay: number): void;
   goToPreset(id: string): void;
+  setInside(inside: Inside): void;
 }
 
 export interface HudState {
@@ -24,6 +33,7 @@ export interface HudState {
   speed: number;
   fps: number;
   presetId: string | null;
+  inside: Inside;
 }
 
 export interface Hud {
@@ -62,6 +72,15 @@ export function createHud(root: HTMLElement, presets: readonly Preset[], attribu
       on: { click: () => actions.goToPreset(preset.id) },
     }),
   );
+  const insideButtons = INSIDE.map((option) =>
+    el('button', {
+      class: 'chip ghost',
+      text: option.label,
+      title: option.title,
+      attrs: { 'data-inside': option.id, type: 'button' },
+      on: { click: () => actions.setInside(option.id) },
+    }),
+  );
   const fps = el('span', { class: 'fps', text: '' });
 
   const top = el('div', { class: 'bar top' }, [
@@ -69,6 +88,7 @@ export function createHud(root: HTMLElement, presets: readonly Preset[], attribu
     el('div', { class: 'group' }, [clock, phase]),
     el('div', { class: 'group', attrs: { role: 'group', 'aria-label': 'Simulation speed' } }, speedButtons),
     el('div', { class: 'group', attrs: { role: 'group', 'aria-label': 'Time of day' } }, jumpButtons),
+    el('div', { class: 'group', attrs: { role: 'group', 'aria-label': 'Inside the terminals' } }, insideButtons),
   ]);
   const bottom = el('div', { class: 'bar bottom' }, [el('div', { class: 'group wrap', attrs: { role: 'group', 'aria-label': 'Camera views' } }, presetButtons)]);
   const credit = el('div', { class: 'credit' }, [fps, el('span', { text: attribution })]);
@@ -76,6 +96,7 @@ export function createHud(root: HTMLElement, presets: readonly Preset[], attribu
 
   let shownSpeed = -1;
   let shownPreset: string | null | undefined;
+  let shownInside: Inside | undefined;
   return {
     update(state: HudState): void {
       setText(clock, formatClock(state.secondsOfDay, true));
@@ -89,6 +110,10 @@ export function createHud(root: HTMLElement, presets: readonly Preset[], attribu
       if (state.presetId !== shownPreset) {
         shownPreset = state.presetId;
         for (const button of presetButtons) button.classList.toggle('on', button.dataset.preset === state.presetId);
+      }
+      if (state.inside !== shownInside) {
+        shownInside = state.inside;
+        for (const button of insideButtons) button.classList.toggle('on', button.dataset.inside === state.inside);
       }
     },
     setVisible(visible: boolean): void {

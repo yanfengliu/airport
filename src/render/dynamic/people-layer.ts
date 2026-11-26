@@ -1,5 +1,6 @@
 // Draws everyone on foot as small instanced figures: a body tinted by what they wear and a head.
-// People are only drawn when the camera is near enough to see them.
+// A travel party is drawn as its members walking side by side. People are drawn only on the
+// floors the view shows, and only when the camera is near enough to see them.
 
 import * as THREE from 'three';
 import type { People } from '../../sim/terminal/people.ts';
@@ -38,7 +39,7 @@ export class PeopleLayer {
   private readonly palette: THREE.Color[];
   private readonly skin: THREE.Color[];
   /** Beyond this camera distance nobody is drawn. */
-  maxDistance = 2600;
+  maxDistance = 3200;
   /** Which floors to draw: a person is shown when `floors[person's floor]` is true. */
   floors: boolean[] = [true, true, true];
 
@@ -63,43 +64,52 @@ export class PeopleLayer {
     this.skin = SKIN.map((c) => new THREE.Color(c));
   }
 
-  /** `alpha` is how far the frame is through each person's current step, per update phase. */
-  update(people: People, alpha: (id: number) => number, cameraDistance: number): void {
+  /** `alpha` is how far the frame is between the last two simulation steps. */
+  update(people: People, alpha: number, cameraDistance: number): void {
     let count = 0;
-    if (cameraDistance <= this.maxDistance) {
+    if (this.group.visible && cameraDistance <= this.maxDistance) {
       const matrices = this.bodies.instanceMatrix.array as Float32Array;
       for (let id = 0; id < people.high && count < this.capacity; id += 1) {
         if (!people.alive[id] || !this.floors[people.floor[id]]) continue;
-        const a = alpha(id);
-        const x = people.px[id] + (people.x[id] - people.px[id]) * a;
-        const y = people.py[id] + (people.y[id] - people.py[id]) * a;
-        const h = people.ph[id] + (people.h[id] - people.ph[id]) * a;
+        const x = people.px[id] + (people.x[id] - people.px[id]) * alpha;
+        const y = people.py[id] + (people.y[id] - people.py[id]) * alpha;
+        const h = people.ph[id] + (people.h[id] - people.ph[id]) * alpha;
         // Face the way they are moving; standing people keep a fixed bearing of their own.
         const dx = people.x[id] - people.px[id];
         const dy = people.y[id] - people.py[id];
         const heading = dx * dx + dy * dy > 0.0004 ? Math.atan2(dy, dx) : (id * 2.399) % 6.283;
         const c = Math.cos(heading);
         const s = Math.sin(heading);
-        const o = count * 16;
-        matrices[o] = c;
-        matrices[o + 1] = 0;
-        matrices[o + 2] = -s;
-        matrices[o + 3] = 0;
-        matrices[o + 4] = 0;
-        matrices[o + 5] = 1;
-        matrices[o + 6] = 0;
-        matrices[o + 7] = 0;
-        matrices[o + 8] = s;
-        matrices[o + 9] = 0;
-        matrices[o + 10] = c;
-        matrices[o + 11] = 0;
-        matrices[o + 12] = x;
-        matrices[o + 13] = h;
-        matrices[o + 14] = -y;
-        matrices[o + 15] = 1;
-        this.bodies.setColorAt(count, this.palette[people.colour[id] % this.palette.length]);
-        this.heads.setColorAt(count, this.skin[(id * 7) % this.skin.length]);
-        count += 1;
+        const size = Math.max(1, people.size[id]);
+        for (let member = 0; member < size && count < this.capacity; member += 1) {
+          // Members walk abreast, a little staggered, about half a metre apart.
+          const across = (member - (size - 1) / 2) * 0.55;
+          const back = (member % 2) * 0.35;
+          const mx = x - s * across - c * back;
+          const my = y + c * across - s * back;
+          const o = count * 16;
+          matrices[o] = c;
+          matrices[o + 1] = 0;
+          matrices[o + 2] = -s;
+          matrices[o + 3] = 0;
+          matrices[o + 4] = 0;
+          matrices[o + 5] = member > 1 && size > 2 ? 0.72 : 1;
+          matrices[o + 6] = 0;
+          matrices[o + 7] = 0;
+          matrices[o + 8] = s;
+          matrices[o + 9] = 0;
+          matrices[o + 10] = c;
+          matrices[o + 11] = 0;
+          matrices[o + 12] = mx;
+          matrices[o + 13] = h;
+          matrices[o + 14] = -my;
+          matrices[o + 15] = 1;
+          // Members of a party dress differently; staff all wear the uniform.
+          const tint = people.role[id] === 0 ? (people.colour[id] + member * 3) % this.palette.length : people.colour[id];
+          this.bodies.setColorAt(count, this.palette[tint]);
+          this.heads.setColorAt(count, this.skin[(id * 7 + member) % this.skin.length]);
+          count += 1;
+        }
       }
     }
     this.bodies.count = count;
