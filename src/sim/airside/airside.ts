@@ -12,6 +12,9 @@ import { flowCosts } from './flows.ts';
 import type { UsableStands } from './stands.ts';
 import { Tower } from './tower.ts';
 
+/** Seconds of route cost for each block taken against the way another aircraft is routed along it. */
+const AGAINST_TRAFFIC = 240;
+
 export interface SimEvent {
   time: number;
   kind: string;
@@ -51,6 +54,9 @@ export class Airside {
     this.usable = usable.span;
     this.conflicts = usable.conflicts;
     const flow = flowCosts(net);
+    // Arcs other aircraft are routed along, refreshed whenever one plans a route.
+    const routed = new Uint8Array(net.blocks.length * 2);
+    const ahead: number[] = [];
     this.traffic = new Traffic(this.net);
     this.tower = new Tower(this.net, (id) => this.byId.get(id)?.runwayPosition() ?? null);
     this.book = new FlightBook(rotations);
@@ -61,7 +67,17 @@ export class Airside {
       tower: this.tower,
       rng: rng.fork('aircraft'),
       now: startTime,
-      arcCost: (arc) => flow[arc],
+      arcCost: (arc) => flow[arc] + (routed[arc ^ 1] ? AGAINST_TRAFFIC : 0),
+      planFor: (aircraft) => {
+        routed.fill(0);
+        for (const a of this.aircraft) {
+          if (a.id === aircraft) continue;
+          ahead.length = 0;
+          a.routeAhead(ahead);
+          for (const arc of ahead) routed[arc] = 1;
+        }
+      },
+      opposed: (arc) => routed[arc ^ 1] === 1,
       standFree: (stand, forVisit) => this.standFree(stand, forVisit),
       otherStand: (visit) => this.otherStand(visit),
       departuresFor: (end) => this.aircraft.reduce((n, a) => n + (a.runwayEnd === end && (a.phase === 'pushback' || a.phase === 'starting' || a.phase === 'taxiOut' || a.phase === 'lineUp') ? 1 : 0), 0),

@@ -26,8 +26,12 @@ export interface AirsideServices {
   tower: Tower;
   rng: Rng;
   now: number;
-  /** Extra cost of using an arc, for the one-way habits of the current runway plan. */
+  /** Extra cost of using an arc: against the habitual flow, or against where others are routed. */
   arcCost(arc: number): number;
+  /** Count where everyone but one aircraft is routed, before that aircraft plans a route. */
+  planFor(aircraft: number): void;
+  /** Is someone else routed along this arc the other way? Valid after `planFor`. */
+  opposed(arc: number): boolean;
   /** Is the stand empty and not promised to another aircraft about to arrive? */
   standFree(stand: string, forVisit: number): boolean;
   /** Another stand for a visit whose own is taken; null if there is none. */
@@ -142,6 +146,21 @@ export class Aircraft {
     this.airline = airline;
     this.mover = newMover(id);
     this.body = type.length + CONFIG.taxi.bodyMargin;
+  }
+
+  /** Add the arcs this aircraft still means to taxi along, for others planning round it. */
+  routeAhead(out: number[]): void {
+    if (this.phase === 'pushback' || this.phase === 'starting') {
+      for (const arc of this.departureArcs) out.push(arc);
+      return;
+    }
+    const path = this.mover.path;
+    if (!path || (this.phase !== 'taxiIn' && this.phase !== 'taxiOut' && this.phase !== 'landing')) return;
+    const behind = this.mover.s - this.body;
+    for (let i = 0; i < path.arcs.length; i += 1) {
+      const ends = i + 1 < path.arcs.length ? path.arcStart[i + 1] : path.total;
+      if (ends > behind) out.push(path.arcs[i]);
+    }
   }
 
   /** Position on a runway for the tower, or null when not on one. */
@@ -328,6 +347,7 @@ export class Aircraft {
     const net = svc.net;
     const standNode = this.resolveStand(svc);
     if (standNode === null) return;
+    svc.planFor(this.id);
     const fromThreshold = this.along - info.end.displaced;
     const options: { exit: RunwayExit; arcs: number[]; cost: number }[] = [];
     for (const exit of net.exits(this.runwayEnd)) {
@@ -350,10 +370,17 @@ export class Aircraft {
       if (first && svc.traffic.holder(first.res) !== -1) continue;
       const vacateAt = lead + RUNWAY_VACATED + FRONT + this.type.length;
       const stops = this.findStops(net, path, vacateAt, 'stand');
+      // Up to its first stop the aircraft will be standing in the way of anything coming the
+      // other way, between two runways as likely as not: never turn off into someone's route.
+      let against = false;
+      for (let i = 0; i < path.arcs.length && path.arcStart[i] < stops[0].s; i += 1) if (svc.opposed(path.arcs[i])) against = true;
+      if (against) continue;
       svc.traffic.place(this.mover, path, lead, svc.now);
       this.mover.turnsBack = false;
       this.mover.startAt = svc.now + (option.exit.along - fromThreshold) / Math.max(20, (this.speed + option.exit.speed) / 2);
-      const result = svc.traffic.clear(this.mover, Math.min(stops[0].s, vacateAt + 30), svc.now, 0, false);
+      // All the way to the first stop if the plan allows; if not, at least clear of the runway.
+      let result = svc.traffic.clear(this.mover, stops[0].s, svc.now, 0, false);
+      if (!result.ok) result = svc.traffic.clear(this.mover, Math.min(stops[0].s, vacateAt + 30), svc.now, 0, false);
       if (!result.ok) {
         svc.traffic.remove(this.mover);
         continue;
@@ -576,6 +603,7 @@ export class Aircraft {
   tryPushback(svc: AirsideServices): boolean {
     if (this.phase !== 'parked' || svc.now < this.nextAsk) return false;
     this.nextAsk = svc.now + 12;
+    svc.planFor(this.id);
     const net = svc.net;
     const end = svc.tower.departureEnd(this.type.body, (e) => svc.departuresFor(e));
     if (svc.departuresFor(end) >= CONFIG.taxi.queueLimit) return false;
