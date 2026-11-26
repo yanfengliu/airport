@@ -39,6 +39,12 @@ export const CONFIG = {
     crossBeforeLanding: 46,
     /** Distance from a runway centreline at which crossing traffic holds when no bar is mapped. */
     holdDistance: 78,
+    /**
+     * Metres either side of a runway centreline within which an aircraft on the ground is on the
+     * runway, whatever line it follows: crossing, lined up, turning off, or on a taxiway mapped along
+     * the pavement. Beyond the widest half-span, so a wing on the runway is a body on it.
+     */
+    strip: 45,
     brakingHard: 2.5,
     brakingEasy: 1.4,
     takeoffAccel: { regional: 2.5, narrow: 2.3, wide: 1.9, super: 1.7 },

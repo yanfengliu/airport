@@ -75,6 +75,15 @@ export class Tower {
   stats = { landings: 0, takeoffs: 0, goArounds: 0, crossings: 0 };
   /** How many go-arounds each kind of obstruction has caused. */
   goAroundReasons: Record<string, number> = {};
+  /** For the instruments: why the last request was refused, and the aircraft in the way if there was one. */
+  denial = '';
+  deniedBy = -1;
+
+  private deny(reason: string, by = -1): false {
+    this.denial = reason;
+    this.deniedBy = by;
+    return false;
+  }
 
   constructor(net: TaxiNet, position: (aircraft: number) => RunwayPosition | null) {
     this.net = net;
@@ -224,18 +233,21 @@ export class Tower {
   /** May the aircraft at the hold line enter the runway and line up? */
   mayLineUp(aircraft: number, end: string, now: number, lineUpSeconds: number, rollSeconds: number): boolean {
     const runway = this.runwayOf(end);
-    if (runway.cleared !== null && runway.cleared !== aircraft) return false;
+    if (runway.cleared !== null && runway.cleared !== aircraft) return this.deny('another cleared to line up', runway.cleared);
     for (const [id, occupant] of runway.occupants) {
       if (id === aircraft) continue;
       const p = this.position(id);
       // Someone still on the pavement behind where this aircraft will start, or yet to pass it.
-      if (occupant.kind === 'crossing' || occupant.kind === 'linedUp') return false;
-      if (occupant.end !== end) return false;
-      if (!p || p.along < 600) return false;
+      if (occupant.kind === 'crossing' || occupant.kind === 'linedUp') return this.deny(`runway has one ${occupant.kind}`, id);
+      if (occupant.end !== end) return this.deny('runway in use the other way', id);
+      if (!p || p.along < 600) return this.deny(`runway has one ${occupant.kind} not yet past`, id);
     }
-    // On a runway that also takes landings there must be room before the next one.
+    // On a runway that also takes landings there must be room before the next one: from when it
+    // can roll, lined up and clear of the last departure's wake, the take-off clearance's own margin.
     const next = runway.inbound[0];
-    if (next && next.threshold - now < lineUpSeconds + rollSeconds + 22) return false;
+    const last = runway.lastDeparture;
+    const rollAt = Math.max(now + lineUpSeconds, last && last.end === end ? last.time + CONFIG.runway.departureGap[last.wake] : now);
+    if (next && next.threshold - rollAt < rollSeconds + 20 + 6) return this.deny('landing too close to line up', next.aircraft);
     runway.cleared = aircraft;
     return true;
   }
@@ -268,26 +280,26 @@ export class Tower {
       if (id === aircraft) continue;
       const p = this.position(id);
       if (occupant.kind === 'departing' && occupant.end === end && p && p.along > 1700) continue;
-      return false;
+      return this.deny(`runway has one ${occupant.kind}`, id);
     }
     const last = runway.lastDeparture;
-    if (last && last.end === end && now - last.time < CONFIG.runway.departureGap[last.wake]) return false;
+    if (last && last.end === end && now - last.time < CONFIG.runway.departureGap[last.wake]) return this.deny('wake gap behind the last departure');
     const next = runway.inbound[0];
-    if (next && next.threshold - now < rollSeconds + 20) return false;
+    if (next && next.threshold - now < rollSeconds + 20) return this.deny('landing too close to take off', next.aircraft);
     const margin = CONFIG.runway.crossingMargin;
     for (const c of toCrossings) {
       // A departure fitted between landings on the other runway goes first: its gap will not wait.
-      if (!this.squeezed(runway) && this.squeezed(this.runways.get(c.across)!)) return false;
+      if (!this.squeezed(runway) && this.squeezed(this.runways.get(c.across)!)) return this.deny('a squeezed departure on the crossing runway goes first', this.runways.get(c.across)!.cleared ?? -1);
       const from = now + c.from - margin;
       const to = now + c.to + margin;
       // Anything holding the same crossing point from the other runway.
       for (const w of this.windows) {
         if (w.aircraft === aircraft) continue;
-        if (w.on === c.across && w.across === runway.id && w.from < to && from < w.to) return false;
+        if (w.on === c.across && w.across === runway.id && w.from < to && from < w.to) return this.deny('crossing runway in use at the crossing point', w.aircraft);
       }
       // Anyone standing or taxiing on the other runway near the crossing.
       const other = this.runways.get(c.across)!;
-      for (const occupant of other.occupants.values()) if (occupant.kind === 'crossing') return false;
+      for (const [id, occupant] of other.occupants) if (occupant.kind === 'crossing') return this.deny('someone taxiing across the crossing runway', id);
     }
     for (const c of toCrossings) this.windows.push({ on: runway.id, across: c.across, from: now + c.from - margin, to: now + c.to + margin, aircraft });
     runway.occupants.set(aircraft, { end, kind: 'departing' });
@@ -316,22 +328,22 @@ export class Tower {
       if (id === aircraft) continue;
       if (occupant.kind === 'crossing') continue;
       const p = this.position(id);
-      if (!p) return false;
+      if (!p) return this.deny(`runway has one ${occupant.kind}`, id);
       const at = occupant.end === referenceEnd ? p.along : length - p.along;
       const towards = occupant.end === referenceEnd ? 1 : -1;
       // Already past the crossing point and moving away from it: no conflict.
       const passed = (along - at) * towards < -90;
-      if (!passed) return false;
+      if (!passed) return this.deny(`runway has one ${occupant.kind} not yet past`, id);
     }
     if (runway.cleared !== null) {
       // Nobody crosses in front of a departure that has only a gap between landings to go in.
-      if (this.squeezed(runway)) return false;
+      if (this.squeezed(runway)) return this.deny('a squeezed departure is cleared onto the runway', runway.cleared);
       const p = this.position(runway.cleared);
       // Someone cleared onto the runway who has not started to roll may be held; anyone else not.
-      if (p && p.speed > 1) return false;
+      if (p && p.speed > 1) return this.deny('a departure is rolling', runway.cleared);
     }
     const next = runway.inbound[0];
-    if (next && next.threshold - now < CONFIG.runway.crossBeforeLanding) return false;
+    if (next && next.threshold - now < CONFIG.runway.crossBeforeLanding) return this.deny('landing too close to cross', next.aircraft);
     runway.occupants.set(aircraft, { end: referenceEnd, kind: 'crossing' });
     this.stats.crossings += 1;
     return true;

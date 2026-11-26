@@ -7,6 +7,7 @@
 import { MAX_TURN, type StandLine, type TaxiNet } from '../airfield/net.ts';
 import { NODE_CLEARANCE } from '../airfield/path.ts';
 import { CONFIG } from '../config.ts';
+import { standPath } from './aircraft.ts';
 import { pushbackOptions } from './pushback.ts';
 
 export interface StandAccess {
@@ -75,6 +76,20 @@ export interface UsableStands {
 }
 
 export function usableStands(net: TaxiNet, arrivalEnds: readonly string[], departureEnds: readonly string[]): UsableStands {
+  // The ground a fuselage holds following any taxiway: no parked aircraft may rest on it, or it
+  // would shut that taxiway to everyone for as long as it stays.
+  const lanes = new Set<number>();
+  const scratch: number[] = [];
+  for (const block of net.blocks) {
+    if (block.kind !== 'twy') continue;
+    scratch.length = 0;
+    for (let i = 0; i + 3 < block.pts.length; i += 2) net.grid.cover(block.pts[i], block.pts[i + 1], block.pts[i + 2], block.pts[i + 3], scratch);
+    for (const tile of scratch) lanes.add(tile);
+  }
+  const clearOfLanes = (id: string, length: number): boolean => {
+    const path = standPath(net, id, length);
+    return path !== null && !path.tiles.some((tile) => lanes.has(tile));
+  };
   const span = new Map<string, number>();
   for (const [id, a] of standAccess(net, arrivalEnds, departureEnds)) {
     const line = net.standLine(id);
@@ -84,7 +99,7 @@ export function usableStands(net: TaxiNet, arrivalEnds: readonly string[], depar
       // Parked, the whole aircraft has to be on its own line, its tail far enough from the
       // taxilane behind it for others to pass.
       const fits = line.length >= size.length + CONFIG.taxi.bodyMargin + NODE_CLEARANCE + 1;
-      if (fits && a.to[index].length === departureEnds.length) widest = Math.max(widest, size.span);
+      if (fits && a.to[index].length === departureEnds.length && clearOfLanes(id, size.length)) widest = Math.max(widest, size.span);
     });
     if (widest > 0) span.set(id, Math.min(widest, net.stands.get(id)!.span));
   }
