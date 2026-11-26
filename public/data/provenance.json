@@ -2,7 +2,7 @@
   "source": "OpenStreetMap, via the Overpass API",
   "license": "Open Database License (ODbL) 1.0, https://opendatacommons.org/licenses/odbl/",
   "attribution": "© OpenStreetMap contributors, https://www.openstreetmap.org/copyright",
-  "osmBase": "2026-11-26T00:44:39Z",
+  "osmBase": "2026-11-26T00:49:47Z",
   "bbox": [
     37.597,
     -122.414,
@@ -60,6 +60,14 @@
       "bytes": 2266188,
       "sha256": "a2fedb3b5878195303e1e762a1d73b7e36d8978e0ab2279933a332d471300f2a",
       "fetchedAt": "2026-11-26T00:45:42.065Z",
+      "endpoint": "https://overpass-api.de/api/interpreter"
+    },
+    "roadnodes": {
+      "query": "[out:json][timeout:170][bbox:37.597,-122.414,37.648,-122.348];\n(node[\"highway\"];);\nout body;",
+      "elements": 2136,
+      "bytes": 383883,
+      "sha256": "430a2942531012cb08701e95a0dd7808d9d0bd39082805dd7c0b4302615c3e54",
+      "fetchedAt": "2026-11-26T00:50:46.045Z",
       "endpoint": "https://overpass-api.de/api/interpreter"
     }
   },

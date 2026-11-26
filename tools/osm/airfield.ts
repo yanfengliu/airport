@@ -11,6 +11,8 @@ import { numberTag, type OsmData, type OsmNode, type OsmWay } from './lib/osm.ts
 const MAG_VAR = 13;
 /** Wingtip clearance between neighbouring stands, metres. */
 const STAND_CLEARANCE = 7.5;
+/** Nodes joined by less taxiway than this are one node. */
+const MIN_EDGE = 1;
 
 interface WorkNode {
   p: Vec2;
@@ -175,6 +177,41 @@ export function buildAirfield(osm: OsmData, log: (line: string) => void): Airfie
     comp = components(nodes.length, edges);
   }
   log(`stands: ${candidates.length} parking lines, ${chosen.length} distinct, ${joined} joined to the taxiways by a synthesized lead-in, ${dropped} dropped as unreachable`);
+
+  // ---- merge nodes drawn on top of each other -------------------------------------------------
+  // The map has a few pairs of nodes centimetres apart, joined by a sliver of taxiway. Each pair
+  // becomes one node, so no edge is shorter than a metre.
+  const parent = Int32Array.from(nodes, (_, i) => i);
+  const find = (i: number): number => {
+    while (parent[i] !== i) {
+      parent[i] = parent[parent[i]];
+      i = parent[i];
+    }
+    return i;
+  };
+  let merged = 0;
+  for (const e of edges) {
+    if (polylineLength(e.pts) >= MIN_EDGE) continue;
+    const a = find(e.a);
+    const b = find(e.b);
+    if (a === b) continue;
+    parent[b] = a;
+    nodes[a].hold ||= nodes[b].hold;
+    for (const r of nodes[b].rwy) nodes[a].rwy.add(r);
+    merged += 1;
+  }
+  edges = edges.filter((e) => find(e.a) !== find(e.b));
+  for (const e of edges) {
+    e.a = find(e.a);
+    e.b = find(e.b);
+    e.pts = [nodes[e.a].p, ...e.pts.slice(1, -1), nodes[e.b].p];
+  }
+  for (const n of nodes) if (n.rwy.size) n.hold = false;
+  for (const c of kept) {
+    c.noseNode = find(c.noseNode);
+    c.entryNode = find(c.entryNode);
+  }
+  log(`merged ${merged} pairs of nodes less than ${MIN_EDGE} m apart`);
 
   // ---- keep only what is connected to the runways -------------------------------------------
   comp = components(nodes.length, edges);

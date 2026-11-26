@@ -36,14 +36,14 @@ export function buildGround(land: Land): Ground {
 
   // ---- the bay --------------------------------------------------------------------------
   const ripples = waterNormals();
-  ripples.repeat.set(700, 700);
+  ripples.repeat.set(330, 330);
   const waterMaterial = new THREE.MeshStandardMaterial({
     color: 0x2a5568,
     roughness: 0.16,
     metalness: 0.02,
     normalMap: ripples,
-    normalScale: new THREE.Vector2(0.55, 0.55),
-    envMapIntensity: 1.25,
+    normalScale: new THREE.Vector2(0.22, 0.22),
+    envMapIntensity: 2.6,
     polygonOffset: true,
     polygonOffsetFactor: 2,
     polygonOffsetUnits: 8,

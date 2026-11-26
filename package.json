@@ -14,7 +14,7 @@
     "test": "vitest run",
     "audit": "npm audit --audit-level=high",
     "data:fetch": "node tools/osm/fetch.mjs",
-    "data:build": "node tools/osm/build-layout.mjs",
+    "data:build": "node tools/osm/build-layout.ts",
     "visual": "node tools/visual/sweep.mjs"
   },
   "dependencies": {

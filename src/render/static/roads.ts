@@ -2,34 +2,11 @@
 
 import * as THREE from 'three';
 import type { RoadClass, RoadEdge, Roads } from '../../shared/layout.ts';
+import { LANE_WIDTH, SHOULDER } from '../../shared/road-spec.ts';
 import { MeshBuilder, disc, ribbon, shade, type RGB } from '../builder.ts';
 import { laneRibbonWidth, laneTexture, type LaneSpec } from '../textures.ts';
 import { ORDER, PALETTE, decalMaterial, decalMesh, grainTexture, solidMesh } from './common.ts';
 import { deck, piers } from './structures.ts';
-
-const LANE_WIDTH: Record<RoadClass, number> = {
-  motorway: 3.7,
-  motorway_link: 3.9,
-  trunk: 3.6,
-  primary: 3.5,
-  secondary: 3.4,
-  tertiary: 3.3,
-  local: 3.2,
-  service: 3,
-  airside: 3,
-};
-
-const SHOULDER: Record<RoadClass, number> = {
-  motorway: 2.6,
-  motorway_link: 1.6,
-  trunk: 1.2,
-  primary: 0.8,
-  secondary: 0.6,
-  tertiary: 0.5,
-  local: 0.4,
-  service: 0.3,
-  airside: 0.3,
-};
 
 /** Classes drawn as plain asphalt, without lane paint. */
 const PLAIN = new Set<RoadClass>(['local', 'service', 'airside']);

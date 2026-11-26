@@ -94,6 +94,8 @@ function boundingBox(ring: readonly Vec2[]): { cx: number; cy: number; halfLengt
 export function buildBuildings(osm: OsmData, log: (line: string) => void): Buildings {
   const airport = aerodromeRing(osm);
   const buildings: Building[] = [];
+  /** The outline and holes of each entry of buildings, as points. */
+  const outlines: { outer: Vec2[]; holes: Vec2[][]; area: number }[] = [];
   const boxes: number[] = [];
   const counts: Record<string, number> = {};
   let boxed = 0;
@@ -125,6 +127,7 @@ export function buildBuildings(osm: OsmData, log: (line: string) => void): Build
     if (tags.name && area > 1500) building.name = tags.name;
     if (minHeight) building.minHeight = minHeight;
     buildings.push(building);
+    outlines.push({ outer, holes, area });
   };
 
   const isBuilding = (tags: Tags | undefined): tags is Tags => {
@@ -144,7 +147,25 @@ export function buildBuildings(osm: OsmData, log: (line: string) => void): Build
     if (!isBuilding(r.tags) || r.tags.type !== 'multipolygon') continue;
     for (const polygon of osm.relationPolygons(r)) add(r.tags, polygon);
   }
-  buildings.sort((a, b) => a.kind.localeCompare(b.kind));
-  log(`${buildings.length} as footprints, ${boxed} small ones as boxes; ${JSON.stringify(counts)}`);
-  return { buildings, boxes };
+  // A footprint wholly inside a bigger building and no taller than it is either hidden by it or
+  // fights with its roof: the domestic garage, for one, is mapped both as a car park and as a
+  // building.
+  const swallowed = new Set<Building>();
+  for (let q = 0; q < buildings.length; q += 1) {
+    const inner = outlines[q];
+    for (let p = 0; p < buildings.length; p += 1) {
+      const outerOne = outlines[p];
+      if (p === q || outerOne.area <= inner.area || buildings[p].minHeight) continue;
+      if (buildings[q].height > buildings[p].height + 0.5) continue;
+      if (!inner.outer.every((v) => pointInRing(v[0], v[1], outerOne.outer))) continue;
+      if (outerOne.holes.some((h) => pointInRing(inner.outer[0][0], inner.outer[0][1], h))) continue;
+      swallowed.add(buildings[q]);
+      break;
+    }
+  }
+  const visible = buildings.filter((b) => !swallowed.has(b));
+  visible.sort((a, b) => a.kind.localeCompare(b.kind));
+  log(`${swallowed.size} footprints inside a bigger building left out`);
+  log(`${visible.length} as footprints, ${boxed} small ones as boxes; ${JSON.stringify(counts)}`);
+  return { buildings: visible, boxes };
 }

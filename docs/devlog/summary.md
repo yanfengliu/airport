@@ -1,0 +1,4 @@
+# Devlog Summary
+
+- 2026-11-25: **The airport stands in 3D, by day and by night** — runways with their markings, taxiways, 104 gates with jet bridges, terminals, garages, the elevated roads and the AirTrain guideway are built from the layout into about 460,000 triangles and draw at 60 fps on the GPU at 1920×1080. The sun follows the clock; at night the airfield lights, apron floodlights and street lamps come up. Nothing moves yet. [Plan](../work/0_sfo-simulation/plan.md).
+- 2026-11-25: **The real SFO is in the repo as six layout files** — built from OpenStreetMap: 4 runways within 1% of their published lengths, 1,207 taxi nodes, 221 stands, 324 mapped rooms inside the terminals, 2,842 road edges with 115 signals, AirTrain, BART and Caltrain. Two things the map gets wrong were fixed in the build, not by hand: 18 pairs of taxi nodes a few centimetres apart, and 5 buildings drawn twice.

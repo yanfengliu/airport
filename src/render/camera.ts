@@ -97,6 +97,17 @@ export class MapCamera {
     this.apply();
   }
 
+  /** True once the camera has arrived at the view it was last sent to. */
+  isSettled(): boolean {
+    const g = this.goal;
+    return (
+      Math.hypot(g.x - this.x, g.y - this.y) < Math.max(0.3, this.distance * 0.0015) &&
+      Math.abs(g.distance - this.distance) < this.distance * 0.003 &&
+      Math.abs(g.bearing - this.bearing) < 0.002 &&
+      Math.abs(g.tilt - this.tilt) < 0.002
+    );
+  }
+
   /** Keep the look-at point on a moving thing; pass null to stop. */
   setFollow(source: (() => FollowTarget | null) | null): void {
     this.follow = source;

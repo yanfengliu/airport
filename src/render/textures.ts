@@ -159,7 +159,7 @@ export function laneTexture(spec: LaneSpec): THREE.CanvasTexture {
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
       const g = grain[(y % 64) * 64 + (x % 64)];
-      const v = 54 + Math.round((g - 0.5) * 22);
+      const v = 90 + Math.round((g - 0.5) * 22);
       const i = (y * width + x) * 4;
       image.data[i] = v;
       image.data[i + 1] = v + 1;

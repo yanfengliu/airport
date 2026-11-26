@@ -1,0 +1,105 @@
+// Rail: the AirTrain guideway, BART's aerial structure and the Caltrain corridor.
+
+import * as THREE from 'three';
+import type { Rail, RailLine, RailStation } from '../../shared/layout.ts';
+import { MeshBuilder, box, ribbon, rgb } from '../builder.ts';
+import { ORDER, PALETTE, decalMaterial, decalMesh, solidMesh } from './common.ts';
+import { deck, piers } from './structures.ts';
+
+const WIDTH: Record<RailLine['kind'], number> = { airtrain: 3.1, bart: 4, caltrain: 4.4 };
+const ELEVATED_FROM = 0.6;
+const BURIED_BELOW = -0.4;
+
+/** Split a line into the runs that are above ground, dropping what is in tunnel. */
+function visibleRuns(pts: readonly number[]): number[][] {
+  const runs: number[][] = [];
+  let current: number[] = [];
+  for (let i = 0; i < pts.length; i += 3) {
+    if (pts[i + 2] < BURIED_BELOW) {
+      if (current.length >= 6) runs.push(current);
+      current = [];
+    } else {
+      current.push(pts[i], pts[i + 1], pts[i + 2]);
+    }
+  }
+  if (current.length >= 6) runs.push(current);
+  return runs;
+}
+
+/** Direction of the nearest piece of track of a station's own kind. */
+function trackHeading(rail: Rail, station: RailStation): number {
+  let best = Infinity;
+  let heading = 0;
+  for (const line of rail.lines) {
+    if (line.kind !== station.kind) continue;
+    for (let i = 3; i < line.pts.length; i += 3) {
+      const mx = (line.pts[i - 3] + line.pts[i]) / 2;
+      const my = (line.pts[i - 2] + line.pts[i + 1]) / 2;
+      const d = Math.hypot(mx - station.x, my - station.y);
+      if (d < best) {
+        best = d;
+        heading = Math.atan2(line.pts[i + 1] - line.pts[i - 2], line.pts[i] - line.pts[i - 3]);
+      }
+    }
+  }
+  return heading;
+}
+
+export function buildRail(rail: Rail): THREE.Group {
+  const group = new THREE.Group();
+  group.name = 'rail';
+  const structure = new MeshBuilder();
+  const running = new MeshBuilder();
+  const ballast = new MeshBuilder();
+  const steel = new MeshBuilder();
+  const concrete = PALETTE.concrete;
+  const guideway = rgb(0x55585c);
+  const gravel = rgb(0x7a7468);
+  const railTone = rgb(0x9da3a8);
+
+  for (const line of rail.lines) {
+    const width = WIDTH[line.kind];
+    for (const run of visibleRuns(line.pts)) {
+      let top = 0;
+      for (let i = 2; i < run.length; i += 3) top = Math.max(top, run[i]);
+      if (top > ELEVATED_FROM) {
+        deck(structure, run, width, concrete, 0.55);
+        piers(structure, run, width, concrete, 24);
+        ribbon(running, run, 3, width, guideway, { lift: 0.1 });
+      } else {
+        ribbon(ballast, run, 3, width, gravel);
+        ribbon(steel, run, 3, 0.16, railTone, { offset: 0.72 });
+        ribbon(steel, run, 3, 0.16, railTone, { offset: -0.72 });
+      }
+    }
+  }
+
+  // Stations: platforms either side of the tracks under a canopy, open at the sides.
+  const canopyTone = rgb(0xdfe3e6);
+  const platformTone = rgb(0xb9bbb8);
+  for (const s of rail.stations) {
+    const heading = trackHeading(rail, s);
+    const length = s.kind === 'airtrain' ? 34 : s.kind === 'bart' ? 110 : 120;
+    const halfWidth = s.kind === 'airtrain' ? 9 : 11;
+    const z = Math.max(0, s.z);
+    const nx = -Math.sin(heading);
+    const ny = Math.cos(heading);
+    for (const side of [1, -1]) {
+      const ox = nx * side * (halfWidth - 2.2);
+      const oy = ny * side * (halfWidth - 2.2);
+      box(structure, s.x + ox, s.y + oy, Math.max(0, z - 1.2), z + 1.05, length / 2, 2.2, heading, platformTone, platformTone);
+      if (s.kind !== 'caltrain') {
+        for (const along of [-0.42, -0.14, 0.14, 0.42]) {
+          box(structure, s.x + ox + Math.cos(heading) * length * along, s.y + oy + Math.sin(heading) * length * along, z + 1.05, z + 5.6, 0.22, 0.22, heading, canopyTone, canopyTone);
+        }
+      }
+    }
+    if (s.kind !== 'caltrain') box(structure, s.x, s.y, z + 5.6, z + 6.2, length / 2 + 2, halfWidth + 1, heading, canopyTone, canopyTone);
+  }
+
+  group.add(solidMesh(structure, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88, metalness: 0 }), 'rail-structures'));
+  group.add(solidMesh(running, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, metalness: 0 }), 'rail-running', false));
+  group.add(decalMesh(ballast, ORDER.roadCasing, decalMaterial(), 'rail-ballast'));
+  group.add(decalMesh(steel, ORDER.road, decalMaterial(), 'rail-steel'));
+  return group;
+}

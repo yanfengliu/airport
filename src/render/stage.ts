@@ -47,7 +47,7 @@ export class Stage {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 0.6;
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
 
     this.camera = new THREE.PerspectiveCamera(42, 1, 2, 60_000);
     this.scene.fog = this.fog;
@@ -58,11 +58,22 @@ export class Stage {
     this.scene.add(this.sky);
     this.envSky.scale.setScalar(1000);
     this.envScene.add(this.envSky);
+    // The sky shader is far brighter than sunlit ground at the exposure the ground needs, so it
+    // gets a gain of its own; without it the midday sky is plain white.
+    for (const sky of [this.sky, this.envSky]) {
+      sky.material.uniforms.skyGain = { value: 1 };
+      sky.material.fragmentShader = sky.material.fragmentShader
+        .replace('void main() {', 'uniform float skyGain;\nvoid main() {')
+        .replace('gl_FragColor = vec4( texColor, 1.0 );', 'gl_FragColor = vec4( texColor * skyGain, 1.0 );');
+      sky.material.needsUpdate = true;
+    }
+    // Reflections take the clear sky; clouds in them would smear across the whole bay.
+    this.envSky.material.uniforms.cloudCoverage.value = 0;
 
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(4096, 4096);
-    this.sun.shadow.bias = -0.0004;
-    this.sun.shadow.normalBias = 0.6;
+    this.sun.shadow.bias = -0.00012;
+    this.sun.shadow.normalBias = 0.45;
     this.scene.add(this.sun, this.sun.target, this.hemisphere);
 
     this.stars = makeStars();
@@ -73,6 +84,11 @@ export class Stage {
     const onResize = (): void => this.resize();
     window.addEventListener('resize', onResize);
     this.listeners.push(() => window.removeEventListener('resize', onResize));
+  }
+
+  /** Density of the haze, for things that fade themselves with distance. */
+  get fogDensity(): number {
+    return this.fog.density;
   }
 
   resize(): void {
@@ -104,21 +120,27 @@ export class Stage {
     const sunColour = new THREE.Color().setHSL(0.07 + 0.05 * low, 0.85 - 0.6 * low, 0.5 + 0.22 * low);
     if (moonUp) {
       this.sun.color.setRGB(0.55, 0.65, 1);
-      this.sun.intensity = 0.16;
+      this.sun.intensity = 0.42;
     } else {
       this.sun.color.copy(sunColour);
-      this.sun.intensity = 3.4 * THREE.MathUtils.smoothstep(elevationDeg, -3, 12) * (1 - 0.75 * this.haze);
+      this.sun.intensity = 3.8 * THREE.MathUtils.smoothstep(elevationDeg, -3, 12) * (1 - 0.75 * this.haze);
     }
-    this.hemisphere.intensity = 0.1 + 1.25 * day + 0.5 * this.haze * day;
-    this.hemisphere.color.setRGB(0.55 + 0.25 * day, 0.66 + 0.2 * day, 1);
+    this.hemisphere.intensity = 0.085 + 0.36 * day + 0.2 * this.haze * day;
+    // The sky's light is blue by day and takes some of the sunset's warmth when the sun is low.
+    const warmth = (1 - low) * day * 0.6;
+    this.hemisphere.color.setRGB(0.55 + 0.25 * day + 0.2 * warmth, 0.66 + 0.2 * day - 0.08 * warmth, 1 - 0.3 * warmth);
     this.hemisphere.groundColor.setRGB(0.2 + 0.12 * day, 0.19 + 0.1 * day, 0.16 + 0.06 * day);
 
     const u = this.sky.material.uniforms;
     u.sunPosition.value.set(sun.dir[0], sun.dir[2], -sun.dir[1]);
-    u.turbidity.value = 4 + 10 * this.haze;
-    u.rayleigh.value = 1.3 + 1.2 * (1 - low) * day;
-    u.mieCoefficient.value = 0.004 + 0.02 * this.haze;
-    u.mieDirectionalG.value = 0.82;
+    u.turbidity.value = 2.2 + 12 * this.haze;
+    u.rayleigh.value = 2.5 + 1.0 * (1 - low) * day;
+    u.mieCoefficient.value = 0.003 + 0.02 * this.haze;
+    u.mieDirectionalG.value = 0.8;
+    u.skyGain.value = 0.4 + 0.5 * (1 - low);
+    u.time.value = secondsOfDay;
+    u.cloudCoverage.value = 0.3 + 0.65 * this.haze;
+    u.cloudDensity.value = 0.35 + 0.5 * this.haze;
 
     // Fog takes the colour of the horizon so distant ground fades into the sky.
     const horizon = new THREE.Color().setRGB(0.62, 0.72, 0.84).lerp(new THREE.Color(0xe9a36b), (1 - low) * day * 0.55);
@@ -127,7 +149,11 @@ export class Stage {
     if (this.haze > 0) this.fog.color.lerp(new THREE.Color().setRGB(0.72, 0.75, 0.78).multiplyScalar(0.15 + 0.85 * day), this.haze * 0.8);
     this.fog.density = 0.000035 + 0.00085 * this.haze * this.haze;
 
-    this.renderer.toneMappingExposure = 0.3 + 0.32 * day;
+    // Expose for the ground: brighter light, smaller aperture, so noon does not wash out and dusk
+    // does not go black.
+    const c = this.sun.color;
+    const ground = (this.sun.intensity * (0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b) * Math.max(0, this.sunDir.y)) / Math.PI + this.hemisphere.intensity * 0.9;
+    this.renderer.toneMappingExposure = THREE.MathUtils.clamp(0.5 / Math.pow(Math.max(0.05, ground), 0.85), 0.35, 1.6);
     (this.stars.material as THREE.PointsMaterial).opacity = Math.max(0, 1 - day * 2.5) * (1 - this.haze);
     this.stars.visible = day < 0.4;
 
@@ -162,7 +188,7 @@ export class Stage {
     this.envHaze = this.haze;
     const from = this.sky.material.uniforms;
     const to = this.envSky.material.uniforms;
-    for (const key of ['sunPosition', 'turbidity', 'rayleigh', 'mieCoefficient', 'mieDirectionalG'] as const) {
+    for (const key of ['sunPosition', 'turbidity', 'rayleigh', 'mieCoefficient', 'mieDirectionalG', 'skyGain'] as const) {
       const value = from[key].value;
       if (value instanceof THREE.Vector3) (to[key].value as THREE.Vector3).copy(value);
       else to[key].value = value;
@@ -170,7 +196,7 @@ export class Stage {
     const previous = this.envTarget;
     this.envTarget = this.pmrem.fromScene(this.envScene, 0, 1, 2000);
     this.scene.environment = this.envTarget.texture;
-    this.scene.environmentIntensity = 0.25 + 0.55 * this.day;
+    this.scene.environmentIntensity = 0.06 + 0.2 * this.day;
     previous?.dispose();
   }
 
