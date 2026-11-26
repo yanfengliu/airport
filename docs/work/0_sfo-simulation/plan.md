@@ -73,7 +73,7 @@ Ownership: the main agent owns the plan, the contracts, integration and acceptan
 - [ ] **M2 Airside.** Schedule, weather and runway configuration, tower and ground control, taxi reservations, gates, turnaround and ground equipment, aircraft models, a first flight board. Soak and determinism tests. Merged and pushed.
 - [ ] **M3 Roads and transit.** Road traffic, curbs, garages, shuttles, taxis and buses, AirTrain and BART, vehicle models. Soak test. Merged and pushed.
 - [ ] **M4 People and bags.** Terminal interiors, passengers, check-in, security, shops, gates, customs, baggage system and carousels, staff. Conservation tests. Merged and pushed.
-- [ ] **M5 Orchestration and interface.** Operations layer and panel, interventions, inspector and follow mode, full flight boards, night lighting, performance pass, README. Merged and pushed.
+- [ ] **M5 Orchestration and interface.** Operations layer and panel, interventions, inspector and follow mode, full flight boards, night lighting, performance pass, README. Merged and pushed. Also carried here from M2: the ground equipment round a parked aircraft (`src/render/models/gse.ts` is built but not yet drawn).
 - [ ] **M6 Acceptance.** Independent review by both lanes, repairs and their recheck, full visual sweep, every criterion above checked and recorded, final merge and push, worktree and branch removed.
 
 ## Ground traffic: hard-problem search

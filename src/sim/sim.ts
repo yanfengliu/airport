@@ -13,6 +13,7 @@ import { DAY, buildSchedule, type Rotation } from './schedule.ts';
 import { Terminals } from './terminal/terminals.ts';
 import { buildTransit } from './transit/routes.ts';
 import type { Transit } from './transit/trains.ts';
+import type { Weather } from './weather.ts';
 
 export interface SimOptions {
   seed: number;
@@ -24,6 +25,8 @@ export interface SimOptions {
   roads?: boolean;
   /** Run the people in the terminals: passengers, queues, bags, shops and staff. */
   people?: boolean;
+  /** The weather at the start, which sets the runways; clear with a west wind unless given. */
+  weather?: Weather;
 }
 
 export class Sim {
@@ -58,6 +61,7 @@ export class Sim {
     const stands = layout.airfield.stands.filter((s) => usable.span.has(s.id)).map((s) => ({ ...s, span: usable.span.get(s.id)! }));
     this.rotations = buildSchedule(rng.fork('schedule'), stands, { visits: options.visitsPerDay ?? CONFIG.visitsPerDay, conflicts: usable.conflicts });
     this.airside = new Airside(net, usable, this.rotations, rng.fork('airside'), options.startTime);
+    if (options.weather) this.airside.setWeather(options.weather, true);
     // The middle of the terminals: the gates stand all round it.
     const gates = layout.airfield.stands.filter((s) => s.contact);
     const centre: [number, number] = [gates.reduce((sum, s) => sum + s.x, 0) / gates.length, gates.reduce((sum, s) => sum + s.y, 0) / gates.length];

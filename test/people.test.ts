@@ -50,6 +50,41 @@ describe('people in the terminals, over a morning', () => {
   });
 });
 
+describe('a closed checkpoint', () => {
+  // The same morning twice, with Checkpoint C open and with it closed from the start.
+  const run = (close: boolean): Sim => {
+    const sim = new Sim(layout, { seed: 4, startTime: 7 * 3600, people: true });
+    const t = sim.terminals!;
+    const c = t.plan.checkpoint.get('C')!;
+    if (close) expect(t.setCheckpointClosed(c.id, true)).toBeNull();
+    sim.run(5400);
+    return sim;
+  };
+  const open = run(false);
+  const closed = run(true);
+  const queue = (sim: Sim, area: string) => sim.terminals!.queues.get(sim.terminals!.plan.checkpoint.get(area)!.id)!;
+
+  it('empties its line and shuts its lanes', () => {
+    expect(queue(closed, 'C').line.length).toBe(0);
+    expect(queue(closed, 'C').openServers).toBe(0);
+    expect(queue(closed, 'C').totalServed).toBeLessThan(queue(open, 'C').totalServed / 2);
+  });
+
+  it('sends its travellers through the next checkpoint, and loses nobody', () => {
+    expect(queue(closed, 'D').totalServed).toBeGreaterThan(queue(open, 'D').totalServed);
+    const s = closed.terminals!.stats.departing;
+    expect(s.created - s.boarded - s.missed - s.cancelled - closed.terminals!.audit().departingHere).toBe(0);
+  });
+
+  it('is refused when it would leave a concourse with no way through security', () => {
+    const t = closed.terminals!;
+    // E, F and G are joined to each other after security and to nothing else: two of them can close, not all three.
+    expect(t.setCheckpointClosed(t.plan.checkpoint.get('E')!.id, true)).toBeNull();
+    expect(t.setCheckpointClosed(t.plan.checkpoint.get('F')!.id, true)).toBeNull();
+    expect(t.setCheckpointClosed(t.plan.checkpoint.get('G')!.id, true)).toMatch(/No other way/);
+  });
+});
+
 describe('determinism with people', () => {
   it('gives the same terminals after an hour for the same seed', () => {
     const run = (): number => {

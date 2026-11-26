@@ -42,6 +42,11 @@ export interface AirsideServices {
   otherStand(visit: Visit, avoid?: ReadonlySet<string>): string | null;
   /** Aircraft queued or on their way to depart from a runway end. */
   departuresFor(end: string): number;
+  /**
+   * Leave a landing slot on arrival runway end `end` empty at or soon after `after`, for a
+   * departure that needs it; returns the time of the gap.
+   */
+  openGap(end: string, after: number): number;
   event(kind: string, text: string, aircraft: number): void;
 }
 
@@ -857,7 +862,8 @@ export class Aircraft {
       if (!svc.tower.mayLineUp(this.id, this.runwayEnd, svc.now, lineUpSeconds, rollSeconds)) {
         this.noteLimit(`line up: ${svc.tower.denial}`, svc.tower.deniedBy);
         // The gap asked for on the way out has gone by: ask for another.
-        if (svc.tower.plan.arrivals.includes(this.runwayEnd) && svc.now > this.gapUntil) this.gapUntil = svc.tower.openGap(this.runwayEnd, svc.now + 120) + 150;
+        const landing = svc.tower.arrivalEndOn(this.runwayEnd);
+        if (landing && svc.now > this.gapUntil) this.gapUntil = svc.openGap(landing, svc.now + 120) + 150;
         return;
       }
       if (!svc.traffic.reserve(mover, mover.path!.total, svc.now, false)) {
@@ -1012,10 +1018,11 @@ export class Aircraft {
     this.stops = this.taxiStops;
     this.taxiStops = [];
     this.nextAsk = svc.now;
-    // A departure from a runway that also takes landings needs a hole in the arrivals.
-    if (svc.tower.plan.arrivals.includes(this.runwayEnd)) {
+    // A departure from a runway that also takes landings, either way, needs a hole in the arrivals.
+    const landing = svc.tower.arrivalEndOn(this.runwayEnd);
+    if (landing) {
       const lineUp = this.stops.find((s) => s.kind === 'lineUp')!;
-      this.gapUntil = svc.tower.openGap(this.runwayEnd, svc.now + (lineUp.s - mover.s) / 11 + 40) + 150;
+      this.gapUntil = svc.openGap(landing, svc.now + (lineUp.s - mover.s) / 11 + 40) + 150;
     }
   }
 

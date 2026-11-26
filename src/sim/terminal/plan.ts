@@ -127,6 +127,81 @@ const CHECKIN_NAMES: [RegExp, string][] = [
   [/delta/i, 'DL'],
 ];
 
+/** Boarding areas in the order they stand round the ring of terminals, each joined to the next after security. */
+const RING = ['A', 'B', 'C', 'D', 'E', 'F', 'G'];
+/** Longest connector, metres: farther apart than this, two concourses are not joined. */
+const CONNECTOR_LONGEST = 900;
+
+/**
+ * Cells of `whole` (the terminals with no landside or airside) on the ways after security from
+ * each concourse to the next round the ring, as SFO's terminals are joined: the shortest walk
+ * through the buildings from one concourse's ground to the next one's, three cells wide. The
+ * concourses alone, cut off from the halls along the road, are islands; these join them up.
+ */
+function postSecurityConnectors(whole: NavGrid, airside: NavGrid, doorsByArea: ReadonlyMap<string, Vec[]>): Set<number> {
+  const cells = new Set<number>();
+  /** Join two pieces of ground, as cells of the whole buildings, by the shortest walk between them, if it is short enough. */
+  const join = (from: readonly number[], to: readonly number[]): void => {
+    const field = whole.field(to);
+    let at = -1;
+    for (const c of from) if (at < 0 || field[c] < field[at]) at = c;
+    if (at < 0 || field[at] === UNREACHABLE || (field[at] / 10) * CELL > CONNECTOR_LONGEST) return;
+    // Downhill to the other piece, with the cells either side.
+    for (let guard = 0; field[at] > 0 && guard < 4000; guard += 1) {
+      cells.add(at);
+      let next = -1;
+      for (let k = 0; k < 8; k += 1) {
+        const n = whole.neighbours[at * 8 + k];
+        if (n < 0) continue;
+        cells.add(n);
+        if (next < 0 || field[n] < field[next]) next = n;
+      }
+      if (next < 0 || field[next] >= field[at]) break;
+      at = next;
+    }
+  };
+  // Each concourse's ground after security comes in one piece or more, each with some of its gates.
+  const seen = new Int32Array(airside.count).fill(-1);
+  const ground = new Map<string, number[]>();
+  for (const letter of RING) {
+    const pieces: { gates: number; cells: number[] }[] = [];
+    for (const [x, y] of doorsByArea.get(letter) ?? []) {
+      const seed = airside.nearestCell(x, y, 40);
+      if (seed < 0) continue;
+      if (seen[seed] >= 0) {
+        const piece = pieces.find((p) => p.cells[0] === seen[seed]);
+        if (piece) piece.gates += 1;
+        continue;
+      }
+      const queue = [seed];
+      seen[seed] = seed;
+      for (let i = 0; i < queue.length; i += 1) {
+        for (let k = 0; k < 8; k += 1) {
+          const n = airside.neighbours[queue[i] * 8 + k];
+          if (n >= 0 && seen[n] < 0) {
+            seen[n] = seed;
+            queue.push(n);
+          }
+        }
+      }
+      pieces.push({ gates: 1, cells: queue });
+    }
+    if (!pieces.length) continue;
+    const inWhole = (piece: { cells: number[] }): number[] => piece.cells.map((id) => whole.cellAt(airside.cx[id], airside.cy[id])).filter((c) => c >= 0);
+    // The pieces of one concourse are joined to the one with most gates.
+    pieces.sort((p, q) => q.gates - p.gates);
+    const main = inWhole(pieces[0]);
+    for (const piece of pieces.slice(1)) join(inWhole(piece), main);
+    ground.set(letter, pieces.flatMap(inWhole));
+  }
+  for (let i = 0; i + 1 < RING.length; i += 1) {
+    const from = ground.get(RING[i]);
+    const to = ground.get(RING[i + 1]);
+    if (from && to) join(from, to);
+  }
+  return cells;
+}
+
 export function buildTerminalPlan(layout: Layout, airlines: readonly { code: string; areas: readonly string[]; internationalAreas: readonly string[] }[] = []): TerminalPlan {
   const buildings = layout.terminals.buildings.map((b) => b.poly);
   // The departures road along the front of every hall.
@@ -137,11 +212,19 @@ export function buildTerminalPlan(layout: Layout, airlines: readonly { code: str
   }
   const road = new SegmentIndex(segments, HALL_DEPTH);
   const landside = (x: number, y: number): boolean => road.distance(x, y) < HALL_DEPTH;
+  const whole = new NavGrid(buildings, CELL);
+  const doorsByArea = new Map<string, Vec[]>();
+  for (const s of layout.airfield.stands) {
+    if (!s.contact || !s.door || !/^[A-G]$/.test(s.area)) continue;
+    const list = doorsByArea.get(s.area) ?? [];
+    list.push(s.door);
+    doorsByArea.set(s.area, list);
+  }
+  const connectors = postSecurityConnectors(whole, new NavGrid(buildings, CELL, (x, y) => !landside(x, y)), doorsByArea);
   const grids: NavGrid[] = [];
   grids[FLOOR.arrivals] = new NavGrid(buildings, CELL, landside);
   grids[FLOOR.landside] = new NavGrid(buildings, CELL, landside);
-  grids[FLOOR.airside] = new NavGrid(buildings, CELL, (x, y) => !landside(x, y));
-  const whole = new NavGrid(buildings, CELL);
+  grids[FLOOR.airside] = new NavGrid(buildings, CELL, (x, y) => !landside(x, y) || connectors.has(whole.cellAt(x, y)));
 
   const places: Place[] = [];
   const add = (kind: PlaceKind, name: string, floor: number, x: number, y: number, extra: Partial<Place> = {}): Place | null => {
@@ -154,13 +237,6 @@ export function buildTerminalPlan(layout: Layout, airlines: readonly { code: str
   };
 
   // ---- concourses: where each boarding area's route from its hall crosses into it --------------
-  const doorsByArea = new Map<string, Vec[]>();
-  for (const s of layout.airfield.stands) {
-    if (!s.contact || !s.door || !/^[A-G]$/.test(s.area)) continue;
-    const list = doorsByArea.get(s.area) ?? [];
-    list.push(s.door);
-    doorsByArea.set(s.area, list);
-  }
   const securityRooms = layout.terminals.areas.filter((a) => a.kind === 'security').map((a) => ({ at: centroid(a.poly), size: area(a.poly) }));
   const checkpoint = new Map<string, Place>();
   const exit = new Map<string, Place>();

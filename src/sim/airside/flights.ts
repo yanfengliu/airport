@@ -14,6 +14,11 @@ export interface Visit {
   std: number;
   eta: number;
   etd: number;
+  /**
+   * For the boards: when an arrival still waiting for a landing slot is likely to reach its stand,
+   * from its place in the arrival queue; -1 when it has a slot. Not used to plan anything.
+   */
+  queuedEta: number;
   /** Actual times, once they have happened. */
   landedAt: number;
   onBlockAt: number;
@@ -77,6 +82,7 @@ export class FlightBook {
           std,
           eta: sta,
           etd: std,
+          queuedEta: -1,
           landedAt: -1,
           onBlockAt: -1,
           offBlockAt: -1,
@@ -108,7 +114,10 @@ export class FlightBook {
     return [...this.visits.values()].filter((v) => v.sta <= time - 60 && v.std > time).sort((a, b) => a.sta - b.sta);
   }
 
-  /** Visits whose arrival has yet to start, soonest first. */
+  /**
+   * Visits whose arrival has yet to start and was due after `time`, soonest first. A flight held
+   * up for hours is still waiting to land, so callers look well back.
+   */
   inboundAfter(time: number): Visit[] {
     return [...this.visits.values()].filter((v) => v.state === 'scheduled' && v.sta > time - 60).sort((a, b) => a.sta - b.sta || a.id - b.id);
   }
@@ -116,10 +125,13 @@ export class FlightBook {
   arrivalsBoard(now: number, limit: number): BoardRow[] {
     const rows: BoardRow[] = [];
     for (const v of this.visits.values()) {
+      // Flights that had been and gone before the simulation started are not shown.
+      if (v.state === 'done' && v.onBlockAt < 0) continue;
       const shownUntil = v.onBlockAt >= 0 ? v.onBlockAt + 25 * 60 : Infinity;
-      if (now > shownUntil || v.eta > now + 3 * 3600 || v.sta < now - 6 * 3600) continue;
-      if (v.state === 'scheduled' && v.sta < now - 3600) continue;
-      const late = v.eta - v.sta;
+      const eta = Math.max(v.eta, v.queuedEta);
+      if (now > shownUntil || eta > now + 3 * 3600 || v.sta < now - 6 * 3600) continue;
+      if (v.state === 'scheduled' && eta < now - 3600) continue;
+      const late = eta - v.sta;
       let status = late > DELAY_SHOWN ? 'Delayed' : 'On time';
       let tone: BoardRow['tone'] = late > DELAY_SHOWN ? 'late' : 'ok';
       if (v.state === 'approach') status = v.goArounds ? 'Going around' : 'On approach';
@@ -128,15 +140,20 @@ export class FlightBook {
         status = v.deplaned < v.rotation.paxIn ? 'At gate' : 'Arrived';
         tone = 'done';
       }
-      rows.push({ visit: v.id, flight: v.rotation.arrFlight, airline: v.rotation.airline, city: DESTINATIONS[v.rotation.from].city, scheduled: v.sta % DAY, estimated: (v.onBlockAt >= 0 ? v.onBlockAt : v.eta) % DAY, gate: v.stand, status, tone });
+      rows.push({ visit: v.id, flight: v.rotation.arrFlight, airline: v.rotation.airline, city: DESTINATIONS[v.rotation.from].city, scheduled: v.sta % DAY, estimated: (v.onBlockAt >= 0 ? v.onBlockAt : eta) % DAY, gate: v.stand, status, tone });
     }
-    rows.sort((a, b) => this.visits.get(a.visit)!.eta - this.visits.get(b.visit)!.eta);
+    const shown = (id: number): number => {
+      const v = this.visits.get(id)!;
+      return Math.max(v.eta, v.queuedEta);
+    };
+    rows.sort((a, b) => shown(a.visit) - shown(b.visit));
     return rows.slice(0, limit);
   }
 
   departuresBoard(now: number, limit: number): BoardRow[] {
     const rows: BoardRow[] = [];
     for (const v of this.visits.values()) {
+      if (v.state === 'done' && v.airborneAt < 0) continue;
       const shownUntil = v.airborneAt >= 0 ? v.airborneAt + 10 * 60 : Infinity;
       if (now > shownUntil || v.etd > now + 3 * 3600 || v.std < now - 6 * 3600) continue;
       const late = v.etd - v.std;

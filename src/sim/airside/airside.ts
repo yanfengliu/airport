@@ -11,6 +11,7 @@ import type { Rotation } from '../schedule.ts';
 import { Aircraft, approachSeconds, leadInPath, pushPlansFor, standPath, wayInPath, waysIn, type AirsideServices } from './aircraft.ts';
 import { FlightBook, TAXI_IN_NOMINAL, type Visit } from './flights.ts';
 import { flowCosts } from './flows.ts';
+import { CLEAR_WEST, pairedApproaches, planFor, type Weather } from '../weather.ts';
 import type { UsableStands } from './stands.ts';
 import { Tower } from './tower.ts';
 
@@ -20,6 +21,10 @@ const AGAINST_TRAFFIC = 240;
 const BESIDE = 2;
 /** Seconds beyond the start of the approach up to which landing slots are given out. */
 const SLOT_HORIZON = 240;
+/** Seconds without new landings while the runways change from one plan to the other. */
+const CHANGEOVER = 15 * 60;
+/** An arrival this far behind its time is still waited for; one that would be later has gone elsewhere. */
+const LONGEST_ARRIVAL_DELAY = 6 * 3600;
 
 export interface SimEvent {
   time: number;
@@ -55,6 +60,7 @@ export class Airside {
   readonly aircraft: Aircraft[] = [];
   readonly events: SimEvent[] = [];
   now: number;
+  private readonly startTime: number;
 
   private readonly byId = new Map<number, Aircraft>();
   private readonly pending: PendingArrival[] = [];
@@ -74,6 +80,8 @@ export class Airside {
   private nextHousekeeping = 0;
   /** Set when the terminals simulate passengers: they then count people off and on. */
   passengersElsewhere = false;
+  /** The weather the runways are run for; set with `setWeather`. */
+  weather: Weather = CLEAR_WEST;
   /** Totals for the tests and the operations panel. */
   totals = { arrived: 0, departed: 0, gateChanges: 0, longestWait: 0, heldForStand: 0 };
 
@@ -89,6 +97,7 @@ export class Airside {
     this.tower = new Tower(this.net, (id) => this.byId.get(id)?.runwayPosition() ?? null);
     this.book = new FlightBook(rotations);
     this.now = startTime;
+    this.startTime = startTime;
     this.svc = {
       net: this.net,
       traffic: this.traffic,
@@ -109,6 +118,7 @@ export class Airside {
       standFree: (stand, forVisit) => this.standFree(stand, forVisit),
       otherStand: (visit, avoid) => this.otherStand(visit, avoid),
       departuresFor: (end) => this.aircraft.reduce((n, a) => n + (a.runwayEnd === end && (a.phase === 'pushback' || a.phase === 'starting' || a.phase === 'taxiOut' || a.phase === 'lineUp') ? 1 : 0), 0),
+      openGap: (end, after) => this.openGap(end, after),
       event: (kind, text, aircraft) => this.event(kind, text, aircraft),
     };
     this.book.extendTo(startTime + 8 * 3600);
@@ -340,7 +350,13 @@ export class Airside {
     // Landing slots are given out only a little ahead of the approach, so that the sequence can
     // still make room for a departure that needs a gap; arrivals beyond it wait their turn.
     const horizon = this.now + lead + SLOT_HORIZON;
-    for (const visit of this.book.inboundAfter(this.now - 3600)) {
+    // Arrivals left waiting for a slot are shown on the boards as landing in turn after it, as
+    // many at a time as there are runways landing.
+    const streams = Math.max(1, this.tower.arrivalEnds.length);
+    let queued = 0;
+    // Not as far back as before the day started: a flight due then that found no stand to be put
+    // on at the start is not flown.
+    for (const visit of this.book.inboundAfter(Math.max(this.now - LONGEST_ARRIVAL_DELAY, this.startTime - 3600))) {
       const wantThreshold = visit.eta - TAXI_IN_NOMINAL;
       // The list is in timetable order, and a delayed flight can be due after a later one.
       if (wantThreshold - this.now > lead) continue;
@@ -348,9 +364,16 @@ export class Airside {
       const type = AIRCRAFT[visit.rotation.type];
       const earliest = Math.max(wantThreshold, this.now + approachSeconds(CONFIG.approach.startDistance, type.vApp) + 5);
       const slot = this.tower.assignSlot(earliest, type.wake, null, horizon);
-      if (!slot) continue;
+      if (!slot) {
+        const expected = Math.max(horizon, this.tower.notBefore) + (Math.floor(queued / streams) + 1) * this.tower.slotLength;
+        queued += 1;
+        visit.queuedEta = expected + TAXI_IN_NOMINAL;
+        if (expected - wantThreshold > 600 && !visit.delayNote) visit.delayNote = 'Arrival flow';
+        continue;
+      }
       this.pending.push({ visit, end: slot.end, threshold: slot.threshold });
       visit.eta = Math.max(visit.eta, slot.threshold + TAXI_IN_NOMINAL);
+      visit.queuedEta = -1;
       if (slot.threshold - wantThreshold > 600 && !visit.delayNote) visit.delayNote = 'Arrival flow';
     }
   }
@@ -367,12 +390,18 @@ export class Airside {
         const found = this.standFor(p);
         if (!found) {
           // Nowhere to park it: it holds off the approach, and takes a later landing slot.
+          this.tower.releaseSlot(p.end, p.threshold);
           const slot = this.tower.assignSlot(this.now + approachSeconds(CONFIG.approach.startDistance, type.vApp) + 60, type.wake, null);
+          if (!p.visit.delayNote) p.visit.delayNote = 'Holding for a stand';
+          this.totals.heldForStand += 1;
+          if (!slot) {
+            // No slot to be had now: it is given one again when there is.
+            this.pending.splice(i, 1);
+            continue;
+          }
           p.end = slot.end;
           p.threshold = slot.threshold;
           p.visit.eta = Math.max(p.visit.eta, slot.threshold + TAXI_IN_NOMINAL);
-          if (!p.visit.delayNote) p.visit.delayNote = 'Holding for a stand';
-          this.totals.heldForStand += 1;
           continue;
         }
         if (found.stand !== p.visit.stand) {
@@ -435,6 +464,71 @@ export class Airside {
       for (const tile of path.tiles) tiles.add(tile);
     }
     return tiles.size ? tiles : null;
+  }
+
+  /**
+   * New weather: the runway plan and the pairing of approaches follow it. A change of plan takes
+   * the runways out of the arrival flow for a while, unless `immediate` (as before the day starts).
+   * Arrivals not yet on their approach are given new landing slots under the new arrangement.
+   */
+  setWeather(weather: Weather, immediate = false): void {
+    this.weather = weather;
+    const plan = planFor(weather, this.tower.plan);
+    const paired = pairedApproaches(weather);
+    if (plan === this.tower.plan && paired === this.tower.visual) return;
+    this.reslot(() => {
+      if (this.tower.setPlan(plan, this.now, immediate ? 0 : CHANGEOVER)) {
+        this.event('runways', `Runways change to the ${plan.name} Plan: landing ${plan.arrivals.join(' and ')}, taking off from ${plan.departures.join(' and ')}`, -1);
+      }
+      if (this.tower.setPaired(paired)) this.event('runways', paired ? 'Paired approaches resume on the parallel runways' : 'Cloud too low for paired approaches: one arrival stream', -1);
+    });
+  }
+
+  /** Close a runway to new movements, or open it again. What is already cleared onto it goes on. */
+  setRunwayClosed(runway: string, closed: boolean): void {
+    if (this.tower.closed.has(runway) === closed || !this.tower.runways.has(runway)) return;
+    this.reslot(() => {
+      if (closed) this.tower.closed.add(runway);
+      else this.tower.closed.delete(runway);
+    });
+    this.event('runways', `Runway ${runway} ${closed ? 'closed' : 'open again'}`, -1);
+  }
+
+  /**
+   * Leave a landing slot empty on `end`, the first at or after `after` that is free or given to an
+   * arrival not yet on its approach: that arrival is moved back to the next free slot, as approach
+   * control stretches the arrival stream to let a departure go. Returns the time of the gap.
+   */
+  private openGap(end: string, after: number): number {
+    const length = this.tower.slotLength;
+    for (let k = Math.ceil(after / length); ; k += 1) {
+      const at = k * length;
+      // A gap already planned there, behind a super-heavy arrival say, serves as well.
+      if (this.tower.isHole(end, at)) return at;
+      const taker = this.pending.find((p) => p.end === end && Math.abs(p.threshold - at) < 1);
+      if (this.tower.slotTaken(end, at) && !taker) continue;
+      this.tower.addHole(end, at);
+      if (taker) {
+        this.tower.releaseSlot(taker.end, taker.threshold);
+        const slot = this.tower.assignSlot(at, AIRCRAFT[taker.visit.rotation.type].wake, taker.end);
+        if (slot) {
+          taker.end = slot.end;
+          taker.threshold = slot.threshold;
+          taker.visit.eta = Math.max(taker.visit.eta, slot.threshold + TAXI_IN_NOMINAL);
+        } else {
+          this.pending.splice(this.pending.indexOf(taker), 1);
+        }
+      }
+      return at;
+    }
+  }
+
+  /** Arrivals not yet on their approach give back their landing slots, `change` is made, and they are given new ones. */
+  private reslot(change: () => void): void {
+    for (const p of this.pending) this.tower.releaseSlot(p.end, p.threshold);
+    this.pending.length = 0;
+    change();
+    this.schedule();
   }
 
   /** Time-driven turnaround: when boarding opens, when doors close, when to ask to push. */

@@ -14,6 +14,7 @@ import type { FlightBook, Visit } from '../airside/flights.ts';
 import { CONFIG } from '../config.ts';
 import { AIRCRAFT, AIRLINES } from '../fleet.ts';
 import type { Rng } from '../rng.ts';
+import { UNREACHABLE } from './grid.ts';
 import { ACT, People, ROLE, STEP } from './people.ts';
 import { FLOOR, FLOOR_HEIGHT, buildTerminalPlan, type Place, type PlaceKind, type TerminalPlan } from './plan.ts';
 import { ServiceQueue } from './queue.ts';
@@ -100,6 +101,11 @@ export class Terminals {
   readonly plan: TerminalPlan;
   readonly people: People;
   readonly stats: TerminalStats;
+  /** Checkpoints closed, by place id, and where each boarding area's travellers go instead. */
+  readonly closedCheckpoints = new Set<number>();
+  private readonly divertedTo = new Map<string, Place>();
+  /** What the terminals did that the operations log shows. */
+  readonly events: { time: number; kind: string; text: string }[] = [];
   /** Queues by place: check-in halls, checkpoints, customs, gates. */
   readonly queues = new Map<number, ServiceQueue>();
   private readonly queueId = new Map<number, number>();
@@ -421,10 +427,58 @@ export class Terminals {
     }
   }
 
+  /**
+   * Close a security checkpoint to new travellers, or open it again. Each boarding area it serves
+   * is sent to the nearest open checkpoint from which its gates can be walked to, landside and
+   * airside; anyone already on the way is still served. Refused, with the reason, when some area
+   * would be left with no way through security.
+   */
+  setCheckpointClosed(placeId: number, closed: boolean): string | null {
+    const place = this.plan.places[placeId];
+    if (!place || place.kind !== 'checkpoint' || this.closedCheckpoints.has(placeId) === closed) return null;
+    const next = new Set(this.closedCheckpoints);
+    if (closed) next.add(placeId);
+    else next.delete(placeId);
+    const diverted = new Map<string, Place>();
+    for (const [area, own] of this.plan.checkpoint) {
+      if (!next.has(own.id)) continue;
+      const out = this.plan.exit.get(area);
+      if (!out) continue;
+      const toGates = this.plan.field(out);
+      let best: Place | null = null;
+      let bestDistance = Infinity;
+      for (const [other, cp] of this.plan.checkpoint) {
+        const otherOut = this.plan.exit.get(other);
+        if (next.has(cp.id) || !otherOut) continue;
+        // Reachable before security from the closed one, and after it to this area's gates.
+        if (this.plan.field(cp)[own.cell] === UNREACHABLE || toGates[otherOut.cell] === UNREACHABLE) continue;
+        const d = Math.hypot(cp.x - own.x, cp.y - own.y);
+        if (d < bestDistance) {
+          bestDistance = d;
+          best = cp;
+        }
+      }
+      if (!best) return `No other way through security to the gates of ${area}`;
+      diverted.set(area, best);
+    }
+    this.closedCheckpoints.clear();
+    for (const id of next) this.closedCheckpoints.add(id);
+    this.divertedTo.clear();
+    for (const [area, cp] of diverted) this.divertedTo.set(area, cp);
+    const to = [...new Set([...diverted.values()].map((cp) => cp.name))].join(', ');
+    this.event('security', closed ? `${place.name} closed${to ? `: travellers sent to ${to}` : ''}` : `${place.name} open again`);
+    return null;
+  }
+
+  private event(kind: string, text: string): void {
+    this.events.push({ time: this.now, kind, text });
+    if (this.events.length > 200) this.events.splice(0, 100);
+  }
+
   /** A departing party arrives; `late` is how long ago it should have, at a mid-day start. */
   private spawnDeparting(visit: Visit, size: number, bags: number, late: number): void {
     const area = this.areaOf(visit);
-    const checkpoint = this.plan.checkpoint.get(area) ?? [...this.plan.checkpoint.values()][0];
+    const checkpoint = this.divertedTo.get(area) ?? this.plan.checkpoint.get(area) ?? [...this.plan.checkpoint.values()][0];
     const holdroom = this.holdroomOf(visit);
     if (!checkpoint || !holdroom) return;
     const sinceStart = late;
@@ -786,6 +840,11 @@ export class Terminals {
       if (place.kind === 'holdroom') continue;
       let people = 0;
       for (const p of queue.line) people += this.people.size[p] || 1;
+      // A closed checkpoint keeps one lane for whoever was already on the way, and no more.
+      if (this.closedCheckpoints.has(placeId)) {
+        queue.setOpen(people > 0 ? 1 : 0);
+        continue;
+      }
       // Mean seconds a server spends per person.
       const mean = place.kind === 'checkpoint' ? 24 : place.kind === 'checkin' ? 32 : 45;
       // Enough servers to bring the wait down to ten minutes, at least one, two by day.

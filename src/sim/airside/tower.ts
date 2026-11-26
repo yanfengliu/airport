@@ -78,15 +78,22 @@ export interface RunwayPosition {
 }
 
 export class Tower {
+  /** The runway plan in use; change it with `setPlan`. */
   plan: RunwayPlan = WEST_PLAN;
-  /** Side-by-side visual approaches are possible. */
+  /** Side-by-side approaches are possible; change it with `setPaired`. */
   visual = true;
+  /** Physical runways closed to new movements: what is already cleared onto one goes on. */
+  readonly closed = new Set<string>();
+  /** No landing slot is given out before this time: the runways are being changed over. */
+  notBefore = 0;
   readonly runways = new Map<string, RunwayState>();
   private readonly crossings: Crossing[] = [];
   private windows: Window[] = [];
   /** Landing slots taken, by slot number and runway end. */
   private readonly slots = new Map<string, number>();
   private readonly holes = new Set<string>();
+  /** The latest landing slot given out. */
+  private lastSlot = 0;
   private readonly net: TaxiNet;
   private readonly position: (aircraft: number) => RunwayPosition | null;
   /** Counters for the operations panel and the tests. */
@@ -152,38 +159,88 @@ export class Tower {
     return this.visual ? CONFIG.runway.slotVisual : CONFIG.runway.slotInstrument;
   }
 
+  private open(end: string): boolean {
+    return !this.closed.has(this.net.runwayEnds.get(end)!.runway.id);
+  }
+
+  /** Runway ends landing aircraft now: the plan's open arrival runways, one of them when approaches cannot be paired. */
+  get arrivalEnds(): string[] {
+    const open = this.plan.arrivals.filter((end) => this.open(end));
+    return this.visual ? open : open.slice(-1);
+  }
+
+  /** The end of the same runway as `end` that takes landings under the plan, if any: a departure from it needs a gap in them. */
+  arrivalEndOn(end: string): string | null {
+    const id = this.net.runwayEnds.get(end)!.runway.id;
+    return this.arrivalEnds.find((e) => this.net.runwayEnds.get(e)!.runway.id === id) ?? null;
+  }
+
+  /**
+   * Change the runway plan. Arrivals already on their approach land where they were going and
+   * departures already on their way take off where they were going; no new landing is given a
+   * slot for `changeover` seconds, so that the old runways can be cleared.
+   */
+  setPlan(plan: RunwayPlan, now: number, changeover: number): boolean {
+    if (plan === this.plan) return false;
+    this.plan = plan;
+    this.notBefore = Math.max(this.notBefore, now + changeover);
+    return true;
+  }
+
+  /** Pair approaches or not. New slots keep to the new beat and start after every slot already given out. */
+  setPaired(paired: boolean): boolean {
+    if (paired === this.visual) return false;
+    this.notBefore = Math.max(this.notBefore, this.lastSlot + this.slotLength);
+    this.visual = paired;
+    return true;
+  }
+
+  /** Give back a landing slot an arrival not yet on its approach no longer needs. */
+  releaseSlot(end: string, threshold: number): void {
+    this.slots.delete(`${Math.round(threshold / this.slotLength)}:${end}`);
+  }
+
   /**
    * Give an arrival the first free landing slot at or after `earliest`. Slots are a fixed beat;
-   * in visual conditions each takes one aircraft per arrival runway, landing side by side. With
-   * `latest`, null when no slot is free by then: the arrival waits to be given one.
+   * in visual conditions each takes one aircraft per arrival runway, landing side by side. Null
+   * when no slot is free by `latest`, or no arrival runway is open: the arrival waits for one.
    */
-  assignSlot(earliest: number, wake: WakeClass, prefer: string | null): { end: string; threshold: number };
-  assignSlot(earliest: number, wake: WakeClass, prefer: string | null, latest: number): { end: string; threshold: number } | null;
   assignSlot(earliest: number, wake: WakeClass, prefer: string | null, latest = Infinity): { end: string; threshold: number } | null {
     const length = this.slotLength;
-    const ends = this.visual ? this.plan.arrivals : this.plan.arrivals.slice(-1);
+    const ends = this.arrivalEnds;
+    // With every arrival runway closed nothing lands: the arrival waits for one to open.
+    if (!ends.length) return null;
     const order = prefer && ends.includes(prefer) ? [prefer, ...ends.filter((e) => e !== prefer)] : ends;
-    for (let k = Math.ceil(earliest / length); ; k += 1) {
+    for (let k = Math.ceil(Math.max(earliest, this.notBefore) / length); ; k += 1) {
       if (k * length > latest) return null;
       for (const end of order) {
         const key = `${k}:${end}`;
         if (this.slots.has(key) || this.holes.has(key)) continue;
         this.slots.set(key, 1);
         if (wake === 'J') for (let n = 1; n <= CONFIG.runway.slotsBehindSuper; n += 1) this.holes.add(`${k + n}:${end}`);
+        this.lastSlot = Math.max(this.lastSlot, k * length);
         return { end, threshold: k * length };
       }
     }
   }
 
-  /** Leave the next unassigned landing slot on a runway empty, for a departure that needs it. */
-  openGap(end: string, after: number): number {
-    const length = this.slotLength;
-    for (let k = Math.ceil(after / length); ; k += 1) {
-      const key = `${k}:${end}`;
-      if (this.slots.has(key)) continue;
-      if (!this.holes.has(key)) this.holes.add(key);
-      return k * length;
-    }
+  private slotKey(end: string, at: number): string {
+    return `${Math.round(at / this.slotLength)}:${end}`;
+  }
+
+  /** Is the landing slot at time `at` on `end` given to an arrival? */
+  slotTaken(end: string, at: number): boolean {
+    return this.slots.has(this.slotKey(end, at));
+  }
+
+  /** Is the landing slot at time `at` on `end` to be left empty? */
+  isHole(end: string, at: number): boolean {
+    return this.holes.has(this.slotKey(end, at));
+  }
+
+  /** Leave the landing slot at time `at` on `end` empty; it must not be given to an arrival. */
+  addHole(end: string, at: number): void {
+    this.holes.add(this.slotKey(end, at));
   }
 
   /** An arrival is established on final. Its threshold time is kept up to date with `updateInbound`. */
@@ -246,9 +303,17 @@ export class Tower {
 
   // ---- departures -----------------------------------------------------------------------
 
-  /** The runway ends a departure may use, the long runways for the big aircraft: the plan's, not sorted. */
+  /**
+   * The runway ends a departure may use, the long runways for the big aircraft: the plan's open
+   * ones, not sorted. With all of them closed, the plan's others of the right kind, and failing
+   * those the closed ones: a departure has to leave from somewhere.
+   */
   departureEndsFor(body: BodyClass): readonly string[] {
-    return body === 'wide' || body === 'super' ? this.plan.longDepartures : this.plan.departures;
+    const own = body === 'wide' || body === 'super' ? this.plan.longDepartures : this.plan.departures;
+    const open = own.filter((end) => this.open(end));
+    if (open.length) return open;
+    const other = (body === 'wide' || body === 'super' ? this.plan.departures : this.plan.longDepartures).filter((end) => this.open(end));
+    return other.length ? other : own;
   }
 
   /** The runway ends a departure may use, the one with the shortest queue first. */
@@ -299,7 +364,7 @@ export class Tower {
 
   /** Does the plan in use land aircraft on this runway? */
   private takesLandings(runway: RunwayState): boolean {
-    return this.plan.arrivals.some((end) => this.net.runwayEnds.get(end)!.runway.id === runway.id);
+    return this.arrivalEnds.some((end) => this.net.runwayEnds.get(end)!.runway.id === runway.id);
   }
 
   /** Is a departure waiting to go on a runway that is also landing aircraft? */
