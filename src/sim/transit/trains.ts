@@ -32,6 +32,8 @@ export interface Train {
   /** Distance of the front of the train along the route, and its speed. */
   s: number;
   v: number;
+  /** Where the front was a step ago, for drawing between steps. */
+  ps: number;
   /** +1 running out along the route, -1 running back. */
   direction: 1 | -1;
   /** Index of the stop it is heading for or standing at. */
@@ -90,7 +92,7 @@ export class Transit {
     const route = this.routes[routeIndex];
     for (let k = 0; k < count; k += 1) {
       const s = route.loop ? (route.total * k) / count : (route.total * (k + 0.5)) / count;
-      const train: Train = { id: this.nextId, route: routeIndex, s, v: 0, direction: 1, target: 0, doorsUntil: -1, load: 0, awayUntil: -1 };
+      const train: Train = { id: this.nextId, route: routeIndex, s, ps: s, v: 0, direction: 1, target: 0, doorsUntil: -1, load: 0, awayUntil: -1 };
       this.nextId += 1;
       train.target = this.stopAhead(route, train);
       this.trains.push(train);
@@ -112,13 +114,16 @@ export class Transit {
   /** Distance to go to reach a point at `s` in the direction of travel. */
   private ahead(route: TransitRoute, train: Train, s: number): number {
     let d = (s - train.s) * train.direction;
-    if (route.loop && d < 0) d += route.total;
+    // On a loop a point behind is a lap ahead, but a hair's breadth behind is here: a train that
+    // has just pulled up at its stop must not find the stop a whole lap away.
+    if (route.loop && d < -2) d += route.total;
     return d;
   }
 
   step(dt: number, now: number): void {
     for (const train of this.trains) {
       const route = this.routes[train.route];
+      train.ps = train.s;
       if (train.awayUntil >= 0) {
         if (now < train.awayUntil) continue;
         train.awayUntil = -1;
@@ -146,7 +151,8 @@ export class Transit {
       const allowed = Math.min(route.speed, Math.sqrt(2 * BRAKE * Math.max(0, room)));
       train.v += Math.max(-BRAKE * 1.5 * dt, Math.min(ACCEL * dt, allowed - train.v));
       if (train.v < 0) train.v = 0;
-      train.s += train.v * dt * train.direction;
+      // Never past the stop it is braking for: a step is at most the room left.
+      train.s += Math.min(train.v * dt, train.target >= 0 ? Math.max(0, room) : Infinity) * train.direction;
       if (route.loop) train.s = ((train.s % route.total) + route.total) % route.total;
 
       if (train.target >= 0) {
@@ -168,10 +174,16 @@ export class Transit {
     }
   }
 
-  /** Position of the middle of car `index` (0 at the front), for drawing. */
-  carPose(train: Train, index: number, out: { x: number; y: number; z: number; heading: number; visible: boolean }): void {
+  /**
+   * Position of the middle of car `index` (0 at the front), for drawing. `alpha` is how far the
+   * frame is between the last two steps.
+   */
+  carPose(train: Train, index: number, out: { x: number; y: number; z: number; heading: number; visible: boolean }, alpha = 1): void {
     const route = this.routes[train.route];
-    let s = train.s - train.direction * (index + 0.5) * route.carLength;
+    // Over the join of a loop the two positions are a lap apart: take the short way.
+    let moved = train.s - train.ps;
+    if (route.loop && Math.abs(moved) > route.total / 2) moved -= Math.sign(moved) * route.total;
+    let s = train.ps + moved * alpha - train.direction * (index + 0.5) * route.carLength;
     if (route.loop) s = ((s % route.total) + route.total) % route.total;
     out.visible = train.awayUntil < 0 && s >= 0 && s <= route.total;
     const d = Math.max(0, Math.min(route.total, s));

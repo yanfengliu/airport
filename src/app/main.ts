@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { MapCamera } from '../render/camera.ts';
 import { AircraftLayer } from '../render/dynamic/aircraft-layer.ts';
+import { TrainLayer } from '../render/dynamic/train-layer.ts';
 import { VehicleLayer } from '../render/dynamic/vehicle-layer.ts';
 import { Stage } from '../render/stage.ts';
 import { buildStaticWorld } from '../render/world.ts';
@@ -76,7 +77,8 @@ async function start(): Promise<void> {
   let owed = 0;
   const aircraftLayer = new AircraftLayer();
   const vehicleLayer = new VehicleLayer();
-  stage.scene.add(aircraftLayer.group, vehicleLayer.group);
+  const trainLayer = new TrainLayer();
+  stage.scene.add(aircraftLayer.group, vehicleLayer.group, trainLayer.group);
   let speed = Number(params.get('speed') ?? 1);
   if (!Number.isFinite(speed) || speed < 0) speed = 1;
   let resumeSpeed = speed || 1;
@@ -145,6 +147,7 @@ async function start(): Promise<void> {
     world.lights.begin();
     aircraftLayer.update(sim.airside.aircraft, owed / CONFIG.dt);
     if (sim.roads) vehicleLayer.update(sim.roads.traffic.vehicles, owed / CONFIG.dt, camera.distance);
+    if (sim.transit) trainLayer.update(sim.transit, owed / CONFIG.dt);
     world.update(realSeconds, stage.day, { height: canvas.height, fov: stage.camera.fov, fog: stage.fogDensity, lamp: stage.lampGain });
     stage.render();
     hud.update({ secondsOfDay, speed, fps, presetId });

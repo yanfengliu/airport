@@ -10,6 +10,8 @@ import { CONFIG } from './config.ts';
 import { Rng } from './rng.ts';
 import { RoadSim } from './roads/roads.ts';
 import { DAY, buildSchedule, type Rotation } from './schedule.ts';
+import { buildTransit } from './transit/routes.ts';
+import type { Transit } from './transit/trains.ts';
 
 export interface SimOptions {
   seed: number;
@@ -30,6 +32,8 @@ export class Sim {
   readonly airside: Airside;
   /** Traffic on the public roads, when the simulation was started with it. */
   readonly roads: RoadSim | null;
+  /** AirTrain, BART and Caltrain, when the simulation was started with the roads. */
+  readonly transit: Transit | null;
   /** Set false to leave the roads standing while the rest runs, as when warming up. */
   roadsRunning = true;
   /** Seconds since midnight of the first day. */
@@ -50,6 +54,7 @@ export class Sim {
     this.rotations = buildSchedule(rng.fork('schedule'), stands, { visits: options.visitsPerDay ?? CONFIG.visitsPerDay, conflicts: usable.conflicts });
     this.airside = new Airside(net, usable, this.rotations, rng.fork('airside'), options.startTime);
     this.roads = options.roads ? new RoadSim(layout.roads, layout.land.bounds, rng.fork('roads')) : null;
+    this.transit = options.roads ? buildTransit(layout.rail) : null;
   }
 
   get secondsOfDay(): number {
@@ -63,6 +68,7 @@ export class Sim {
     this.steps += 1;
     this.airside.step(dt);
     if (this.roads && this.roadsRunning) this.roads.step(dt, this.time, this.secondsOfDay);
+    if (this.transit && this.roadsRunning) this.transit.step(dt, this.time);
   }
 
   /** Advance by a span of simulated time. */
