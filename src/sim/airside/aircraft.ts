@@ -62,11 +62,34 @@ interface Stop {
 }
 
 /** One way of pushing back from a stand, with the path the push follows and where on it the push ends. */
-interface PushPlan {
+export interface PushPlan {
   push: PushbackOption;
   path: Path;
   pushEnd: number;
   speed: number;
+}
+
+/** The ways of pushing an aircraft of a type back from the stand whose stop point is `standNode`. */
+export function pushPlansFor(net: TaxiNet, standNode: number, type: AircraftType): PushPlan[] {
+  const body = type.length + CONFIG.taxi.bodyMargin;
+  // Put on the push where it stands: nose the same distance short of the stop point.
+  const origin = type.length + 2 * FRONT;
+  const plans: PushPlan[] = [];
+  for (const push of pushbackOptions(net, standNode, body + 10)) {
+    // A swing is slower than a push down the painted line.
+    const speed = push.pieces ? CONFIG.taxi.pushbackSpeed * 0.7 : CONFIG.taxi.pushbackSpeed;
+    const path = buildPath(net, pushPieces(net, push).map((p) => ({ ...p, speed })), { length: type.length, front: FRONT, reversing: true }, origin);
+    const pushEnd = Math.min(path.total, push.joinAt + body + 9);
+    if (pushEnd >= origin + 1) plans.push({ push, path, pushEnd, speed });
+  }
+  return plans;
+}
+
+/** The path an aircraft of a length follows along a stand's own line from the taxiway to the stop. */
+export function leadInPath(net: TaxiNet, stand: string, length: number): Path | null {
+  const arcs = net.standLine(stand)?.arcsIn ?? [];
+  if (!arcs.length) return null;
+  return buildPath(net, arcPieces(net, arcs), { length, front: FRONT, reversing: false }, 0);
 }
 
 /** Seconds from the landing threshold until the nose is `distance` metres beyond it. */
@@ -486,11 +509,20 @@ export class Aircraft {
    * to roll towards a turn-off, `inSeconds` from now. False when no way off can be had.
    */
   private chooseExit(svc: AirsideServices, fromThreshold: number, speed: number, inSeconds: number): boolean {
+    // A stand whose every way in runs over ground a parked aircraft rests on is passed over for another.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const result = this.chooseExitTo(svc, fromThreshold, speed, inSeconds);
+      if (result !== 'shut in') return result === 'ok';
+    }
+    return false;
+  }
+
+  private chooseExitTo(svc: AirsideServices, fromThreshold: number, speed: number, inSeconds: number): 'ok' | 'no' | 'shut in' {
     const info = this.info!;
     const net = svc.net;
     const traffic = svc.traffic;
     const standNode = this.resolveStand(svc);
-    if (standNode === null) return false;
+    if (standNode === null) return 'no';
     svc.planFor(this.id);
     const options: { exit: RunwayExit; arcs: number[]; cost: number }[] = [];
     for (const exit of net.exits(this.runwayEnd)) {
@@ -542,12 +574,15 @@ export class Aircraft {
       this.exitAlong = option.exit.along + info.end.displaced;
       this.vacateAt = found.vacateAt;
       this.stops = found.stops;
-      return true;
+      return 'ok';
     }
-    // Every way in runs over ground a parked aircraft rests on: this stand cannot be reached now.
-    if (tried.length && parkedInTheWay === tried.length) this.avoid.add(this.visit.stand);
     this.exit = null;
-    return false;
+    // Every way in runs over ground a parked aircraft rests on: this stand cannot be reached now.
+    if (tried.length && parkedInTheWay === tried.length) {
+      this.avoid.add(this.visit.stand);
+      return 'shut in';
+    }
+    return 'no';
   }
 
   /** The node of the stand to taxi to, changing stand if the planned one is taken or cannot be reached. */
@@ -808,22 +843,12 @@ export class Aircraft {
     if (this.readySince < 0) this.readySince = svc.now;
     // The ways of pushing back from this stand, each with the path it follows: worked out once.
     const origin = this.type.length + 2 * FRONT;
-    if (!this.pushPlans) {
-      this.pushPlans = [];
-      for (const push of pushbackOptions(net, standNode, this.body + 10)) {
-        // A swing is slower than a push down the painted line.
-        const speed = push.pieces ? CONFIG.taxi.pushbackSpeed * 0.7 : CONFIG.taxi.pushbackSpeed;
-        // Put on the push where it stands: nose the same distance short of the stop point.
-        const path = buildPath(net, pushPieces(net, push).map((p) => ({ ...p, speed })), this.shape(true), origin);
-        const pushEnd = Math.min(path.total, push.joinAt + this.body + 9);
-        if (pushEnd >= origin + 1) this.pushPlans.push({ push, path, pushEnd, speed });
-      }
-    }
+    this.pushPlans ??= pushPlansFor(net, standNode, this.type);
     this.refusal = this.pushPlans.length ? '' : 'no way to push back';
     const options: { plan: PushPlan; route: number[]; cost: number }[] = [];
     let planned = false;
     for (const plan of this.pushPlans) {
-      const parked = traffic.restingOn(this.mover, plan.path);
+      const parked = traffic.restingOn(this.mover, plan.path, plan.pushEnd);
       if (parked !== -1) {
         this.refusal = `push runs over ground #${parked} rests on`;
         continue;

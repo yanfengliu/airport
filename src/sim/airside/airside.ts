@@ -8,7 +8,7 @@ import { CONFIG } from '../config.ts';
 import { AIRCRAFT, AIRLINE_BY_CODE, type AircraftType } from '../fleet.ts';
 import type { Rng } from '../rng.ts';
 import type { Rotation } from '../schedule.ts';
-import { Aircraft, approachSeconds, standPath, type AirsideServices } from './aircraft.ts';
+import { Aircraft, approachSeconds, leadInPath, pushPlansFor, standPath, type AirsideServices } from './aircraft.ts';
 import { FlightBook, TAXI_IN_NOMINAL, type Visit } from './flights.ts';
 import { flowCosts } from './flows.ts';
 import type { UsableStands } from './stands.ts';
@@ -24,6 +24,19 @@ export interface SimEvent {
   kind: string;
   text: string;
   aircraft: number;
+}
+
+/** The ground a stand asks of one type of aircraft, as tiles. */
+interface StandGround {
+  /** Where it rests, parked. */
+  rest: number[];
+  restBox: [number, number, number, number];
+  /** The stand's own line, followed in. */
+  lineIn: Set<number>;
+  /** Each way of pushing back, as far as the push goes. */
+  pushes: Set<number>[];
+  /** A box round the lead-in and every push. */
+  reachBox: [number, number, number, number];
 }
 
 interface PendingArrival {
@@ -49,6 +62,8 @@ export class Airside {
   private readonly conflicts: ReadonlyMap<string, readonly string[]>;
   private readonly svc: AirsideServices;
   private readonly outlines = new Map<string, Parked | null>();
+  private readonly grounds = new Map<string, StandGround | null>();
+  private readonly shut = new Map<string, { lineIn: boolean; out: boolean }>();
   private nextId = 1;
   private nextHousekeeping = 0;
   /** Totals for the tests and the operations panel. */
@@ -151,22 +166,84 @@ export class Airside {
   /**
    * No aircraft is on the stand or on one that shares its line, none but `forVisit` is on its way
    * to either, and the visit's aircraft parked there would touch none parked on, or bound for, a
-   * stand nearby.
+   * stand nearby, nor shut one in, nor be shut in by one.
    */
   private standFree(stand: string, forVisit: number): boolean {
     const shared = this.conflicts.get(stand);
     const visit = this.book.visits.get(forVisit);
-    const mine = visit ? this.outlineAt(stand, AIRCRAFT[visit.rotation.type]) : null;
+    const type = visit ? AIRCRAFT[visit.rotation.type] : null;
+    const mine = type ? this.outlineAt(stand, type) : null;
     for (const a of this.aircraft) {
       if (a.visit.id === forVisit) continue;
-      const there = a.phase === 'parked' || a.phase === 'taxiIn' || a.phase === 'landing' || (a.phase === 'pushback' && a.mover.s < a.body + 30);
+      // Bound for its stand once its way there is fixed, which for an arrival is at decision height.
+      const there = a.phase === 'parked' || a.phase === 'taxiIn' || a.phase === 'landing' || (a.phase === 'approach' && a.mover.rank >= 0) || (a.phase === 'pushback' && a.mover.s < a.body + 30);
       if (!there) continue;
       if (a.visit.stand === stand || shared?.includes(a.visit.stand)) return false;
-      if (!mine) continue;
+      if (!mine || !type) continue;
       const theirs = this.outlineAt(a.visit.stand, a.type);
       if (theirs && parkedClearance(mine, theirs) < BESIDE) return false;
+      // A parked aircraft needs only its way out; one still coming needs its way in as well.
+      const coming = a.phase !== 'parked' && a.phase !== 'pushback';
+      if (this.shutsIn(a.visit.stand, a.type, stand, type, true) || this.shutsIn(stand, type, a.visit.stand, a.type, coming)) return false;
     }
     return true;
+  }
+
+  /** The ground a stand asks of an aircraft of a type: where it rests, its lead-in, and each way of pushing back. */
+  private groundOf(stand: string, type: AircraftType): StandGround | null {
+    const key = `${stand}:${type.id}`;
+    const known = this.grounds.get(key);
+    if (known !== undefined) return known;
+    let ground: StandGround | null = null;
+    const node = this.net.standNode.get(stand);
+    const rest = standPath(this.net, stand, type.length);
+    const lead = leadInPath(this.net, stand, type.length);
+    if (node !== undefined && rest && lead) {
+      const pushes = pushPlansFor(this.net, node, type).map((plan) => {
+        const tiles = new Set<number>();
+        for (let i = 0; i < plan.path.tiles.length && plan.path.from[i] <= plan.pushEnd; i += 1) tiles.add(plan.path.tiles[i]);
+        return tiles;
+      });
+      const restTiles = Array.from(rest.tiles);
+      const reach = [...lead.tiles, ...pushes.flatMap((p) => [...p])];
+      ground = { rest: restTiles, restBox: this.boxOf(restTiles), lineIn: new Set(lead.tiles), pushes, reachBox: this.boxOf(reach) };
+    }
+    this.grounds.set(key, ground);
+    return ground;
+  }
+
+  private boxOf(tiles: readonly number[]): [number, number, number, number] {
+    const box: [number, number, number, number] = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const tile of tiles) {
+      const c = this.net.grid.centre(tile);
+      box[0] = Math.min(box[0], c.x);
+      box[1] = Math.min(box[1], c.y);
+      box[2] = Math.max(box[2], c.x);
+      box[3] = Math.max(box[3], c.y);
+    }
+    return box;
+  }
+
+  /**
+   * Would an aircraft of type `a` resting at stand `s` leave one of type `b` at stand `t` no way
+   * to push back, or, with `comingIn`, no way in? Then the two cannot be parked together: one would
+   * wait at its stand, or on the taxiway, for as long as the other stays.
+   */
+  private shutsIn(s: string, a: AircraftType, t: string, b: AircraftType, comingIn: boolean): boolean {
+    const from = this.groundOf(s, a);
+    const to = this.groundOf(t, b);
+    if (!from || !to) return false;
+    const [ax0, ay0, ax1, ay1] = from.restBox;
+    const [bx0, by0, bx1, by1] = to.reachBox;
+    if (ax0 > bx1 || bx0 > ax1 || ay0 > by1 || by0 > ay1) return false;
+    const key = `${s}:${a.id}>${t}:${b.id}`;
+    let known = this.shut.get(key);
+    if (known === undefined) {
+      const hits = (tiles: ReadonlySet<number>): boolean => from.rest.some((tile) => tiles.has(tile));
+      known = { lineIn: hits(to.lineIn), out: to.pushes.length > 0 && to.pushes.every(hits) };
+      this.shut.set(key, known);
+    }
+    return known.out || (comingIn && known.lineIn);
   }
 
   private otherStand(visit: Visit, avoid?: ReadonlySet<string>): string | null {

@@ -193,10 +193,11 @@ export class Traffic {
 
   /**
    * The first aircraft, other than `mover`, that will rest for good on ground the path passes
-   * over, or that holds such ground with no journey of its own; -1 when the way is open.
+   * over up to distance `upTo`, or that holds such ground with no journey of its own; -1 when the
+   * way is open.
    */
-  restingOn(mover: Mover, path: Path): number {
-    for (let i = 0; i < path.tiles.length; i += 1) {
+  restingOn(mover: Mover, path: Path, upTo = Infinity): number {
+    for (let i = 0; i < path.tiles.length && path.from[i] <= upTo; i += 1) {
       const rest = this.restOf[path.tiles[i]];
       if (rest !== -1 && rest !== mover.id) return rest;
       const holder = this.holder[path.tiles[i]];
