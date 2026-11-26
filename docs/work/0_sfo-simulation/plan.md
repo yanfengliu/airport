@@ -76,6 +76,26 @@ Ownership: the main agent owns the plan, the contracts, integration and acceptan
 - [ ] **M5 Orchestration and interface.** Operations layer and panel, interventions, inspector and follow mode, full flight boards, night lighting, performance pass, README. Merged and pushed.
 - [ ] **M6 Acceptance.** Independent review by both lanes, repairs and their recheck, full visual sweep, every criterion above checked and recorded, final merge and push, worktree and branch removed.
 
+## Ground traffic: hard-problem search
+
+Opened 2026-11-25 under `../fleet/docs/skills/hard-problem.md`, after more than five repair attempts at one problem: aircraft on the ground lock up, or pass through each other.
+
+**Done-condition, written before the search.** `node tools/sim/soak.ts` exits 0 on the tuning seeds 7, 11, 3, 21 and 42, and on held-out seeds the coordinator keeps to itself until the final check. Per seed, over 26 simulated hours from 04:00 with the configured 600 visits a day: at least 99% of flights land and at least 99% take off; no aircraft waits more than 20 minutes for the way ahead; go-arounds are at most 3% of landings; no two parked aircraft overlap; no two fuselages come within four metres on the ground; no claim is released out of order; nothing is stuck at the end; at least 85 numbered gates are in use; the run takes under 60 seconds.
+
+**Disqualifiers, written before any candidate.** Passing the tuning seeds only. Changing `tools/sim/soak.ts` or its limits. Removing, teleporting or ghosting aircraft, or cancelling flights, to clear a jam. Cutting traffic below the configured day, or cutting runway capacity below what the schedule needs. Moving an aircraft backwards anywhere but a pushback. Using fewer than 85 gates. Anything that depends on wall-clock time or is not repeatable from the seed. Relocating the difficulty behind an interface without solving it.
+
+**Attempts before the search** (all on branch `sfo-sim`; measurements are the old 26-hour run without the collision checks, so they overstate success):
+
+| Commit | Mechanism | Result | Status |
+| --- | --- | --- | --- |
+| 6917acf | Precedence queues from a timetable, clearance limits moved a stretch at a time; one-way cost on ring taxiways A and B; never close in on an oncoming holder. | Clean to 08:35 on seed 7, then a jam. | Superseded. |
+| bc05115 | Adds a cost for routing against where others are routed, and no runway exit into an oncoming route. | Seeds 7 and 42 complete a day (longest wait 36 and 54 minutes); 11, 3 and 21 lock up. | Kept as a baseline. |
+| 4ef58da | Every journey has a fixed route and a ticket; nobody is cleared onto a stretch an earlier journey still has to come down the other way, nor left across a junction on its way; routes use only their own stand's line. | Seeds 3 and 21 complete (longest wait 12 minutes); 7, 11 and 42 lock up. | Current head. |
+
+**What the benchmark showed at 4ef58da** (first run with the collision checks): all five seeds fail. On the two that complete, 74 to 76 pairs of fuselages meet in a day (crossing a runway in front of a lined-up aircraft; merges at shallow angles; a pushback through a parked neighbour), one pair of parked aircraft overlaps, and go-arounds are 22 to 32 against a limit of 17, all from wide-body departures lined up on a landing runway. So the control is wrong in two ways at once: it does not always keep aircraft apart, and it does not always keep them moving.
+
+**Branches** are recorded below as they report.
+
 ## Outcome
 
 Pending while work is open.

@@ -78,6 +78,12 @@ export function parkedClearance(a: Parked, b: Parked): number {
   return least;
 }
 
+/** The smallest gap between the centrelines of two aircraft's fuselages, metres. */
+export function bodyClearance(a: Parked, b: Parked): number {
+  if (Math.hypot(a.x - b.x, a.y - b.y) > a.length + b.length + 20) return Infinity;
+  return segmentDistance(segments(a)[0], segments(b)[0]);
+}
+
 /** Can the two stand side by side? */
 export function fitTogether(a: Parked, b: Parked): boolean {
   return parkedClearance(a, b) >= STAND_CLEARANCE;
