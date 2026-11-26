@@ -10,6 +10,7 @@ import { CONFIG } from './config.ts';
 import { Rng } from './rng.ts';
 import { RoadSim } from './roads/roads.ts';
 import { DAY, buildSchedule, type Rotation } from './schedule.ts';
+import { Terminals } from './terminal/terminals.ts';
 import { buildTransit } from './transit/routes.ts';
 import type { Transit } from './transit/trains.ts';
 
@@ -21,6 +22,8 @@ export interface SimOptions {
   visitsPerDay?: number;
   /** Run the public roads too. Off unless asked for, so the airside can be studied alone. */
   roads?: boolean;
+  /** Run the people in the terminals: passengers, queues, bags, shops and staff. */
+  people?: boolean;
 }
 
 export class Sim {
@@ -34,6 +37,8 @@ export class Sim {
   readonly roads: RoadSim | null;
   /** AirTrain, BART and Caltrain, when the simulation was started with the roads. */
   readonly transit: Transit | null;
+  /** Passengers, staff and bags in the terminals, when the simulation was started with people. */
+  readonly terminals: Terminals | null;
   /** Set false to leave the roads standing while the rest runs, as when warming up. */
   roadsRunning = true;
   /** Seconds since midnight of the first day. */
@@ -58,6 +63,9 @@ export class Sim {
     const centre: [number, number] = [gates.reduce((sum, s) => sum + s.x, 0) / gates.length, gates.reduce((sum, s) => sum + s.y, 0) / gates.length];
     this.roads = options.roads ? new RoadSim(layout.roads, layout.land.bounds, centre, rng.fork('roads')) : null;
     this.transit = options.roads ? buildTransit(layout.rail) : null;
+    this.terminals = options.people ? new Terminals(layout, this.airside.book, rng.fork('terminals'), options.startTime) : null;
+    // With people simulated, they are counted off and on the aircraft one party at a time.
+    if (this.terminals) this.airside.passengersElsewhere = true;
   }
 
   get secondsOfDay(): number {
@@ -72,6 +80,7 @@ export class Sim {
     this.airside.step(dt);
     if (this.roads && this.roadsRunning) this.roads.step(dt, this.time, this.secondsOfDay);
     if (this.transit && this.roadsRunning) this.transit.step(dt, this.time);
+    if (this.terminals) this.terminals.step(this.time, dt);
   }
 
   /** Advance by a span of simulated time. */
@@ -81,6 +90,6 @@ export class Sim {
   }
 
   checksum(): number {
-    return (this.airside.checksum() ^ (this.roads ? this.roads.checksum() : 0) ^ Math.imul(this.steps, 2654435761)) >>> 0;
+    return (this.airside.checksum() ^ (this.roads ? this.roads.checksum() : 0) ^ (this.terminals ? this.terminals.checksum() : 0) ^ Math.imul(this.steps, 2654435761)) >>> 0;
   }
 }

@@ -46,6 +46,8 @@ export class Airside {
   private readonly svc: AirsideServices;
   private nextId = 1;
   private nextHousekeeping = 0;
+  /** Set when the terminals simulate passengers: they then count people off and on. */
+  passengersElsewhere = false;
   /** Totals for the tests and the operations panel. */
   totals = { arrived: 0, departed: 0, gateChanges: 0, longestWait: 0 };
 
@@ -241,11 +243,12 @@ export class Airside {
       const earliest = v.onBlockAt + type.turn[0] * 60;
       v.etd = Math.max(v.std, earliest, v.etd);
       if (v.etd - v.std > 600 && !v.delayNote) v.delayNote = 'Late inbound aircraft';
-      // Until passengers are simulated, people get off and on at a steady rate.
-      if (v.deplaned < v.rotation.paxIn && this.now > v.onBlockAt + 100) v.deplaned = Math.min(v.rotation.paxIn, v.deplaned + 5 * 0.45 * type.doors);
+      // When the terminals are simulated they count people off and on, and close the doors;
+      // otherwise people get off and on at a steady rate.
+      if (!this.passengersElsewhere && v.deplaned < v.rotation.paxIn && this.now > v.onBlockAt + 100) v.deplaned = Math.min(v.rotation.paxIn, v.deplaned + 5 * 0.45 * type.doors);
       const boardingAt = v.etd - CONFIG.turnaround.boardingStarts[type.body] * 60;
-      if (!v.boardingOpen && this.now >= boardingAt && v.deplaned >= v.rotation.paxIn) v.boardingOpen = true;
-      if (v.boardingOpen && v.boarded < v.rotation.paxOut) v.boarded = Math.min(v.rotation.paxOut, v.boarded + 5 * 0.3 * type.doors);
+      if (!v.boardingOpen && !v.doorsClosed && this.now >= boardingAt && v.deplaned >= v.rotation.paxIn) v.boardingOpen = true;
+      if (!this.passengersElsewhere && v.boardingOpen && v.boarded < v.rotation.paxOut) v.boarded = Math.min(v.rotation.paxOut, v.boarded + 5 * 0.3 * type.doors);
       if (!v.doorsClosed && v.boardingOpen && v.boarded >= v.rotation.paxOut && this.now >= v.etd - CONFIG.turnaround.doorsClose * 60) {
         v.doorsClosed = true;
         v.boardingOpen = false;
