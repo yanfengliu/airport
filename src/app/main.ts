@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { MapCamera } from '../render/camera.ts';
 import { AircraftLayer } from '../render/dynamic/aircraft-layer.ts';
+import { VehicleLayer } from '../render/dynamic/vehicle-layer.ts';
 import { Stage } from '../render/stage.ts';
 import { buildStaticWorld } from '../render/world.ts';
 import { formatClock } from '../shared/sun.ts';
@@ -58,9 +59,14 @@ async function start(): Promise<void> {
   // The simulation is started some minutes early and run up to the clock time, so the first
   // frame already has aircraft on approach, taxiing and at the gates.
   const WARM_UP = 30 * 60;
+  const ROAD_WARM_UP = 7 * 60;
   const startSim = (at: number): Sim => {
-    const fresh = new Sim(layout, { seed, startTime: at - WARM_UP });
-    fresh.run(WARM_UP);
+    const fresh = new Sim(layout, { seed, startTime: at - WARM_UP, roads: true });
+    // The roads fill in a few minutes; the airfield needs longer to get its aircraft into place.
+    fresh.roadsRunning = false;
+    fresh.run(WARM_UP - ROAD_WARM_UP);
+    fresh.roadsRunning = true;
+    fresh.run(ROAD_WARM_UP);
     return fresh;
   };
   progress(0.85, 'Starting the day…');
@@ -69,7 +75,8 @@ async function start(): Promise<void> {
   /** Simulated seconds owed to the simulation, less than one step. */
   let owed = 0;
   const aircraftLayer = new AircraftLayer();
-  stage.scene.add(aircraftLayer.group);
+  const vehicleLayer = new VehicleLayer();
+  stage.scene.add(aircraftLayer.group, vehicleLayer.group);
   let speed = Number(params.get('speed') ?? 1);
   if (!Number.isFinite(speed) || speed < 0) speed = 1;
   let resumeSpeed = speed || 1;
@@ -137,6 +144,7 @@ async function start(): Promise<void> {
     stage.update(secondsOfDay, focus, Math.max(160, camera.distance * 0.9));
     world.lights.begin();
     aircraftLayer.update(sim.airside.aircraft, owed / CONFIG.dt);
+    if (sim.roads) vehicleLayer.update(sim.roads.traffic.vehicles, owed / CONFIG.dt, camera.distance);
     world.update(realSeconds, stage.day, { height: canvas.height, fov: stage.camera.fov, fog: stage.fogDensity, lamp: stage.lampGain });
     stage.render();
     hud.update({ secondsOfDay, speed, fps, presetId });
@@ -193,6 +201,7 @@ async function start(): Promise<void> {
         return count;
       }, {}),
       movements: sim.airside.tower.stats,
+      vehicles: sim.roads ? sim.roads.traffic.vehicles.length : 0,
       world: world.stats,
       layout: {
         runways: layout.airfield.runways.map((r) => r.id),

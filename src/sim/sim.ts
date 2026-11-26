@@ -8,6 +8,7 @@ import { usableStands } from './airside/stands.ts';
 import { SOUTHEAST_PLAN, WEST_PLAN } from './airside/tower.ts';
 import { CONFIG } from './config.ts';
 import { Rng } from './rng.ts';
+import { RoadSim } from './roads/roads.ts';
 import { DAY, buildSchedule, type Rotation } from './schedule.ts';
 
 export interface SimOptions {
@@ -16,6 +17,8 @@ export interface SimOptions {
   startTime: number;
   /** Aircraft visits per day; defaults to the configured number. */
   visitsPerDay?: number;
+  /** Run the public roads too. Off unless asked for, so the airside can be studied alone. */
+  roads?: boolean;
 }
 
 export class Sim {
@@ -25,6 +28,10 @@ export class Sim {
   /** Stands that can be reached from the runways and left for them, with the widest wingspan each takes. */
   readonly usableStands: ReadonlyMap<string, number>;
   readonly airside: Airside;
+  /** Traffic on the public roads, when the simulation was started with it. */
+  readonly roads: RoadSim | null;
+  /** Set false to leave the roads standing while the rest runs, as when warming up. */
+  roadsRunning = true;
   /** Seconds since midnight of the first day. */
   time: number;
   steps = 0;
@@ -42,6 +49,7 @@ export class Sim {
     const stands = layout.airfield.stands.filter((s) => usable.span.has(s.id)).map((s) => ({ ...s, span: usable.span.get(s.id)! }));
     this.rotations = buildSchedule(rng.fork('schedule'), stands, { visits: options.visitsPerDay ?? CONFIG.visitsPerDay, conflicts: usable.conflicts });
     this.airside = new Airside(net, usable, this.rotations, rng.fork('airside'), options.startTime);
+    this.roads = options.roads ? new RoadSim(layout.roads, layout.land.bounds, rng.fork('roads')) : null;
   }
 
   get secondsOfDay(): number {
@@ -54,6 +62,7 @@ export class Sim {
     this.time += dt;
     this.steps += 1;
     this.airside.step(dt);
+    if (this.roads && this.roadsRunning) this.roads.step(dt, this.time, this.secondsOfDay);
   }
 
   /** Advance by a span of simulated time. */
@@ -63,6 +72,6 @@ export class Sim {
   }
 
   checksum(): number {
-    return (this.airside.checksum() ^ Math.imul(this.steps, 2654435761)) >>> 0;
+    return (this.airside.checksum() ^ (this.roads ? this.roads.checksum() : 0) ^ Math.imul(this.steps, 2654435761)) >>> 0;
   }
 }
