@@ -3,6 +3,7 @@
 
 import type { Roads } from '../../shared/layout.ts';
 import type { Rng } from '../rng.ts';
+import { AirportTraffic } from './airport.ts';
 import { ThroughTraffic } from './demand.ts';
 import { RoadNet } from './net.ts';
 import { RoadTraffic } from './traffic.ts';
@@ -14,18 +15,21 @@ export class RoadSim {
   readonly net: RoadNet;
   readonly traffic: RoadTraffic;
   readonly through: ThroughTraffic;
+  readonly airport: AirportTraffic;
 
-  /** `bounds` is the mapped area: west, south, east, north, in metres. */
-  constructor(roads: Roads, bounds: readonly [number, number, number, number], rng: Rng) {
+  /** `bounds` is the mapped area: west, south, east, north, in metres; `centre` the middle of the terminals. */
+  constructor(roads: Roads, bounds: readonly [number, number, number, number], centre: readonly [number, number], rng: Rng) {
     this.net = new RoadNet(roads);
     this.traffic = new RoadTraffic(this.net);
     const [west, south, east, north] = bounds;
     const atEdge = (x: number, y: number): boolean => x < west + EDGE_MARGIN || x > east - EDGE_MARGIN || y < south + EDGE_MARGIN || y > north - EDGE_MARGIN;
     this.through = new ThroughTraffic(this.net, rng.fork('through'), atEdge);
+    this.airport = new AirportTraffic(this.net, rng.fork('airport'), atEdge, centre);
   }
 
   step(dt: number, now: number, secondsOfDay: number): void {
     this.through.step(this.traffic, dt, secondsOfDay);
+    this.airport.step(this.traffic, dt, now, secondsOfDay);
     this.traffic.step(dt, now);
   }
 

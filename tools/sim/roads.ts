@@ -25,7 +25,9 @@ const [hh, mm] = option('start', '07:00').split(':').map(Number);
 
 const layout = Object.fromEntries(LAYOUT_FILES.map((name) => [name, JSON.parse(readFileSync(join(root, 'public', 'data', `${name}.json`), 'utf8'))])) as unknown as Layout;
 const started = performance.now();
-const roads = new RoadSim(layout.roads, layout.land.bounds, new Rng(seed).fork('roads'));
+const gates = layout.airfield.stands.filter((s) => s.contact);
+const centre: [number, number] = [gates.reduce((sum, s) => sum + s.x, 0) / gates.length, gates.reduce((sum, s) => sum + s.y, 0) / gates.length];
+const roads = new RoadSim(layout.roads, layout.land.bounds, centre, new Rng(seed).fork('roads'));
 roads.through.scale = Number(option('scale', '1'));
 console.log(`network: ${roads.net.links.length} links; ${roads.through.entryCount} ways in; built in ${(performance.now() - started).toFixed(0)} ms`);
 for (const name of ['US 101', 'I 380']) console.log(`  ${name}: ${Math.round(roads.through.peakOn(name))} vehicles an hour entering at the peak`);
@@ -57,4 +59,5 @@ while (time < end) {
   }
 }
 const elapsed = (performance.now() - wall) / 1000;
+console.log(`airport: ${JSON.stringify(roads.airport.stats)}; curbs ${roads.airport.departuresCurbs.length} departures, ${roads.airport.arrivalsCurbs.length} arrivals`);
 console.log(`ran ${hours} h in ${elapsed.toFixed(1)} s (${Math.round((hours * 3600) / elapsed)}x real time, ${((elapsed * 1000) / steps).toFixed(2)} ms a step); checksum ${roads.checksum()}`);

@@ -53,7 +53,10 @@ export class Sim {
     const stands = layout.airfield.stands.filter((s) => usable.span.has(s.id)).map((s) => ({ ...s, span: usable.span.get(s.id)! }));
     this.rotations = buildSchedule(rng.fork('schedule'), stands, { visits: options.visitsPerDay ?? CONFIG.visitsPerDay, conflicts: usable.conflicts });
     this.airside = new Airside(net, usable, this.rotations, rng.fork('airside'), options.startTime);
-    this.roads = options.roads ? new RoadSim(layout.roads, layout.land.bounds, rng.fork('roads')) : null;
+    // The middle of the terminals: the gates stand all round it.
+    const gates = layout.airfield.stands.filter((s) => s.contact);
+    const centre: [number, number] = [gates.reduce((sum, s) => sum + s.x, 0) / gates.length, gates.reduce((sum, s) => sum + s.y, 0) / gates.length];
+    this.roads = options.roads ? new RoadSim(layout.roads, layout.land.bounds, centre, rng.fork('roads')) : null;
     this.transit = options.roads ? buildTransit(layout.rail) : null;
   }
 
