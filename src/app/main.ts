@@ -2,9 +2,12 @@
 
 import * as THREE from 'three';
 import { MapCamera } from '../render/camera.ts';
+import { AircraftLayer } from '../render/dynamic/aircraft-layer.ts';
 import { Stage } from '../render/stage.ts';
 import { buildStaticWorld } from '../render/world.ts';
 import { formatClock } from '../shared/sun.ts';
+import { CONFIG } from '../sim/config.ts';
+import { Sim } from '../sim/sim.ts';
 import { SPEEDS, createHud } from '../ui/hud.ts';
 import { loadLayout } from './layout-loader.ts';
 import { PRESETS, presetById } from './presets.ts';
@@ -51,6 +54,22 @@ async function start(): Promise<void> {
   camera.bounds = Math.max(Math.abs(west), Math.abs(south), east, north) + 400;
 
   let secondsOfDay = parseClock(params.get('t'), 8.5 * 3600);
+  const seed = Number(params.get('seed') ?? 7) || 7;
+  // The simulation is started some minutes early and run up to the clock time, so the first
+  // frame already has aircraft on approach, taxiing and at the gates.
+  const WARM_UP = 30 * 60;
+  const startSim = (at: number): Sim => {
+    const fresh = new Sim(layout, { seed, startTime: at - WARM_UP });
+    fresh.run(WARM_UP);
+    return fresh;
+  };
+  progress(0.85, 'Starting the day…');
+  await nextFrame();
+  let sim = startSim(secondsOfDay);
+  /** Simulated seconds owed to the simulation, less than one step. */
+  let owed = 0;
+  const aircraftLayer = new AircraftLayer();
+  stage.scene.add(aircraftLayer.group);
   let speed = Number(params.get('speed') ?? 1);
   if (!Number.isFinite(speed) || speed < 0) speed = 1;
   let resumeSpeed = speed || 1;
@@ -75,7 +94,10 @@ async function start(): Promise<void> {
   const hud = createHud(document.querySelector<HTMLElement>('#hud')!, PRESETS, provenance.attribution, {
     setSpeed,
     jumpTo: (seconds) => {
+      // Another time of day is another run of the same day.
       secondsOfDay = seconds;
+      sim = startSim(seconds);
+      owed = 0;
     },
     goToPreset: (id) => goToPreset(id),
   });
@@ -114,9 +136,21 @@ async function start(): Promise<void> {
     focus.set(camera.x, camera.h, -camera.y);
     stage.update(secondsOfDay, focus, Math.max(160, camera.distance * 0.9));
     world.lights.begin();
+    aircraftLayer.update(sim.airside.aircraft, owed / CONFIG.dt);
     world.update(realSeconds, stage.day, { height: canvas.height, fov: stage.camera.fov, fog: stage.fogDensity, lamp: stage.lampGain });
     stage.render();
     hud.update({ secondsOfDay, speed, fps, presetId });
+  };
+
+  /** Run the simulation on by a span of simulated time, in whole steps, keeping the remainder. */
+  const advance = (seconds: number): void => {
+    owed += seconds;
+    // A slow frame is not made up for with a burst of steps that would make the next one slow too.
+    let steps = Math.min(240, Math.floor(owed / CONFIG.dt));
+    owed -= steps * CONFIG.dt;
+    if (owed > CONFIG.dt) owed = CONFIG.dt;
+    for (; steps > 0; steps -= 1) sim.step();
+    secondsOfDay = (sim.secondsOfDay + owed) % 86400;
   };
 
   let last = performance.now();
@@ -124,7 +158,7 @@ async function start(): Promise<void> {
     const dt = Math.min(0.1, (now - last) / 1000);
     last = now;
     if (dt > 0) fps += (1 / dt - fps) * 0.05;
-    secondsOfDay = (secondsOfDay + dt * speed) % 86400;
+    advance(dt * speed);
     camera.update(dt);
     drawFrame(now / 1000);
     requestAnimationFrame(frame);
@@ -144,6 +178,7 @@ async function start(): Promise<void> {
     view: () => camera.view(),
     settled: () => camera.isSettled(),
     time: () => secondsOfDay,
+    sim: () => sim,
     fps: () => fps,
     renderInfo: () => ({ calls: stage.renderer.info.render.calls, triangles: stage.renderer.info.render.triangles }),
   };
@@ -153,6 +188,11 @@ async function start(): Promise<void> {
       speed,
       view: camera.view(),
       preset: presetId,
+      aircraft: sim.airside.aircraft.reduce<Record<string, number>>((count, a) => {
+        count[a.phase] = (count[a.phase] ?? 0) + 1;
+        return count;
+      }, {}),
+      movements: sim.airside.tower.stats,
       world: world.stats,
       layout: {
         runways: layout.airfield.runways.map((r) => r.id),
@@ -163,7 +203,7 @@ async function start(): Promise<void> {
     });
   window.advanceTime = (ms: number) => {
     const seconds = ms / 1000;
-    secondsOfDay = (secondsOfDay + seconds * speed) % 86400;
+    advance(seconds * speed);
     camera.update(seconds);
     drawFrame(performance.now() / 1000);
   };
