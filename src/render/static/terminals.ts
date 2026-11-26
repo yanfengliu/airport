@@ -80,5 +80,5 @@ export function buildTerminalShells(terminals: Terminals, airfield: Airfield, fa
   }
   fixtures.add(solidMesh(bridge, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.2 }), 'jet-bridges'));
 
-  return { shell, fixtures, glows: [{ material: glassMaterial, strength: 0.85 }] };
+  return { shell, fixtures, glows: [{ material: glassMaterial, strength: 0.55 }] };
 }

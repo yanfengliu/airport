@@ -18,6 +18,8 @@ export interface FrameView {
   height: number;
   fov: number;
   fog: number;
+  /** Brightness of lamps and lit windows against the current exposure. */
+  lamp: number;
 }
 
 export interface StaticWorld {
@@ -81,11 +83,11 @@ export function buildStaticWorld(layout: Layout): StaticWorld {
     update(seconds: number, day: number, view: FrameView): void {
       ground.animate(seconds);
       const night = Math.pow(1 - day, 1.5);
-      for (const glow of glows) glow.material.emissiveIntensity = glow.strength * night;
       // Lights come on through dusk, a little before the sky is fully dark.
-      const lit = Math.min(1, Math.max(0, (0.62 - day) / 0.5));
-      lights.end(seconds, lit, view.height, view.fov, view.fog);
-      glow.set(lit * lit);
+      const lit = Math.min(1, Math.max(0, (0.8 - day) / 0.5));
+      for (const g of glows) g.material.emissiveIntensity = g.strength * Math.max(night, lit * 0.8) * view.lamp;
+      lights.end(seconds, lit * view.lamp, view.height, view.fov, view.fog);
+      glow.set(lit * lit * view.lamp);
     },
     stats: { meshes, triangles: Math.round(triangles) },
   };

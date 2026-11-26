@@ -5,6 +5,8 @@ import { Sky } from 'three/addons/objects/Sky.js';
 import { daylight, sunAt } from '../shared/sun.ts';
 
 const DEG = Math.PI / 180;
+/** The widest the "aperture" opens, at night. */
+const MAX_EXPOSURE = 3.2;
 
 export interface StageOptions {
   canvas: HTMLCanvasElement;
@@ -23,6 +25,8 @@ export class Stage {
   day = 1;
   /** Extra haze from the weather, 0 clear to 1 dense fog. */
   haze = 0;
+  /** What to multiply the brightness of lamps and lit windows by so the exposure does not change them. */
+  lampGain = 0.5;
 
   private readonly fog = new THREE.FogExp2(0xb8c7d6, 0.00004);
   private readonly stars: THREE.Points;
@@ -62,9 +66,10 @@ export class Stage {
     // gets a gain of its own; without it the midday sky is plain white.
     for (const sky of [this.sky, this.envSky]) {
       sky.material.uniforms.skyGain = { value: 1 };
+      sky.material.uniforms.skyAdd = { value: new THREE.Vector3() };
       sky.material.fragmentShader = sky.material.fragmentShader
-        .replace('void main() {', 'uniform float skyGain;\nvoid main() {')
-        .replace('gl_FragColor = vec4( texColor, 1.0 );', 'gl_FragColor = vec4( texColor * skyGain, 1.0 );');
+        .replace('void main() {', 'uniform float skyGain;\nuniform vec3 skyAdd;\nvoid main() {')
+        .replace('gl_FragColor = vec4( texColor, 1.0 );', 'gl_FragColor = vec4( texColor * skyGain + skyAdd, 1.0 );');
       sky.material.needsUpdate = true;
     }
     // Reflections take the clear sky; clouds in them would smear across the whole bay.
@@ -120,12 +125,13 @@ export class Stage {
     const sunColour = new THREE.Color().setHSL(0.07 + 0.05 * low, 0.85 - 0.6 * low, 0.5 + 0.22 * low);
     if (moonUp) {
       this.sun.color.setRGB(0.55, 0.65, 1);
-      this.sun.intensity = 0.42;
+      // The moon comes up gradually, so the light does not jump as the sun's glow goes.
+      this.sun.intensity = 0.2 * THREE.MathUtils.smoothstep(-elevationDeg, 4, 8);
     } else {
       this.sun.color.copy(sunColour);
       this.sun.intensity = 3.8 * THREE.MathUtils.smoothstep(elevationDeg, -3, 12) * (1 - 0.75 * this.haze);
     }
-    this.hemisphere.intensity = 0.085 + 0.36 * day + 0.2 * this.haze * day;
+    this.hemisphere.intensity = 0.055 + 0.39 * day + 0.2 * this.haze * day;
     // The sky's light is blue by day and takes some of the sunset's warmth when the sun is low.
     const warmth = (1 - low) * day * 0.6;
     this.hemisphere.color.setRGB(0.55 + 0.25 * day + 0.2 * warmth, 0.66 + 0.2 * day - 0.08 * warmth, 1 - 0.3 * warmth);
@@ -135,9 +141,8 @@ export class Stage {
     u.sunPosition.value.set(sun.dir[0], sun.dir[2], -sun.dir[1]);
     u.turbidity.value = 2.2 + 12 * this.haze;
     u.rayleigh.value = 2.5 + 1.0 * (1 - low) * day;
-    u.mieCoefficient.value = 0.003 + 0.02 * this.haze;
+    u.mieCoefficient.value = 0.0014 + 0.02 * this.haze;
     u.mieDirectionalG.value = 0.8;
-    u.skyGain.value = 0.4 + 0.5 * (1 - low);
     u.time.value = secondsOfDay;
     u.cloudCoverage.value = 0.3 + 0.65 * this.haze;
     u.cloudDensity.value = 0.35 + 0.5 * this.haze;
@@ -152,8 +157,18 @@ export class Stage {
     // Expose for the ground: brighter light, smaller aperture, so noon does not wash out and dusk
     // does not go black.
     const c = this.sun.color;
-    const ground = (this.sun.intensity * (0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b) * Math.max(0, this.sunDir.y)) / Math.PI + this.hemisphere.intensity * 0.9;
-    this.renderer.toneMappingExposure = THREE.MathUtils.clamp(0.5 / Math.pow(Math.max(0.05, ground), 0.85), 0.35, 1.6);
+    const ground = this.sun.intensity * (0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b) * Math.max(0, this.sunDir.y) + this.hemisphere.intensity * 0.9;
+    const exposure = THREE.MathUtils.clamp(1.05 / Math.pow(Math.max(0.02, ground), 0.85), 0.3, MAX_EXPOSURE);
+    this.renderer.toneMappingExposure = exposure;
+    // Lamps are tuned for the widest aperture; with a smaller one they would otherwise go dim.
+    this.lampGain = MAX_EXPOSURE / exposure / 2;
+    // The sky's own brightness falls with the sun far faster than the ground's, so its gain is
+    // set against the exposure rather than left to it.
+    u.skyGain.value = (0.18 + 1.25 * (1 - low)) / exposure;
+    // The model's sky goes black away from the sunset; the real one stays a deep blue through
+    // twilight and never quite reaches black over a city.
+    const twilight = 4 * day * (1 - day);
+    (u.skyAdd.value as THREE.Vector3).set(0.004 + 0.05 * twilight, 0.006 + 0.075 * twilight, 0.014 + 0.14 * twilight).multiplyScalar(1 - 0.6 * this.haze);
     (this.stars.material as THREE.PointsMaterial).opacity = Math.max(0, 1 - day * 2.5) * (1 - this.haze);
     this.stars.visible = day < 0.4;
 
@@ -188,7 +203,7 @@ export class Stage {
     this.envHaze = this.haze;
     const from = this.sky.material.uniforms;
     const to = this.envSky.material.uniforms;
-    for (const key of ['sunPosition', 'turbidity', 'rayleigh', 'mieCoefficient', 'mieDirectionalG', 'skyGain'] as const) {
+    for (const key of ['sunPosition', 'turbidity', 'rayleigh', 'mieCoefficient', 'mieDirectionalG', 'skyGain', 'skyAdd'] as const) {
       const value = from[key].value;
       if (value instanceof THREE.Vector3) (to[key].value as THREE.Vector3).copy(value);
       else to[key].value = value;

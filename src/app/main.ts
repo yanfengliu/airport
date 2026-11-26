@@ -114,7 +114,7 @@ async function start(): Promise<void> {
     focus.set(camera.x, camera.h, -camera.y);
     stage.update(secondsOfDay, focus, Math.max(160, camera.distance * 0.9));
     world.lights.begin();
-    world.update(realSeconds, stage.day, { height: canvas.height, fov: stage.camera.fov, fog: stage.fogDensity });
+    world.update(realSeconds, stage.day, { height: canvas.height, fov: stage.camera.fov, fog: stage.fogDensity, lamp: stage.lampGain });
     stage.render();
     hud.update({ secondsOfDay, speed, fps, presetId });
   };
