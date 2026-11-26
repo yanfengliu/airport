@@ -68,8 +68,10 @@ export interface Stand {
   heading: number;
   /** Graph node at the nose stop point. */
   node: number;
-  /** Largest wingspan that fits, metres. */
+  /** Largest wingspan that fits with every neighbouring stand occupied, metres. */
   span: number;
+  /** Stands painted for the same ground: none of them can be occupied while this one is. */
+  alt?: string[];
   /** Terminal door for passengers: x, y. */
   door?: [number, number];
   /** Jet bridge centreline from the terminal towards the aircraft. */

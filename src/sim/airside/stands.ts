@@ -5,6 +5,7 @@
 // aircraft in, or on a lead-in shorter than the aircraft their width would admit.
 
 import type { TaxiNet } from '../airfield/net.ts';
+import { NODE_CLEARANCE } from '../airfield/path.ts';
 import { CONFIG } from '../config.ts';
 import { pushbackOptions } from './pushback.ts';
 
@@ -96,7 +97,7 @@ export function standAccess(net: TaxiNet, arrivalEnds: readonly string[], depart
 export interface UsableStands {
   /** Stands that work, with the widest wingspan each takes: its own, or less where a longer aircraft could not get out, or would not fit its line. */
   span: Map<string, number>;
-  /** Stands that cannot be occupied together, because they share a lead-in line. */
+  /** Stands that cannot be occupied together: they share a lead-in line, or are alternates. */
   conflicts: Map<string, string[]>;
 }
 
@@ -108,8 +109,9 @@ export function usableStands(net: TaxiNet, arrivalEnds: readonly string[], depar
     if (!line || a.from.length < arrivalEnds.length) continue;
     let widest = 0;
     SIZES.forEach((size, index) => {
-      // Parked, the whole aircraft has to be on its own line and off the taxilane.
-      const fits = line.length >= size.length + CONFIG.taxi.bodyMargin;
+      // Parked, the whole aircraft has to be on its own line, its tail far enough from the
+      // taxilane behind it for others to pass.
+      const fits = line.length >= size.length + CONFIG.taxi.bodyMargin + NODE_CLEARANCE + 1;
       if (fits && a.to[index].length === departureEnds.length) widest = Math.max(widest, size.span);
     });
     if (widest > 0) span.set(id, Math.min(widest, net.stands.get(id)!.span));
@@ -117,8 +119,11 @@ export function usableStands(net: TaxiNet, arrivalEnds: readonly string[], depar
   const users = new Map<number, string[]>();
   for (const id of span.keys()) for (const block of lines.get(id)!.blocks) users.set(block, [...(users.get(block) ?? []), id]);
   const conflicts = new Map<string, string[]>();
-  for (const ids of users.values()) {
-    for (const id of ids) for (const other of ids) if (other !== id && !(conflicts.get(id) ?? []).includes(other)) conflicts.set(id, [...(conflicts.get(id) ?? []), other]);
-  }
+  const add = (id: string, other: string): void => {
+    if (other !== id && span.has(other) && !(conflicts.get(id) ?? []).includes(other)) conflicts.set(id, [...(conflicts.get(id) ?? []), other]);
+  };
+  for (const ids of users.values()) for (const id of ids) for (const other of ids) add(id, other);
+  // Alternates: lines painted for the same ground, where even two small aircraft would touch.
+  for (const id of span.keys()) for (const other of net.stands.get(id)!.alt ?? []) add(id, other);
   return { span, conflicts };
 }

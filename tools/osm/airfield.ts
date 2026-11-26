@@ -3,14 +3,13 @@
 import {
   angleDiff, closestOnSegment, compassDeg, dist, heading, polylineLength, ringCentroid, round1, simplify, type Vec2,
 } from '../../src/shared/geo.ts';
+import { fitTogether, lengthForSpan, type Parked } from '../../src/shared/footprint.ts';
 import type { Airfield, Apron, Flat, Runway, RunwayEnd, Stand, TaxiEdge, TaxiEdgeKind, TaxiNode } from '../../src/shared/layout.ts';
 import { buildGraph, components } from './lib/graph.ts';
 import { numberTag, type OsmData, type OsmNode, type OsmWay } from './lib/osm.ts';
 
 /** SFO's magnetic variation, degrees east: runway numbers are magnetic, the geometry is true. */
 const MAG_VAR = 13;
-/** Wingtip clearance between neighbouring stands, metres. */
-const STAND_CLEARANCE = 7.5;
 /** Nodes joined by less taxiway than this are one node. */
 const MIN_EDGE = 1;
 
@@ -279,9 +278,9 @@ export function buildAirfield(osm: OsmData, log: (line: string) => void): Airfie
   }
   assignSpans(stands);
   stands.sort((p, q) => p.id.localeCompare(q.id, 'en', { numeric: true }));
-  const bySize = { narrow: 0, mid: 0, wide: 0, super: 0 };
-  for (const s of stands) bySize[s.span >= 79 ? 'super' : s.span >= 60 ? 'wide' : s.span >= 45 ? 'mid' : 'narrow'] += 1;
-  log(`stands kept: ${stands.length} (${stands.filter((s) => s.contact).length} contact gates, ${remote} remote); by span ${JSON.stringify(bySize)}`);
+  const bySize: Record<string, number> = {};
+  for (const s of stands) bySize[`${s.contact ? 'gate' : 'remote'} ${s.span}`] = (bySize[`${s.contact ? 'gate' : 'remote'} ${s.span}`] ?? 0) + 1;
+  log(`stands kept: ${stands.length} (${stands.filter((s) => s.contact).length} contact gates, ${remote} remote); by widest wingspan ${JSON.stringify(bySize)}; ${stands.filter((s) => s.alt).length} have alternates`);
 
   // ---- areas ----------------------------------------------------------------------------
   const aprons: Apron[] = [];
@@ -373,26 +372,50 @@ function buildRunways(osm: OsmData): Runway[] {
 }
 
 /** The widest wingspan each stand takes, from how far its neighbours' centrelines are. */
+/** Wingspans a stand is sized in: regional jet, single aisle, 757, 787, 777 and A350, A380. */
+const SPAN_STEPS = [29, 36, 39, 61, 65, 80];
+
+/**
+ * Give every stand the largest wingspan it takes, such that all of them can be occupied at once.
+ * Stands grow a size at a time, the more open ones first, each as long as it still clears its
+ * neighbours at the sizes they have reached. Two stands too close for even two regional jets are
+ * alternates, painted for the same ground: they are sized apart and named in each other's `alt`.
+ */
 function assignSpans(stands: Stand[]): void {
-  for (const s of stands) {
-    let gap = Infinity;
+  const parked = (s: Stand, span: number): Parked => ({ x: s.x, y: s.y, heading: s.heading, span, length: lengthForSpan(span) });
+  // How open a stand is: the sideways gap to the nearest stand parked the same way.
+  const openness = stands.map((s) => {
+    let gap = 200;
     const ux = Math.cos(s.heading);
     const uy = Math.sin(s.heading);
     for (const o of stands) {
       if (o === s) continue;
       const dx = o.x - s.x;
       const dy = o.y - s.y;
-      const d = Math.hypot(dx, dy);
-      if (d > 140) continue;
-      if (Math.abs(angleDiff(o.heading, s.heading)) > 0.9) continue;
+      if (Math.hypot(dx, dy) > 140 || Math.abs(angleDiff(o.heading, s.heading)) > 0.9) continue;
       const along = dx * ux + dy * uy;
       const across = Math.abs(-dx * uy + dy * ux);
       if (Math.abs(along) > 70 || across < 12) continue;
       gap = Math.min(gap, across);
     }
-    const fit = gap === Infinity ? 65 : gap - STAND_CLEARANCE;
-    s.span = Math.max(28, Math.min(80, Math.round(fit)));
+    return gap;
+  });
+  const near: number[][] = stands.map((s, i) => stands.flatMap((o, j) => (j !== i && Math.hypot(o.x - s.x, o.y - s.y) < 240 ? [j] : [])));
+  const alternates: Set<number>[] = stands.map((s, i) => new Set(near[i].filter((j) => !fitTogether(parked(s, SPAN_STEPS[0]), parked(stands[j], SPAN_STEPS[0])))));
+  const step = new Array<number>(stands.length).fill(0);
+  // Gates before remote stands, and the more open before the more hemmed in.
+  const order = stands.map((_, i) => i).sort((p, q) => Number(stands[q].contact) - Number(stands[p].contact) || openness[q] - openness[p] || p - q);
+  for (let round = 1; round < SPAN_STEPS.length; round += 1) {
+    for (const i of order) {
+      if (step[i] !== round - 1) continue;
+      const grown = parked(stands[i], SPAN_STEPS[round]);
+      if (near[i].every((j) => alternates[i].has(j) || fitTogether(grown, parked(stands[j], SPAN_STEPS[step[j]])))) step[i] = round;
+    }
   }
+  stands.forEach((s, i) => {
+    s.span = SPAN_STEPS[step[i]];
+    if (alternates[i].size) s.alt = [...alternates[i]].map((j) => stands[j].id).sort();
+  });
 }
 
 function pointAlong(points: readonly Vec2[], s: number): Vec2 {
