@@ -248,6 +248,27 @@ export class Traffic {
     return mover.end;
   }
 
+  /** For the instruments: the first resource ahead the mover is queued for but not first at, and who is. */
+  waitingOn(mover: Mover): { res: number; by: number } | null {
+    const path = mover.path;
+    if (!path || mover.granted >= mover.claimed) return null;
+    const res = path.spans[mover.granted].res;
+    return { res, by: this.queues[res][0] };
+  }
+
+  /** For the instruments: the resources the mover's body is on now. */
+  under(mover: Mover): number[] {
+    const path = mover.path;
+    if (!path) return [];
+    const out: number[] = [];
+    for (let i = 0; i < mover.claimed; i += 1) {
+      const span = path.spans[i];
+      if (span.from > mover.s) break;
+      if (!mover.released[i] && span.to > mover.s) out.push(span.res);
+    }
+    return out;
+  }
+
   /** Give up the resources the tail has cleared. Call after moving. */
   release(mover: Mover): void {
     const path = mover.path;

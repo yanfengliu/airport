@@ -37,6 +37,8 @@ export interface AirsideServices {
   planFor(aircraft: number, ticket: number): void;
   /** Is someone it must respect routed along this arc the other way? Valid after `planFor`. */
   opposed(arc: number): boolean;
+  /** For the instruments: one aircraft routed along this arc the other way, or -1. Valid after `planFor`. */
+  opposer(arc: number): number;
   /** Is someone else routed along this arc's block, either way? Valid after `planFor`. */
   busy(arc: number): boolean;
   /** Does the way of someone it must respect go through this node? Valid after `planFor`. */
@@ -123,6 +125,17 @@ export class Aircraft {
   reversing = false;
   /** When the aircraft last found itself unable to move though it wanted to; -1 while moving. */
   waitingSince = -1;
+  /**
+   * For the instruments: why it is standing when it wants to move, the aircraft in its way (-1 if
+   * none is known) and the piece of ground in question (-1 if none).
+   */
+  holdKind = '';
+  holdBy = -1;
+  holdRes = -1;
+  /** What last stopped the clearance limit from moving on, kept until the limit moves. */
+  private limitKind = '';
+  private limitBy = -1;
+  private limitRes = -1;
 
   readonly mover: Mover;
   /** Ground reserved along the path: the aircraft plus a margin. */
@@ -199,7 +212,10 @@ export class Aircraft {
     let limit = Infinity;
     for (let i = 0; i < path.arcs.length && limit === Infinity; i += 1) {
       if (path.arcStart[i] < this.mover.end - 1) continue;
-      if (svc.opposed(path.arcs[i])) limit = path.arcStart[i] - HOLD_SHORT;
+      if (svc.opposed(path.arcs[i])) {
+        limit = path.arcStart[i] - HOLD_SHORT;
+        this.noteLimit('right of way', svc.opposer(path.arcs[i]), path.arcs[i] >> 1);
+      }
     }
     if (limit === Infinity) return limit;
     // Stopped there, nose to tail, it must not lie across any junction the other's way goes
@@ -216,6 +232,12 @@ export class Aircraft {
       if (!moved) break;
     }
     return limit;
+  }
+
+  private noteLimit(kind: string, by: number, res: number): void {
+    this.limitKind = kind;
+    this.limitBy = by;
+    this.limitRes = res;
   }
 
   /** Position on a runway for the tower, or null when not on one. */
@@ -568,8 +590,26 @@ export class Aircraft {
     }
     if (mover.v < 0.2 && mover.s < path.total - 0.5) {
       if (this.waitingSince < 0) this.waitingSince = svc.now;
+      const queued = limit < mover.end - 0.01 ? svc.traffic.waitingOn(mover) : null;
+      if (svc.now < mover.startAt) {
+        this.holdKind = 'planned start';
+        this.holdBy = -1;
+        this.holdRes = -1;
+      } else if (queued) {
+        this.holdKind = 'queue';
+        this.holdBy = queued.by;
+        this.holdRes = queued.res;
+      } else {
+        this.holdKind = this.limitKind || 'limit';
+        this.holdBy = this.limitBy;
+        this.holdRes = this.limitRes;
+      }
     } else {
       this.waitingSince = -1;
+      this.holdKind = '';
+      this.holdBy = -1;
+      this.holdRes = -1;
+      if (mover.v > 0.5) this.limitKind = '';
     }
     const stop = this.stops[0];
     if (stop && mover.v === 0 && mover.s >= stop.s - 0.6) this.atStop(svc, stop);
@@ -590,6 +630,7 @@ export class Aircraft {
       return;
     }
     const { result } = svc.traffic.clearAsFarAs(mover, target, svc.now, 45, false);
+    if (!result.ok) this.noteLimit('no room in the plan', result.blocker, -1);
     this.nextAsk = svc.now + (result.ok ? 1 : CONFIG.taxi.retry);
   }
 
@@ -635,11 +676,17 @@ export class Aircraft {
     if (stop.kind === 'cross') {
       const granted: Crossing[] = [];
       for (const c of stop.crossings!) {
-        if (!svc.tower.mayCross(this.id, c.runway, c.refEnd, c.along, svc.now)) break;
+        if (!svc.tower.mayCross(this.id, c.runway, c.refEnd, c.along, svc.now)) {
+          this.noteLimit(`cross: ${svc.tower.denial}`, svc.tower.deniedBy, -1);
+          break;
+        }
         granted.push(c);
       }
       const next = this.stops[1];
-      if (granted.length === stop.crossings!.length) svc.traffic.clearAsFarAs(mover, Math.min(next ? next.s : mover.path!.total, this.rightOfWay(svc)), svc.now, 0, false);
+      if (granted.length === stop.crossings!.length) {
+        const { result } = svc.traffic.clearAsFarAs(mover, Math.min(next ? next.s : mover.path!.total, this.rightOfWay(svc)), svc.now, 0, false);
+        if (mover.end < stop.clearAt! - 0.5 && this.limitKind !== 'right of way') this.noteLimit('no room beyond the runway', result.blocker, -1);
+      }
       if (granted.length < stop.crossings!.length || mover.end < stop.clearAt! - 0.5) {
         // Not every runway is free, or there is no room on the far side: give them back and wait.
         for (const c of granted) svc.tower.crossed(this.id, c.runway);
@@ -653,12 +700,14 @@ export class Aircraft {
     if (stop.kind === 'lineUp') {
       const rollSeconds = Math.sqrt((2 * 1500) / CONFIG.runway.takeoffAccel[this.type.body]) + 8;
       if (!svc.tower.mayLineUp(this.id, this.runwayEnd, svc.now, 42, rollSeconds)) {
+        this.noteLimit(`line up: ${svc.tower.denial}`, svc.tower.deniedBy, -1);
         // The gap asked for on the way out has gone by: ask for another.
         if (svc.tower.plan.arrivals.includes(this.runwayEnd) && svc.now > this.gapUntil) this.gapUntil = svc.tower.openGap(this.runwayEnd, svc.now + 120) + 150;
         return;
       }
       const result = svc.traffic.clear(mover, mover.path!.total, svc.now, 0, false);
       if (!result.ok) {
+        this.noteLimit('no room on the runway', result.blocker, -1);
         svc.tower.cancelLineUp(this.id, this.runwayEnd);
         return;
       }

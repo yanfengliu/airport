@@ -56,6 +56,7 @@ export class Airside {
     const flow = flowCosts(net);
     // Arcs other aircraft are routed along, refreshed whenever one plans a route.
     const routed = new Uint8Array(net.blocks.length * 2);
+    const routedBy = new Int32Array(net.blocks.length * 2).fill(-1);
     const routedNode = new Uint8Array(net.nodes.length);
     const held: number[] = [];
     const ahead: number[] = [];
@@ -72,14 +73,18 @@ export class Airside {
       arcCost: (arc) => flow[arc] + (routed[arc ^ 1] ? AGAINST_TRAFFIC : 0),
       planFor: (aircraft, ticket) => {
         routed.fill(0);
+        routedBy.fill(-1);
         routedNode.fill(0);
+        let marking = -1;
         const mark = (arc: number): void => {
           routed[arc] = 1;
+          routedBy[arc] = marking;
           routedNode[net.arcFrom(arc)] = 1;
           routedNode[net.arcTo(arc)] = 1;
         };
         for (const a of this.aircraft) {
           if (a.id === aircraft) continue;
+          marking = a.id;
           held.length = 0;
           ahead.length = 0;
           a.routeAhead(held, ahead);
@@ -90,6 +95,7 @@ export class Airside {
       },
       crossed: (node) => routedNode[node] === 1,
       opposed: (arc) => routed[arc ^ 1] === 1,
+      opposer: (arc) => routedBy[arc ^ 1],
       busy: (arc) => routed[arc] === 1 || routed[arc ^ 1] === 1,
       standFree: (stand, forVisit) => this.standFree(stand, forVisit),
       otherStand: (visit) => this.otherStand(visit),
