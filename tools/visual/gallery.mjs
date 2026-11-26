@@ -73,9 +73,23 @@ function render(manifest) {
 <body>
   <header>
     <h1>SFO simulation — progress gallery</h1>
-    <p>${manifest.entries.length} captures, newest group first. Click an image for full resolution. This folder is not committed.</p>
+    <p>${manifest.entries.length} captures, newest group first. Click an image for full resolution. This folder is not committed. Last capture added ${escapeHtml(manifest.entries.length ? manifest.entries[manifest.entries.length - 1].when ?? '' : '')}; the page reloads itself when another arrives.</p>
   </header>
 ${sections}
+<script>
+  // Opened from the little server, look for new captures now and then and reload when there are.
+  if (location.protocol.startsWith('http')) {
+    const shown = ${manifest.entries.length};
+    setInterval(async () => {
+      try {
+        const latest = await (await fetch('manifest.json', { cache: 'no-store' })).json();
+        if (latest.entries.length !== shown) location.reload();
+      } catch {
+        // The server is not up, or the manifest is mid-write: try again next time.
+      }
+    }, 15000);
+  }
+</script>
 </body>
 </html>
 `;
