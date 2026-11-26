@@ -1,0 +1,35 @@
+{
+  "source": "OpenStreetMap, via the Overpass API",
+  "license": "Open Database License (ODbL) 1.0, https://opendatacommons.org/licenses/odbl/",
+  "attribution": "© OpenStreetMap contributors, https://www.openstreetmap.org/copyright",
+  "osmBase": "2026-11-26T00:24:18Z",
+  "bbox": [
+    37.597,
+    -122.414,
+    37.648,
+    -122.348
+  ],
+  "origin": {
+    "lat": 37.619,
+    "lon": -122.375
+  },
+  "themes": {
+    "aero": {
+      "query": "[out:json][timeout:170][bbox:37.597,-122.414,37.648,-122.348];\n(nwr[\"aeroway\"];);\nout body;\n>>;\nout skel qt;",
+      "elements": 10201,
+      "bytes": 1134703,
+      "sha256": "5f16baf87bb5cedd1a65dce9c58918c8ee1b6d27ee5d67e21557f9a46e09ce65",
+      "fetchedAt": "2026-11-26T00:16:52.303Z",
+      "endpoint": "https://overpass-api.de/api/interpreter"
+    },
+    "roads": {
+      "query": "[out:json][timeout:170][bbox:37.597,-122.414,37.648,-122.348];\n(way[\"highway\"];);\nout body;\n>>;\nout skel qt;",
+      "elements": 29914,
+      "bytes": 3748519,
+      "sha256": "3b190b7e23ea13d9878318501ddac6cc8f485eb1afae62723fe07fb51bff19ab",
+      "fetchedAt": "2026-11-26T00:25:50.112Z",
+      "endpoint": "https://overpass-api.de/api/interpreter"
+    }
+  },
+  "generatedBy": "tools/osm/fetch.mjs then tools/osm/build-layout.ts"
+}
