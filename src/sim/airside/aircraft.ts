@@ -12,8 +12,10 @@ import type { Tower } from './tower.ts';
 
 export type Phase = 'approach' | 'landing' | 'taxiIn' | 'parked' | 'pushback' | 'starting' | 'taxiOut' | 'lineUp' | 'takeoff' | 'climb' | 'goAround' | 'gone';
 
-/** Distance from a runway centreline at which a tail is clear of the pavement. */
-const RUNWAY_VACATED = 26;
+/** Metres between the places along a path at which it is checked for being on a runway. */
+const STRIP_STEP = 2;
+/** Metres beyond each end of a runway that still count as on it. */
+const STRIP_END = 40;
 const TAN_GLIDE = Math.tan(CONFIG.approach.glideSlope);
 /** The nose sits this far behind the lead point of its path. */
 const FRONT = CONFIG.taxi.bodyMargin / 3;
@@ -94,6 +96,93 @@ export function approachSeconds(distance: number, vApp: number): number {
   return t;
 }
 
+/** One runway as a strip of ground: its centreline from one end, and the end distances are measured from. */
+interface Strip {
+  runway: string;
+  refEnd: string;
+  x: number;
+  y: number;
+  ux: number;
+  uy: number;
+  length: number;
+}
+
+const strips = new WeakMap<TaxiNet, Strip[]>();
+
+function stripsOf(net: TaxiNet): Strip[] {
+  let list = strips.get(net);
+  if (!list) {
+    list = [];
+    const seen = new Set<string>();
+    for (const info of net.runwayEnds.values()) {
+      if (seen.has(info.runway.id)) continue;
+      seen.add(info.runway.id);
+      list.push({ runway: info.runway.id, refEnd: info.end.name, x: info.end.x, y: info.end.y, ux: info.ux, uy: info.uy, length: info.runway.length });
+    }
+    strips.set(net, list);
+  }
+  return list;
+}
+
+/** A stretch of a path over which the fuselage is on a runway's strip. */
+interface Stretch {
+  runway: string;
+  refEnd: string;
+  /** Distance along the runway from `refEnd` where the fuselage comes nearest its centreline. */
+  along: number;
+  nearest: number;
+  /** Lead-point distances: the nose comes onto the strip after `enter`, the tail is off it by `leave`. -Infinity and Infinity when already on at the start, or still on at the end. */
+  enter: number;
+  leave: number;
+}
+
+/**
+ * Where along a path, from `from` on, the fuselage is on a runway: within the strip either side of
+ * its centreline and between its ends. This is the ground the tower gives out, whatever lines the
+ * map draws on it: a taxiway mapped along the pavement is the runway as much as the runway is.
+ */
+function runwayStretches(net: TaxiNet, path: Path, from: number): Stretch[] {
+  const body = newFuselage();
+  const open = new Map<string, Stretch>();
+  const done: Stretch[] = [];
+  const half = CONFIG.runway.strip;
+  const list = stripsOf(net);
+  for (let s = from; ; s = Math.min(path.total, s + STRIP_STEP)) {
+    fuselageAt(path, s, body);
+    for (const r of list) {
+      const an = (body.nx - r.x) * r.ux + (body.ny - r.y) * r.uy;
+      const cn = -(body.nx - r.x) * r.uy + (body.ny - r.y) * r.ux;
+      const at = (body.tx - r.x) * r.ux + (body.ty - r.y) * r.uy;
+      const ct = -(body.tx - r.x) * r.uy + (body.ty - r.y) * r.ux;
+      const on = Math.min(cn, ct) < half && Math.max(cn, ct) > -half && Math.max(an, at) > -STRIP_END && Math.min(an, at) < r.length + STRIP_END;
+      const current = open.get(r.runway);
+      if (on) {
+        const along = (body.x - r.x) * r.ux + (body.y - r.y) * r.uy;
+        const nearest = Math.abs(-(body.x - r.x) * r.uy + (body.y - r.y) * r.ux);
+        if (!current) open.set(r.runway, { runway: r.runway, refEnd: r.refEnd, along, nearest, enter: s <= from ? -Infinity : s - STRIP_STEP, leave: s });
+        else {
+          current.leave = s;
+          if (nearest < current.nearest) {
+            current.nearest = nearest;
+            current.along = along;
+          }
+        }
+      } else if (current) {
+        // The last place still on was `leave`; the tail is off by the next.
+        current.leave += STRIP_STEP;
+        done.push(current);
+        open.delete(r.runway);
+      }
+    }
+    if (s >= path.total) break;
+  }
+  for (const current of open.values()) {
+    current.leave = Infinity;
+    done.push(current);
+  }
+  return done.sort((p, q) => p.enter - q.enter || p.leave - q.leave);
+}
+
 /** The path an aircraft of a length stands on when parked at a stand: its line, with the lead point at the stop. */
 export function standPath(net: TaxiNet, stand: string, length: number): Path | null {
   const arcs = net.standLine(stand)?.arcsIn ?? [];
@@ -169,7 +258,7 @@ export class Aircraft {
   private clearOfRunway = false;
   /** While parked: the ways of pushing back from the stand, and the ways out already worked out. */
   private pushPlans: PushPlan[] | null = null;
-  private readonly taxiPaths = new Map<string, Path>();
+  private readonly taxiPaths = new Map<string, { path: Path; stops: Stop[]; ok: boolean }>();
   /** Since when it has been ready to push back and asking; -1 when not. */
   private readySince = -1;
   /** The path it stands on when parked, built when a failed push has to put it back there. */
@@ -200,7 +289,7 @@ export class Aircraft {
       for (const arc of this.departureArcs) out.push(arc);
       return;
     }
-    if (!path || (this.phase !== 'taxiIn' && this.phase !== 'taxiOut' && this.phase !== 'landing')) return;
+    if (!path || (this.phase !== 'taxiIn' && this.phase !== 'taxiOut' && this.phase !== 'landing' && this.phase !== 'approach')) return;
     const behind = this.mover.s - this.body;
     for (let i = 0; i < path.arcs.length; i += 1) {
       const ends = i + 1 < path.arcs.length ? path.arcStart[i + 1] : path.total;
@@ -342,11 +431,19 @@ export class Aircraft {
     }
     if (!this.decided && this.alt <= CONFIG.approach.decisionHeight) {
       this.decided = true;
-      if (!svc.tower.mayLand(this.id, this.runwayEnd)) {
+      let reason = svc.tower.mayLand(this.id, this.runwayEnd) ? '' : `runway ${this.runwayEnd} not clear`;
+      // The way off the runway and on to a stand is fixed before the wheels touch: a landing that
+      // could find none would be left standing on the runway with nowhere to go.
+      if (!reason && !this.chooseExit(svc, CONFIG.approach.touchdownBeyondThreshold, vApp - 3, Math.max(0, this.thresholdTime - svc.now))) {
+        reason = `no way off the runway (${this.refusal})`;
+        const key = `no way off: ${this.refusal.replace(/#\d+/, '#')}`;
+        svc.tower.goAroundReasons[key] = (svc.tower.goAroundReasons[key] ?? 0) + 1;
+      }
+      if (reason) {
         this.phase = 'goAround';
         this.visit.goArounds += 1;
         svc.tower.wentAround(this.id, this.runwayEnd);
-        svc.event('go-around', `${this.visit.rotation.arrFlight} going around, runway ${this.runwayEnd} not clear`, this.id);
+        svc.event('go-around', `${this.visit.rotation.arrFlight} going around, ${reason}`, this.id);
         return;
       }
     }
@@ -357,11 +454,9 @@ export class Aircraft {
       this.speed = Math.min(this.speed, vApp - 3);
       this.visit.state = 'landed';
       this.visit.landedAt = svc.now;
-      this.exit = null;
       this.nextAsk = 0;
       svc.tower.touchedDown(this.id, this.runwayEnd);
       svc.event('landed', `${this.visit.rotation.arrFlight} landed ${this.runwayEnd}`, this.id);
-      this.chooseExit(svc);
     }
   }
 
@@ -384,19 +479,23 @@ export class Aircraft {
     }
   }
 
-  /** Pick where to leave the runway, fix the route to the stand, and take the ground to get off the runway. */
-  private chooseExit(svc: AirsideServices): void {
+  /**
+   * Pick where to leave the runway, fix the route to the stand, and take the ground to get off the
+   * runway. Done before the wheels touch, so that no landing is ever left on a runway with nowhere
+   * to go. `fromThreshold` and `speed` are where and how fast the aircraft will be when it starts
+   * to roll towards a turn-off, `inSeconds` from now. False when no way off can be had.
+   */
+  private chooseExit(svc: AirsideServices, fromThreshold: number, speed: number, inSeconds: number): boolean {
     const info = this.info!;
     const net = svc.net;
     const traffic = svc.traffic;
     const standNode = this.resolveStand(svc);
-    if (standNode === null) return;
+    if (standNode === null) return false;
     svc.planFor(this.id);
-    const fromThreshold = this.along - info.end.displaced;
     const options: { exit: RunwayExit; arcs: number[]; cost: number }[] = [];
     for (const exit of net.exits(this.runwayEnd)) {
       const run = exit.along - fromThreshold;
-      const needed = Math.max(0, this.speed * this.speed - exit.speed * exit.speed) / (2 * 2.2) + 80;
+      const needed = Math.max(0, speed * speed - exit.speed * exit.speed) / (2 * 2.2) + 80;
       if (run < needed) continue;
       // A way that meets nobody if there is one; else the usual way, waiting where it must.
       const settings = { stand: this.visit.stand, arcCost: svc.arcCost };
@@ -426,25 +525,29 @@ export class Aircraft {
         this.refusal = 'turn-off is held';
         continue;
       }
-      const vacateAt = lead + RUNWAY_VACATED + FRONT + this.type.length;
-      const stops = this.findStops(net, path, vacateAt, 'stand');
+      const found = this.findStops(net, path, path.origin, 'stand', info.runway.id);
+      if (!found.ok || found.vacateAt <= 0) {
+        this.refusal = 'no room to stop short of a runway after the turn-off';
+        continue;
+      }
       // The way has to be free at least far enough to get the tail off the runway, and it cannot wait.
-      if (!traffic.begin(this.mover, path, null, true, svc.now) || !traffic.reserve(this.mover, vacateAt + 2, svc.now, true)) {
+      if (!traffic.begin(this.mover, path, null, true, svc.now) || !traffic.reserve(this.mover, found.vacateAt + 2, svc.now, true)) {
         this.refusal = `turn-off not clear of #${this.mover.blockedBy}`;
         traffic.remove(this.mover);
         continue;
       }
       this.refusal = '';
-      this.mover.startAt = svc.now + (option.exit.along - fromThreshold) / Math.max(20, (this.speed + option.exit.speed) / 2);
+      this.mover.startAt = svc.now + inSeconds + (option.exit.along - fromThreshold) / Math.max(20, (speed + option.exit.speed) / 2);
       this.exit = option.exit;
       this.exitAlong = option.exit.along + info.end.displaced;
-      this.vacateAt = vacateAt;
-      this.stops = stops;
-      return;
+      this.vacateAt = found.vacateAt;
+      this.stops = found.stops;
+      return true;
     }
     // Every way in runs over ground a parked aircraft rests on: this stand cannot be reached now.
     if (tried.length && parkedInTheWay === tried.length) this.avoid.add(this.visit.stand);
     this.exit = null;
+    return false;
   }
 
   /** The node of the stand to taxi to, changing stand if the planned one is taken or cannot be reached. */
@@ -467,8 +570,9 @@ export class Aircraft {
   private rollOut(svc: AirsideServices, dt: number): void {
     const info = this.info!;
     if (!this.exit && svc.now >= this.nextAsk) {
+      // Only for an aircraft that touched down without a way off, which the decision height rules out.
       this.nextAsk = svc.now + 1.5;
-      this.chooseExit(svc);
+      this.chooseExit(svc, this.along - info.end.displaced, this.speed, 0);
     }
     const exitSpeed = this.exit ? this.exit.speed : 0;
     const remaining = this.exit ? this.exitAlong - this.along : info.runway.length - 60 - this.along;
@@ -498,47 +602,46 @@ export class Aircraft {
   // ---- taxiing --------------------------------------------------------------------------
 
   /**
-   * Where the path makes the aircraft stop for someone's permission: short of each runway it
-   * crosses, and at its end. `from` is the first distance at which a stop may be put.
+   * Where the path makes the aircraft stop for the tower: with its nose short of each runway strip
+   * it comes onto, and at its end. `from` is where the aircraft is put on the path. A stretch it is
+   * on from the start can only be the roll-out of a landing on `own`; it ends at `vacateAt`, with
+   * the tail off the strip. `ok` is false when the path cannot be followed under the tower's rules:
+   * it starts on another runway, ends on one it was not cleared to stay on, or has no room to stop
+   * short of a runway it must stop for.
    */
-  private findStops(net: TaxiNet, path: Path, from: number, purpose: 'stand' | 'depart'): Stop[] {
+  private findStops(net: TaxiNet, path: Path, from: number, purpose: 'stand' | 'depart', own: string | null): { stops: Stop[]; vacateAt: number; ok: boolean } {
     const stops: Stop[] = [];
+    let vacateAt = 0;
+    let ok = true;
     let earliest = from;
-    const count = path.arcs.length;
-    for (let i = 0; i < count; i += 1) {
-      const arcEnd = path.arcStart[i] + net.arcBlock(path.arcs[i]).len;
-      if (arcEnd <= from + 1) continue;
-      const node = net.nodes[net.arcTo(path.arcs[i])];
-      if (!node.rwy.length) continue;
-      // The mapped hold bar before this runway, else a set distance short of the centreline.
-      let holdAt = arcEnd - CONFIG.runway.holdDistance;
-      for (let k = i; k >= 0 && path.arcStart[k] > arcEnd - 190; k -= 1) {
-        if (net.nodes[net.arcFrom(path.arcs[k])].hold && path.arcStart[k] < arcEnd - 40) {
-          holdAt = path.arcStart[k] - 2;
-          break;
-        }
+    for (const stretch of runwayStretches(net, path, from)) {
+      if (stretch.enter === -Infinity) {
+        if (stretch.runway !== own || stretch.leave === Infinity) ok = false;
+        vacateAt = Math.max(vacateAt, stretch.leave);
+        earliest = Math.max(earliest, stretch.leave);
+        continue;
       }
-      if (i === count - 1 && purpose === 'depart') {
+      const holdAt = stretch.enter - 1;
+      const crossing: Crossing = { runway: stretch.runway, refEnd: stretch.refEnd, along: stretch.along };
+      if (stretch.leave === Infinity) {
+        // Only a departure ends on a runway, the one it lines up on.
+        if (purpose !== 'depart' || holdAt < earliest + 2) ok = false;
         stops.push({ s: Math.max(holdAt, earliest + 2), kind: 'lineUp' });
         break;
       }
-      const clearAt = arcEnd + RUNWAY_VACATED + FRONT + this.type.length;
-      const crossings: Crossing[] = node.rwy.map((runway) => {
-        const ref = [...net.runwayEnds.values()].find((e) => e.runway.id === runway)!;
-        return { runway, refEnd: ref.end.name, along: (node.x - ref.end.x) * ref.ux + (node.y - ref.end.y) * ref.uy };
-      });
       const last = stops[stops.length - 1];
       if (last && last.kind === 'cross' && holdAt < last.clearAt! + 2) {
         // No room to stop between two runways: cross both in one go.
-        last.crossings!.push(...crossings);
-        last.clearAt = clearAt;
+        last.crossings!.push(crossing);
+        last.clearAt = Math.max(last.clearAt!, stretch.leave);
       } else {
-        stops.push({ s: Math.max(holdAt, earliest + 2), kind: 'cross', crossings, clearAt });
+        if (holdAt < earliest + 2) ok = false;
+        stops.push({ s: Math.max(holdAt, earliest + 2), kind: 'cross', crossings: [crossing], clearAt: stretch.leave });
       }
-      earliest = clearAt;
+      earliest = Math.max(earliest, stretch.leave);
     }
     stops.push({ s: path.total, kind: purpose === 'stand' ? 'stand' : 'runway' });
-    return stops;
+    return { stops, vacateAt, ok };
   }
 
   private taxi(svc: AirsideServices, dt: number): void {
@@ -753,14 +856,21 @@ export class Aircraft {
       const last = net.nodes[net.arcTo(option.route[option.route.length - 1])];
       const run = this.body + LINE_UP_RUN;
       const key = `${this.pushPlans.indexOf(option.plan)}:${end}:${option.route.join(',')}`;
-      let taxiPath = this.taxiPaths.get(key);
-      if (!taxiPath) {
+      let way = this.taxiPaths.get(key);
+      if (!way) {
         const covered = coveredPieces(net, pushPath, pushEnd, push.joinAt, 12);
         const onRunway: Piece = { pts: [last.x, last.y, last.x + info.ux * run, last.y + info.uy * run], speed: 8 };
-        taxiPath = buildPath(net, [...covered, ...(push.link ?? []), ...arcPieces(net, option.route), onRunway], this.shape(false), origin);
+        const built = buildPath(net, [...covered, ...(push.link ?? []), ...arcPieces(net, option.route), onRunway], this.shape(false), origin);
+        const found = this.findStops(net, built, origin, 'depart', null);
+        way = { path: built, stops: found.stops, ok: found.ok };
         if (this.taxiPaths.size > 12) this.taxiPaths.clear();
-        this.taxiPaths.set(key, taxiPath);
+        this.taxiPaths.set(key, way);
       }
+      if (!way.ok) {
+        this.refusal = 'way out has no room to stop short of a runway';
+        continue;
+      }
+      const taxiPath = way.path;
       const parkedOut = traffic.restingOn(this.mover, taxiPath);
       if (parkedOut !== -1) {
         this.refusal = `way out runs over ground #${parkedOut} rests on`;
@@ -790,7 +900,7 @@ export class Aircraft {
       this.pushPlans = null;
       this.parkedPath = null;
       this.taxiPaths.clear();
-      this.taxiStops = this.findStops(net, taxiPath, origin, 'depart');
+      this.taxiStops = [...way.stops];
       if (!this.taxiStops.some((s) => s.kind === 'lineUp')) this.taxiStops.splice(this.taxiStops.length - 1, 0, { s: Math.max(origin + 1, taxiPath.total - run - CONFIG.runway.holdDistance), kind: 'lineUp' });
       this.lineUpNodeAlong = (last.x - info.end.x) * info.ux + (last.y - info.end.y) * info.uy;
       this.visit.state = 'pushback';

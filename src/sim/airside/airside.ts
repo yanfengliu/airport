@@ -52,7 +52,7 @@ export class Airside {
   private nextId = 1;
   private nextHousekeeping = 0;
   /** Totals for the tests and the operations panel. */
-  totals = { arrived: 0, departed: 0, gateChanges: 0, longestWait: 0 };
+  totals = { arrived: 0, departed: 0, gateChanges: 0, longestWait: 0, heldForStand: 0 };
 
   constructor(net: TaxiNet, usable: UsableStands, rotations: readonly Rotation[], rng: Rng, startTime: number) {
     this.net = net;
@@ -245,6 +245,16 @@ export class Airside {
       const p = this.pending[i];
       const type = AIRCRAFT[p.visit.rotation.type];
       if (this.now < p.threshold - approachSeconds(CONFIG.approach.startDistance, type.vApp)) continue;
+      if (p.visit.state === 'scheduled' && !this.standFree(p.visit.stand, p.visit.id) && !this.otherStand(p.visit)) {
+        // Nowhere to park it: it holds off the approach, and takes a later landing slot.
+        const slot = this.tower.assignSlot(this.now + approachSeconds(CONFIG.approach.startDistance, type.vApp) + 60, type.wake, null);
+        p.end = slot.end;
+        p.threshold = slot.threshold;
+        p.visit.eta = Math.max(p.visit.eta, slot.threshold + TAXI_IN_NOMINAL);
+        if (!p.visit.delayNote) p.visit.delayNote = 'Holding for a stand';
+        this.totals.heldForStand += 1;
+        continue;
+      }
       this.pending.splice(i, 1);
       if (p.visit.state !== 'scheduled') continue;
       this.create(p.visit).startApproach(this.svc, p.end, p.threshold);
