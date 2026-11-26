@@ -104,24 +104,44 @@ export interface TerminalBuilding {
   minHeight: number;
 }
 
-export interface NamedArea {
+/** What a mapped indoor space is used for. */
+export type AreaKind =
+  | 'security'
+  | 'checkin'
+  | 'gate'
+  | 'claim'
+  | 'customs'
+  | 'shop'
+  | 'food'
+  | 'lounge'
+  | 'toilets'
+  | 'corridor'
+  | 'hall'
+  | 'room';
+
+export interface IndoorArea {
+  kind: AreaKind;
   name?: string;
-  level?: number;
+  /** Building level as mapped: 0 is the arrivals floor of the domestic terminals. */
+  level: number;
   poly: PolygonData;
 }
 
+export type PoiKind = 'door' | 'shop' | 'food' | 'toilets' | 'info' | 'atm' | 'lift' | 'stairs' | 'art' | 'seat' | 'water';
+
 export interface Poi {
-  kind: string;
+  kind: PoiKind;
   name?: string;
   x: number;
   y: number;
-  level?: number;
+  level: number;
+  /** For lifts and stairs: the other level they reach. */
+  to?: number;
 }
 
 export interface Terminals {
   buildings: TerminalBuilding[];
-  checkin: NamedArea[];
-  claims: NamedArea[];
+  areas: IndoorArea[];
   pois: Poi[];
 }
 
@@ -188,6 +208,8 @@ export interface RailStation {
   x: number;
   y: number;
   z: number;
+  /** Where trains stop on each track, x and y. */
+  stops: [number, number][];
 }
 
 export interface Rail {
@@ -198,7 +220,7 @@ export interface Rail {
 // ---------------------------------------------------------------------------------------------
 // Buildings and land
 
-export type BuildingKind = 'generic' | 'hangar' | 'garage' | 'cargo' | 'hotel' | 'tower' | 'house' | 'industrial' | 'office';
+export type BuildingKind = 'generic' | 'hangar' | 'garage' | 'cargo' | 'hotel' | 'tower' | 'house' | 'industrial' | 'office' | 'roof' | 'tank';
 
 export interface Building {
   kind: BuildingKind;
@@ -210,9 +232,11 @@ export interface Building {
 
 export interface Buildings {
   buildings: Building[];
+  /** Small buildings as oriented boxes, six numbers each: x, y, half-length, half-width, heading in radians, height. */
+  boxes: number[];
 }
 
-export type SurfaceKind = 'grass' | 'wetland' | 'water' | 'parking' | 'pavement' | 'sand' | 'scrub' | 'industrial' | 'residential' | 'park';
+export type SurfaceKind = 'airfield' | 'grass' | 'park' | 'wood' | 'wetland' | 'scrub' | 'water' | 'parking' | 'residential' | 'commercial' | 'industrial' | 'rock';
 
 export interface Surface {
   kind: SurfaceKind;
@@ -220,14 +244,22 @@ export interface Surface {
   poly: PolygonData;
 }
 
+export interface Waterway {
+  width: number;
+  pts: Flat;
+}
+
 export interface Land {
-  /** Half-extent of the square world the renderer draws, centred on the origin. */
+  /** The mapped area: west, south, east, north. */
   bounds: [number, number, number, number];
   /** Dry land, including the fill the runways sit on. Everything else is the bay. */
   land: PolygonData[];
+  /** Ground cover, largest first, so smaller patches draw over the areas that contain them. */
   surfaces: Surface[];
   /** The aerodrome boundary. */
   airport: PolygonData[];
+  waterways: Waterway[];
+  /** Approach-light piers running out into the bay. */
   piers: Flat[];
 }
 

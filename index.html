@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>SFO — airport simulation</title>
+    <link rel="stylesheet" href="/src/ui/style.css" />
+  </head>
+  <body>
+    <canvas id="view" tabindex="0" aria-label="3D view of San Francisco International Airport"></canvas>
+    <div id="hud"></div>
+    <div id="loading">
+      <div class="loading-card">
+        <div class="loading-title">SFO</div>
+        <div class="loading-sub">San Francisco International Airport</div>
+        <div class="loading-bar"><div id="loading-fill"></div></div>
+        <div id="loading-text">Loading the airport…</div>
+      </div>
+    </div>
+    <script type="module" src="/src/app/main.ts"></script>
+  </body>
+</html>

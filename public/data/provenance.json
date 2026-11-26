@@ -2,7 +2,7 @@
   "source": "OpenStreetMap, via the Overpass API",
   "license": "Open Database License (ODbL) 1.0, https://opendatacommons.org/licenses/odbl/",
   "attribution": "© OpenStreetMap contributors, https://www.openstreetmap.org/copyright",
-  "osmBase": "2026-11-26T00:24:18Z",
+  "osmBase": "2026-11-26T00:44:39Z",
   "bbox": [
     37.597,
     -122.414,
@@ -28,6 +28,38 @@
       "bytes": 3748519,
       "sha256": "3b190b7e23ea13d9878318501ddac6cc8f485eb1afae62723fe07fb51bff19ab",
       "fetchedAt": "2026-11-26T00:25:50.112Z",
+      "endpoint": "https://overpass-api.de/api/interpreter"
+    },
+    "rail": {
+      "query": "[out:json][timeout:170][bbox:37.597,-122.414,37.648,-122.348];\n(way[\"railway\"];node[\"railway\"~\"station|stop|halt|tram_stop\"];nwr[\"public_transport\"];);\nout body;\n>>;\nout skel qt;",
+      "elements": 2823,
+      "bytes": 434367,
+      "sha256": "637a5951d2967ac93e0940d8920e03cb015db657a2008b89ced9f90b38613230",
+      "fetchedAt": "2026-11-26T00:37:18.989Z",
+      "endpoint": "https://overpass-api.de/api/interpreter"
+    },
+    "buildings": {
+      "query": "[out:json][timeout:170][bbox:37.597,-122.414,37.648,-122.348];\n(nwr[\"building\"];nwr[\"building:part\"];);\nout body;\n>>;\nout skel qt;",
+      "elements": 65529,
+      "bytes": 6990765,
+      "sha256": "29aaab9f9ac20904c8a1fa43a641265503acd6441ea638de0d2ed28b41057c17",
+      "fetchedAt": "2026-11-26T00:44:18.550Z",
+      "endpoint": "https://overpass-api.de/api/interpreter"
+    },
+    "land": {
+      "query": "[out:json][timeout:170][bbox:37.597,-122.414,37.648,-122.348];\n(way[\"natural\"];relation[\"natural\"];way[\"waterway\"];nwr[\"landuse\"];nwr[\"amenity\"=\"parking\"];way[\"man_made\"];nwr[\"leisure\"];);\nout body;\n>>;\nout skel qt;",
+      "elements": 12682,
+      "bytes": 1375509,
+      "sha256": "7a87f509efe207faf6bad2c933a73558d6cd61b6e40f46fc8ac4698eea06a461",
+      "fetchedAt": "2026-11-26T00:44:56.610Z",
+      "endpoint": "https://overpass-api.de/api/interpreter"
+    },
+    "poi": {
+      "query": "[out:json][timeout:170][bbox:37.597,-122.414,37.648,-122.348];\n(node[\"shop\"];node[\"amenity\"];node[\"tourism\"];node[\"entrance\"];node[\"man_made\"];nwr[\"indoor\"];);\nout body;\n>>;\nout skel qt;",
+      "elements": 14748,
+      "bytes": 2266188,
+      "sha256": "a2fedb3b5878195303e1e762a1d73b7e36d8978e0ab2279933a332d471300f2a",
+      "fetchedAt": "2026-11-26T00:45:42.065Z",
       "endpoint": "https://overpass-api.de/api/interpreter"
     }
   },

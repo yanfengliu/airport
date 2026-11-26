@@ -5,8 +5,16 @@ import type { RoadClass, RoadEdge, RoadNode, Roads } from '../../src/shared/layo
 import { buildGraph, components } from './lib/graph.ts';
 import { numberTag, type OsmData, type OsmWay, type Tags } from './lib/osm.ts';
 
-/** Height of one OSM layer step, metres: the terminal's departures deck sits this far above arrivals. */
-export const LAYER_HEIGHT = 6.5;
+/**
+ * Height above ground of an OSM layer, metres. Layers only say what is above what, so the first
+ * step is the terminal's departures deck over arrivals and the upper steps are squeezed: the
+ * AirTrain guideway is tagged layer 5 and really runs about 20 m up.
+ */
+const LAYER_UP = [0, 6.5, 11.5, 15, 17.5, 20];
+export function layerHeight(layer: number): number {
+  if (layer >= 0) return LAYER_UP[Math.min(layer, LAYER_UP.length - 1)];
+  return -6.5 * Math.min(2, -layer);
+}
 /** Steepest ramp the height solver lets an approach road take. */
 const MAX_GRADE = 0.055;
 const MPH = 0.44704;
@@ -94,7 +102,7 @@ export function solveHeights(osm: OsmData, ways: readonly OsmWay[], isAtGrade: (
     const layer = isAtGrade(way) ? 0 : structureLayer(way.tags ?? {});
     for (let i = 0; i < way.nodes.length; i += 1) {
       const id = way.nodes[i];
-      if (layer !== 0) (fixed.get(id) ?? fixed.set(id, []).get(id)!).push(layer * LAYER_HEIGHT);
+      if (layer !== 0) (fixed.get(id) ?? fixed.set(id, []).get(id)!).push(layerHeight(layer));
       if (i > 0) link(way.nodes[i - 1], id);
     }
   }
@@ -103,6 +111,21 @@ export function solveHeights(osm: OsmData, ways: readonly OsmWay[], isAtGrade: (
   for (const [id, values] of fixed) {
     height.set(id, values.reduce((s, v) => s + v, 0) / values.length);
     pinned.add(id);
+  }
+  // Where two structures at different levels join, the deck has to slope between them: free the
+  // pinned nodes within reach of such a step so the smoothing below can make the transition.
+  const loose = new Set<number>();
+  for (const id of pinned) {
+    const z = height.get(id)!;
+    const steps = (adjacency.get(id) ?? []).some((n) => pinned.has(n.to) && Math.abs(height.get(n.to)! - z) > 1);
+    if (!steps) continue;
+    const frontier: { id: number; left: number }[] = [{ id, left: 90 }];
+    while (frontier.length) {
+      const at = frontier.pop()!;
+      if (loose.has(at.id) && at.left < 90) continue;
+      loose.add(at.id);
+      for (const n of adjacency.get(at.id) ?? []) if (pinned.has(n.to) && at.left - n.len > 0 && !loose.has(n.to)) frontier.push({ id: n.to, left: at.left - n.len });
+    }
   }
   // Spread outwards from the structures, highest first, losing height with distance.
   for (const sign of [1, -1]) {
@@ -125,6 +148,28 @@ export function solveHeights(osm: OsmData, ways: readonly OsmWay[], isAtGrade: (
         queue[at] = { id: to, z };
       }
     }
+  }
+  // Round off the kinks: every node that is not held at a structure's level moves towards the
+  // length-weighted mean of its neighbours. Flat stretches stay flat; ramps become smooth.
+  for (let pass = 0; pass < 40; pass += 1) {
+    const next = new Map<number, number>();
+    for (const [id, links] of adjacency) {
+      if (pinned.has(id) && !loose.has(id)) continue;
+      const z = height.get(id) ?? 0;
+      let sum = 0;
+      let weight = 0;
+      let any = z !== 0;
+      for (const n of links) {
+        const nz = height.get(n.to) ?? 0;
+        if (nz !== 0) any = true;
+        const w = 1 / Math.max(2, n.len);
+        sum += nz * w;
+        weight += w;
+      }
+      if (!any || weight === 0 || links.length < 2) continue;
+      next.set(id, z + (sum / weight - z) * 0.5);
+    }
+    for (const [id, z] of next) height.set(id, z);
   }
   return { z: (nodeId) => height.get(nodeId) ?? 0 };
 }

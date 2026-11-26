@@ -32,6 +32,8 @@ const recurse = 'out body;\n>>;\nout skel qt;';
 export const THEMES = {
   aero: `(nwr["aeroway"];);\n${recurse}`,
   roads: `(way["highway"];);\n${recurse}`,
+  // The recursion above returns road nodes without their tags; signals and stops need them.
+  roadnodes: '(node["highway"];);\nout body;',
   rail: `(way["railway"];node["railway"~"station|stop|halt|tram_stop"];nwr["public_transport"];);\n${recurse}`,
   buildings: `(nwr["building"];nwr["building:part"];);\n${recurse}`,
   land: `(way["natural"];relation["natural"];way["waterway"];nwr["landuse"];nwr["amenity"="parking"];way["man_made"];nwr["leisure"];);\n${recurse}`,

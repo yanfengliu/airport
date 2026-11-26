@@ -47,6 +47,7 @@ const path3 = (pts: number[]): string => {
   return d;
 };
 const poly = (p: PolygonData): string => path2(p.outer, true) + (p.holes ?? []).map((h) => path2(h, true)).join('');
+const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 const parts: string[] = [];
 const add = (s: string): void => {
@@ -56,8 +57,10 @@ add(`<rect width="${size}" height="${size}" fill="${land ? '#27506b' : '#20242b'
 
 if (land) {
   for (const p of land.land) add(`<path d="${poly(p)}" fill="#3b4a3a" fill-rule="evenodd"/>`);
-  const fills: Record<string, string> = { grass: '#4c6b45', wetland: '#3f6660', water: '#27506b', parking: '#4a4d52', pavement: '#55585e', sand: '#8a8062', scrub: '#55694a', industrial: '#454a4f', residential: '#474a44', park: '#4f7748' };
+  const fills: Record<string, string> = { airfield: '#4a4d3c', grass: '#4c6b45', wetland: '#3f6660', water: '#27506b', parking: '#4a4d52', rock: '#8a8062', scrub: '#55694a', wood: '#3f6a3f', industrial: '#454a4f', commercial: '#4d4a52', residential: '#474a44', park: '#4f7748' };
   for (const s of land.surfaces) add(`<path d="${poly(s.poly)}" fill="${fills[s.kind] ?? '#555'}" fill-rule="evenodd"/>`);
+  for (const w of land.waterways) add(`<path d="${path2(w.pts)}" fill="none" stroke="#3b7a9c" stroke-width="${px(w.width)}"/>`);
+  for (const p of land.piers) add(`<path d="${path2(p)}" fill="none" stroke="#d9d2bd" stroke-width="${px(4)}"/>`);
   for (const p of land.airport) add(`<path d="${poly(p)}" fill="none" stroke="#c9a23f" stroke-width="1" stroke-dasharray="6 5"/>`);
 }
 if (airfield) {
@@ -67,6 +70,13 @@ if (airfield) {
 if (buildings) {
   const fills: Record<string, string> = { hangar: '#7c8794', garage: '#7a6f66', cargo: '#80786a', hotel: '#8a7f95', house: '#6b6258', industrial: '#6f6f72', office: '#77808c', tower: '#b0b6bf', generic: '#75777c' };
   for (const b of buildings.buildings) add(`<path d="${poly(b.poly)}" fill="${fills[b.kind] ?? '#777'}" fill-rule="evenodd"/>`);
+  for (let i = 0; i < buildings.boxes.length; i += 6) {
+    const [x, y, hl, hw, rot] = buildings.boxes.slice(i, i + 5);
+    const ux = Math.cos(rot);
+    const uy = Math.sin(rot);
+    const corner = (a: number, b: number): string => `${X(x + ux * a - uy * b)} ${Y(y + uy * a + ux * b)}`;
+    add(`<path d="M${corner(hl, hw)}L${corner(-hl, hw)}L${corner(-hl, -hw)}L${corner(hl, -hw)}Z" fill="#6b6258"/>`);
+  }
 }
 if (roads) {
   const style: Record<string, [string, number]> = {
@@ -84,14 +94,32 @@ if (rail) {
   for (const l of rail.lines) add(`<path d="${path3(l.pts)}" fill="none" stroke="${colour[l.kind]}" stroke-width="${px(4)}"/>`);
   for (const s of rail.stations) {
     add(`<circle cx="${X(s.x)}" cy="${Y(s.y)}" r="${px(14)}" fill="${colour[s.kind]}" stroke="#111" stroke-width="1"/>`);
-    if (labels) add(`<text x="${X(s.x)}" y="${Y(s.y + 22)}" font-size="${px(16)}" fill="#fff" text-anchor="middle">${s.name}</text>`);
+    if (labels) add(`<text x="${X(s.x)}" y="${Y(s.y + 22)}" font-size="${px(16)}" fill="#fff" text-anchor="middle">${esc(s.name)}</text>`);
   }
 }
 if (terminals) {
-  for (const b of terminals.buildings) add(`<path d="${poly(b.poly)}" fill="#3f6fb0" fill-opacity="0.85" stroke="#9cc2f5" stroke-width="1" fill-rule="evenodd"/>`);
-  for (const a of terminals.checkin) add(`<path d="${poly(a.poly)}" fill="#f5c542" fill-opacity="0.6"/>`);
-  for (const a of terminals.claims) add(`<path d="${poly(a.poly)}" fill="#59d38c" fill-opacity="0.6"/>`);
-  for (const p of terminals.pois) add(`<circle cx="${X(p.x)}" cy="${Y(p.y)}" r="${px(2.5)}" fill="#ff9de2"/>`);
+  for (const b of terminals.buildings) add(`<path d="${poly(b.poly)}" fill="#34527d" fill-opacity="0.9" stroke="#9cc2f5" stroke-width="1" fill-rule="evenodd"/>`);
+  const areaFill: Record<string, string> = { security: '#ff5d5d', checkin: '#f5c542', gate: '#5bc8f5', claim: '#59d38c', customs: '#c77dff', shop: '#ff9de2', food: '#ffa24d', lounge: '#d4b483', toilets: '#9aa5b1', corridor: '#6f86a8', hall: '#8fa7c9', room: '#777' };
+  const levelFilter = option('level');
+  for (const a of terminals.areas) {
+    if (levelFilter !== undefined && a.level !== Number(levelFilter)) continue;
+    add(`<path d="${poly(a.poly)}" fill="${areaFill[a.kind]}" fill-opacity="0.75" stroke="#0b1320" stroke-width="0.6"/>`);
+    if (labels && a.name && half < 500) {
+      let sx = 0;
+      let sy = 0;
+      for (let i = 0; i < a.poly.outer.length; i += 2) {
+        sx += a.poly.outer[i];
+        sy += a.poly.outer[i + 1];
+      }
+      const n = a.poly.outer.length / 2;
+      add(`<text x="${X(sx / n)}" y="${Y(sy / n)}" font-size="${px(3.2)}" fill="#fff" text-anchor="middle">${esc(a.name)}</text>`);
+    }
+  }
+  const poiFill: Record<string, string> = { door: '#ffffff', lift: '#ffe14d', stairs: '#ffe14d' };
+  for (const p of terminals.pois) {
+    if (levelFilter !== undefined && p.level !== Number(levelFilter)) continue;
+    if (poiFill[p.kind]) add(`<circle cx="${X(p.x)}" cy="${Y(p.y)}" r="${px(1.8)}" fill="${poiFill[p.kind]}" stroke="#000" stroke-width="0.5"/>`);
+  }
 }
 if (airfield) {
   for (const r of airfield.runways) {
@@ -143,7 +171,7 @@ if (terminals && labels) {
       sy += b.poly.outer[i + 1];
     }
     const n = b.poly.outer.length / 2;
-    add(`<text x="${X(sx / n)}" y="${Y(sy / n)}" font-size="${px(20)}" font-weight="700" fill="#fff" stroke="#17335c" stroke-width="${px(5)}" paint-order="stroke" text-anchor="middle">${b.name}</text>`);
+    add(`<text x="${X(sx / n)}" y="${Y(sy / n)}" font-size="${px(20)}" font-weight="700" fill="#fff" stroke="#17335c" stroke-width="${px(5)}" paint-order="stroke" text-anchor="middle">${esc(b.name)}</text>`);
   }
 }
 // Scale bar and north arrow.

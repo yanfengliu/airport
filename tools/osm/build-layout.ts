@@ -12,8 +12,12 @@ import { fileURLToPath } from 'node:url';
 import { ORIGIN_LAT, ORIGIN_LON } from '../../src/shared/geo.ts';
 import { LAYOUT_FILES, type LayoutSection, type Provenance } from '../../src/shared/layout.ts';
 import { buildAirfield } from './airfield.ts';
+import { buildBuildings } from './buildings.ts';
+import { buildLand } from './land.ts';
 import { OsmData } from './lib/osm.ts';
+import { buildRail } from './rail.ts';
 import { buildRoads } from './roads.ts';
+import { buildTerminals } from './terminals.ts';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const rawDir = join(root, 'artifacts', 'osm-raw');
@@ -42,7 +46,11 @@ const write = (section: string, data: unknown): void => {
 
 const builders: Partial<Record<LayoutSection, () => unknown>> = {
   airfield: () => buildAirfield(osm, log('airfield')),
+  terminals: () => buildTerminals(osm, log('terminals')),
   roads: () => buildRoads(osm, log('roads')),
+  rail: () => buildRail(osm, log('rail')),
+  buildings: () => buildBuildings(osm, log('buildings')),
+  land: () => buildLand(osm, manifest.bbox, log('land')),
 };
 
 for (const section of only) {
