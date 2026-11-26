@@ -24,19 +24,19 @@ export const CONFIG = {
 
   runway: {
     /** Seconds between landing slots, and how many runways a slot uses, in good visibility... */
-    slotVisual: 118,
+    slotVisual: 128,
     /** ...and when cloud or fog rules out side-by-side approaches. */
-    slotInstrument: 112,
+    slotInstrument: 120,
     /** Extra slots left empty behind a super-heavy arrival on the same runway. */
     slotsBehindSuper: 1,
     /** Shortest time between two departures from one runway, by the wake class of the first. */
     departureGap: { M: 62, H: 100, J: 130 },
     /** Margin kept between a departure passing a crossing runway and anything landing on it. */
-    crossingMargin: 18,
+    crossingMargin: 12,
     /** Seconds a taxiing aircraft needs to cross a runway from its hold line. */
     crossTime: 34,
     /** A landing must be this far from the threshold, in seconds, for a crossing to be allowed. */
-    crossBeforeLanding: 62,
+    crossBeforeLanding: 46,
     /** Distance from a runway centreline at which crossing traffic holds when no bar is mapped. */
     holdDistance: 78,
     brakingHard: 2.5,

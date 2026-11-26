@@ -187,6 +187,7 @@ export function pushbackOptions(net: TaxiNet, standNode: number, length: number)
   const seen = new Set<string>();
   const standId = net.nodes[standNode].stand;
   const stand = standId ? net.stands.get(standId) : undefined;
+  const own = standId ? net.standLine(standId)?.blocks : undefined;
 
   /** `arcs` reach `node` after `distance` metres; try turning the tail into each way out of it. */
   const walk = (node: number, arcs: number[], distance: number, junctions: number): void => {
@@ -199,8 +200,8 @@ export function pushbackOptions(net: TaxiNet, standNode: number, length: number)
       const block = net.arcBlock(arc);
       const turn = last === -1 ? 0 : net.turn(last, arc);
       if (block.kind === 'stand') {
-        // Still on the lead-in; never back through another stand.
-        if (onTaxiway || turn > MAX_TURN || net.nodes[net.arcTo(arc)].stand) continue;
+        // Still on the stand's own line; never back along another stand's.
+        if (onTaxiway || turn > MAX_TURN || !own?.has(block.id)) continue;
         walk(net.arcTo(arc), [...arcs, arc], distance + block.len, junctions);
         continue;
       }

@@ -69,14 +69,25 @@ export interface RunwayExit {
   side: 1 | -1;
 }
 
+export interface StandLine {
+  /** The node where the line leaves the taxiway. */
+  junction: number;
+  /** Arcs from the junction to the stop point, in the order an arriving aircraft takes them. */
+  arcsIn: number[];
+  blocks: Set<number>;
+  length: number;
+}
+
 export interface RouteOptions {
   /** Blocks that may not be used. */
   forbid?: ReadonlySet<number>;
+  /** Arcs that may not be used: a block can be shut one way and open the other. */
+  closed?: (arc: number) => boolean;
   /** Extra seconds of cost for using an arc, for one-way preferences. */
   arcCost?: (arc: number) => number;
   /** Let the route run along runway centrelines. */
   allowRunway?: boolean;
-  /** Stand whose lead-in the route may end on or start from. */
+  /** Stand whose own line the route may use; no route uses any other stand's. */
   stand?: string;
 }
 
@@ -88,6 +99,7 @@ export class TaxiNet {
   readonly runwayEnds = new Map<string, RunwayEndInfo>();
   /** Arcs leaving each node. */
   private readonly out: number[][] = [];
+  private readonly lines = new Map<string, StandLine | null>();
 
   constructor(airfield: Airfield) {
     for (const n of airfield.nodes) this.nodes.push({ x: n.x, y: n.y, hold: Boolean(n.hold), rwy: n.rwy ? [...n.rwy] : [], blocks: [] });
@@ -230,6 +242,7 @@ export class TaxiNet {
     const isGoal = typeof goal === 'number' ? (node: number): boolean => node === goal : goal;
     const goalNode = typeof goal === 'number' ? this.nodes[goal] : null;
     const estimate = (node: number): number => (goalNode ? Math.hypot(this.nodes[node].x - goalNode.x, this.nodes[node].y - goalNode.y) / 15 : 0);
+    const ownLine = options.stand ? this.standLine(options.stand)?.blocks : undefined;
 
     // A small binary heap of [priority, arc].
     const heapPriority: number[] = [];
@@ -275,16 +288,13 @@ export class TaxiNet {
       for (const next of this.out[node]) {
         if ((next ^ 1) === from) continue;
         const block = this.blocks[next >> 1];
-        if (options.forbid?.has(block.id)) continue;
+        if (options.forbid?.has(block.id) || options.closed?.(next)) continue;
         if (block.kind === 'rwy' && !options.allowRunway) continue;
         const angle = this.turn(from, next);
         if (angle > MAX_TURN) continue;
+        // A stand's line is for reaching or leaving that stand, never a way through the apron.
+        if (block.kind === 'stand' && !(ownLine && ownLine.has(block.id))) continue;
         let step = block.len / block.speed + angle * angle * 5;
-        if (block.kind === 'stand') {
-          // Lead-ins are for reaching or leaving a stand, not for cutting through the apron.
-          const end = this.nodes[this.arcTo(next)].stand;
-          step += options.stand && (end === options.stand || this.nodes[node].stand === options.stand) ? 0 : 25;
-        }
         if (options.arcCost) step += options.arcCost(next);
         const total = cost + step;
         if (total < best[next]) {
@@ -325,10 +335,50 @@ export class TaxiNet {
     return null;
   }
 
-  /** May a route go from one arc straight into the next? The same rules as `route`, without costs. */
+  /**
+   * A stand's own line: the shortest way along stand lines from a taxiway to its stop point. Null
+   * for a stand whose line reaches no taxiway.
+   */
+  standLine(id: string): StandLine | null {
+    const known = this.lines.get(id);
+    if (known !== undefined) return known;
+    const start = this.standNode.get(id);
+    let line: StandLine | null = null;
+    if (start !== undefined) {
+      const best = new Map<number, { length: number; arcs: number[] }>([[start, { length: 0, arcs: [] }]]);
+      const open = [start];
+      while (open.length) {
+        open.sort((a, b) => best.get(a)!.length - best.get(b)!.length);
+        const node = open.shift()!;
+        const here = best.get(node)!;
+        if (this.out[node].some((arc) => this.blocks[arc >> 1].kind === 'twy')) {
+          // Found walking away from the stop point; an aircraft arriving takes it the other way.
+          line = { junction: node, arcsIn: here.arcs.map((arc) => arc ^ 1).reverse(), blocks: new Set(here.arcs.map((arc) => arc >> 1)), length: here.length };
+          break;
+        }
+        for (const arc of this.out[node]) {
+          const block = this.blocks[arc >> 1];
+          const to = this.arcTo(arc);
+          if (block.kind !== 'stand' || this.nodes[to].stand) continue;
+          const length = here.length + block.len;
+          if (length >= (best.get(to)?.length ?? Infinity)) continue;
+          best.set(to, { length, arcs: [...here.arcs, arc] });
+          if (!open.includes(to)) open.push(to);
+        }
+      }
+    }
+    this.lines.set(id, line);
+    return line;
+  }
+
+  /**
+   * May a route go from one arc straight into the next? The same rules as `route`, without costs
+   * and without any stand's line, which only the aircraft bound for that stand may use.
+   */
   private follows(from: number, next: number, allowRunway: boolean): boolean {
     if ((next ^ 1) === from) return false;
-    if (this.blocks[next >> 1].kind === 'rwy' && !allowRunway) return false;
+    const kind = this.blocks[next >> 1].kind;
+    if (kind === 'stand' || (kind === 'rwy' && !allowRunway)) return false;
     // Nobody taxis through a stand's stop point.
     if (this.nodes[this.arcTo(from)].stand) return false;
     return this.turn(from, next) <= MAX_TURN;

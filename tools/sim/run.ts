@@ -42,11 +42,12 @@ while (sim.time < end) {
     console.log(
       `${formatClock(sim.secondsOfDay)}  ldg ${t.landings} dep ${t.takeoffs} ga ${t.goArounds} x ${t.crossings}  ` +
         `${Object.entries(phases).map(([k, v]) => `${k}:${v}`).join(' ')}  longest wait ${Math.round(sim.airside.totals.longestWait)}s` +
-        (waiting.length ? `  STUCK ${waiting.map((a) => `${a.visit.rotation.arrFlight}/${a.phase}@${a.visit.stand}`).join(',')}` : ''),
+        (waiting.length ? `  WAITING ${waiting.length}: ${waiting.slice(0, 4).map((a) => `${a.visit.rotation.arrFlight}/${a.phase}@${a.visit.stand} ${Math.round(sim.time - a.waitingSince)}s`).join(', ')}` : ''),
     );
   }
 }
 const elapsed = (performance.now() - wall) / 1000;
+console.log(`go-arounds: ${JSON.stringify(sim.airside.tower.goAroundReasons)}; totals ${JSON.stringify(sim.airside.totals)}`);
 console.log(`ran ${hours} h in ${elapsed.toFixed(1)} s (${Math.round((hours * 3600) / elapsed)}x real time); out-of-order releases ${sim.airside.traffic.outOfOrder}; checksum ${sim.checksum()}`);
 
 if (svgPath) {

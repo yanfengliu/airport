@@ -56,6 +56,8 @@ export class Airside {
     const flow = flowCosts(net);
     // Arcs other aircraft are routed along, refreshed whenever one plans a route.
     const routed = new Uint8Array(net.blocks.length * 2);
+    const routedNode = new Uint8Array(net.nodes.length);
+    const held: number[] = [];
     const ahead: number[] = [];
     this.traffic = new Traffic(this.net);
     this.tower = new Tower(this.net, (id) => this.byId.get(id)?.runwayPosition() ?? null);
@@ -68,16 +70,27 @@ export class Airside {
       rng: rng.fork('aircraft'),
       now: startTime,
       arcCost: (arc) => flow[arc] + (routed[arc ^ 1] ? AGAINST_TRAFFIC : 0),
-      planFor: (aircraft) => {
+      planFor: (aircraft, ticket) => {
         routed.fill(0);
+        routedNode.fill(0);
+        const mark = (arc: number): void => {
+          routed[arc] = 1;
+          routedNode[net.arcFrom(arc)] = 1;
+          routedNode[net.arcTo(arc)] = 1;
+        };
         for (const a of this.aircraft) {
           if (a.id === aircraft) continue;
+          held.length = 0;
           ahead.length = 0;
-          a.routeAhead(ahead);
-          for (const arc of ahead) routed[arc] = 1;
+          a.routeAhead(held, ahead);
+          for (const arc of held) mark(arc);
+          // The earlier journey has the right of way; of two planned together, the lower number.
+          if (a.ticket < ticket || (a.ticket === ticket && a.id < aircraft)) for (const arc of ahead) mark(arc);
         }
       },
+      crossed: (node) => routedNode[node] === 1,
       opposed: (arc) => routed[arc ^ 1] === 1,
+      busy: (arc) => routed[arc] === 1 || routed[arc ^ 1] === 1,
       standFree: (stand, forVisit) => this.standFree(stand, forVisit),
       otherStand: (visit) => this.otherStand(visit),
       departuresFor: (end) => this.aircraft.reduce((n, a) => n + (a.runwayEnd === end && (a.phase === 'pushback' || a.phase === 'starting' || a.phase === 'taxiOut' || a.phase === 'lineUp') ? 1 : 0), 0),

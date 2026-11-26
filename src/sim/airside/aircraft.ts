@@ -1,7 +1,7 @@
 // One aircraft, from short final to the stand and back into the air.
 
-import { MAX_TURN, type RunwayEndInfo, type RunwayExit, type TaxiNet } from '../airfield/net.ts';
-import { arcPieces, buildPath, coveredPieces, pointAt, speedFor, type Path, type PathPoint, type Piece } from '../airfield/path.ts';
+import type { RunwayEndInfo, RunwayExit, TaxiNet } from '../airfield/net.ts';
+import { NODE_CLEARANCE, arcPieces, buildPath, coveredPieces, pointAt, speedFor, type Path, type PathPoint, type Piece } from '../airfield/path.ts';
 import { newMover, type Mover, type Traffic } from '../airfield/traffic.ts';
 import { CONFIG } from '../config.ts';
 import type { AircraftType, Airline } from '../fleet.ts';
@@ -19,6 +19,8 @@ const TAN_GLIDE = Math.tan(CONFIG.approach.glideSlope);
 const FRONT = CONFIG.taxi.bodyMargin / 3;
 /** Length of centreline a departure turns onto before stopping to line up, beyond its own length. */
 const LINE_UP_RUN = 55;
+/** How far short of the junction at its end an aircraft stops on a path that could not go on. */
+const HOLD_SHORT = 20;
 
 export interface AirsideServices {
   net: TaxiNet;
@@ -28,10 +30,17 @@ export interface AirsideServices {
   now: number;
   /** Extra cost of using an arc: against the habitual flow, or against where others are routed. */
   arcCost(arc: number): number;
-  /** Count where everyone but one aircraft is routed, before that aircraft plans a route. */
-  planFor(aircraft: number): void;
-  /** Is someone else routed along this arc the other way? Valid after `planFor`. */
+  /**
+   * Mark the arcs an aircraft has to respect: those any other aircraft is cleared along, and the
+   * rest of the route of every journey that started before `ticket`.
+   */
+  planFor(aircraft: number, ticket: number): void;
+  /** Is someone it must respect routed along this arc the other way? Valid after `planFor`. */
   opposed(arc: number): boolean;
+  /** Is someone else routed along this arc's block, either way? Valid after `planFor`. */
+  busy(arc: number): boolean;
+  /** Does the way of someone it must respect go through this node? Valid after `planFor`. */
+  crossed(node: number): boolean;
   /** Is the stand empty and not promised to another aircraft about to arrive? */
   standFree(stand: string, forVisit: number): boolean;
   /** Another stand for a visit whose own is taken; null if there is none. */
@@ -128,10 +137,16 @@ export class Aircraft {
   private stops: Stop[] = [];
   private crossing: Stop | null = null;
   private nextAsk = 0;
+  /** A gap in the landings has been asked for and is good until this time. */
+  private gapUntil = 0;
   private timer = 0;
   private departureArcs: number[] = [];
   private departureFrom = 0;
   private departureLink: Piece[] = [];
+  /** Taxiway arcs the pushback runs along, tail first. */
+  private pushArcs: number[] = [];
+  /** When this journey over the ground was planned; earlier journeys have the right of way. */
+  ticket = 0;
   private parkedPath: Path | null = null;
   private parkedS = 0;
   private lineUpNodeAlong = 0;
@@ -148,19 +163,59 @@ export class Aircraft {
     this.body = type.length + CONFIG.taxi.bodyMargin;
   }
 
-  /** Add the arcs this aircraft still means to taxi along, for others planning round it. */
-  routeAhead(out: number[]): void {
+  /**
+   * The arcs this aircraft has ahead of it, each in the direction it will travel it. `held` gets
+   * the ones it is already cleared along or standing on, which nobody may take the other way;
+   * `ahead` gets the rest of its route, which no later journey may take the other way.
+   */
+  routeAhead(held: number[], ahead: number[]): void {
+    const path = this.mover.path;
     if (this.phase === 'pushback' || this.phase === 'starting') {
-      for (const arc of this.departureArcs) out.push(arc);
+      // The stretch it is pushed along is taken both ways: tail first now, nose first on the way out.
+      for (const arc of this.pushArcs) held.push(arc, arc ^ 1);
+      for (const arc of this.departureArcs) ahead.push(arc);
       return;
     }
-    const path = this.mover.path;
     if (!path || (this.phase !== 'taxiIn' && this.phase !== 'taxiOut' && this.phase !== 'landing')) return;
     const behind = this.mover.s - this.body;
+    // Leaving a pushback, the first of the path runs back over the stretch it was pushed along.
+    if (this.phase === 'taxiOut' && path.arcs.length && path.arcStart[0] > behind) for (const arc of this.pushArcs) held.push(arc ^ 1);
     for (let i = 0; i < path.arcs.length; i += 1) {
       const ends = i + 1 < path.arcs.length ? path.arcStart[i + 1] : path.total;
-      if (ends > behind) out.push(path.arcs[i]);
+      if (ends <= behind) continue;
+      if (path.arcStart[i] < this.mover.end) held.push(path.arcs[i]);
+      else ahead.push(path.arcs[i]);
     }
+  }
+
+  /**
+   * How far along its path the aircraft may be cleared for now: to just short of the first block
+   * that an earlier journey still has to come through the other way. Holding there, at the
+   * junction before it, leaves that aircraft its way past.
+   */
+  private rightOfWay(svc: AirsideServices): number {
+    const path = this.mover.path!;
+    svc.planFor(this.id, this.ticket);
+    let limit = Infinity;
+    for (let i = 0; i < path.arcs.length && limit === Infinity; i += 1) {
+      if (path.arcStart[i] < this.mover.end - 1) continue;
+      if (svc.opposed(path.arcs[i])) limit = path.arcStart[i] - HOLD_SHORT;
+    }
+    if (limit === Infinity) return limit;
+    // Stopped there, nose to tail, it must not lie across any junction the other's way goes
+    // through: back off until it does not.
+    for (let pass = 0; pass < 8; pass += 1) {
+      let moved = false;
+      for (let i = 0; i < path.arcs.length; i += 1) {
+        const at = path.arcStart[i];
+        if (at > limit + NODE_CLEARANCE || at < limit - this.body - NODE_CLEARANCE) continue;
+        if (!svc.crossed(svc.net.arcFrom(path.arcs[i]))) continue;
+        limit = at - NODE_CLEARANCE - HOLD_SHORT;
+        moved = true;
+      }
+      if (!moved) break;
+    }
+    return limit;
   }
 
   /** Position on a runway for the tower, or null when not on one. */
@@ -199,8 +254,8 @@ export class Aircraft {
   startParked(svc: AirsideServices): boolean {
     const node = svc.net.standNode.get(this.visit.stand);
     if (node === undefined) return false;
-    // The lead-in the aircraft would have come down: walk back from the stop point.
-    const arcs = leadIn(svc.net, node, this.body + 20);
+    // The way the aircraft would have come in: down its stand's own line.
+    const arcs = svc.net.standLine(this.visit.stand)?.arcsIn ?? [];
     if (!arcs.length) return false;
     const path = buildPath(svc.net, arcPieces(svc.net, arcs), this.body);
     svc.traffic.place(this.mover, path, path.total, svc.now);
@@ -341,22 +396,27 @@ export class Aircraft {
     }
   }
 
-  /** Pick where to leave the runway and reserve the way off it. */
+  /** Pick where to leave the runway, fix the route to the stand, and reserve the way off. */
   private chooseExit(svc: AirsideServices): void {
     const info = this.info!;
     const net = svc.net;
     const standNode = this.resolveStand(svc);
     if (standNode === null) return;
-    svc.planFor(this.id);
+    // A journey planned now gives way to every journey already under way.
+    svc.planFor(this.id, svc.now);
     const fromThreshold = this.along - info.end.displaced;
     const options: { exit: RunwayExit; arcs: number[]; cost: number }[] = [];
     for (const exit of net.exits(this.runwayEnd)) {
       const run = exit.along - fromThreshold;
       const needed = Math.max(0, this.speed * this.speed - exit.speed * exit.speed) / (2 * 2.2) + 80;
-      if (run < needed) continue;
-      const route = net.route([exit.arc], standNode, { stand: this.visit.stand, arcCost: svc.arcCost });
+      // Never turn off into someone coming up the turn-off.
+      if (run < needed || svc.opposed(exit.arc)) continue;
+      // A way that meets nobody if there is one; else the usual way, waiting where it must.
+      const settings = { stand: this.visit.stand, arcCost: svc.arcCost };
+      const clear = net.route([exit.arc], standNode, { ...settings, closed: svc.opposed });
+      const route = clear ?? net.route([exit.arc], standNode, settings);
       if (!route) continue;
-      options.push({ exit, arcs: [exit.arc, ...route.arcs], cost: run / 32 + route.seconds + (exit.angle > 1.2 ? 12 : 0) });
+      options.push({ exit, arcs: [exit.arc, ...route.arcs], cost: run / 32 + route.seconds + (exit.angle > 1.2 ? 12 : 0) + (clear ? 0 : 600) });
       if (options.length >= 8) break;
     }
     options.sort((a, b) => a.cost - b.cost);
@@ -370,21 +430,21 @@ export class Aircraft {
       if (first && svc.traffic.holder(first.res) !== -1) continue;
       const vacateAt = lead + RUNWAY_VACATED + FRONT + this.type.length;
       const stops = this.findStops(net, path, vacateAt, 'stand');
-      // Up to its first stop the aircraft will be standing in the way of anything coming the
-      // other way, between two runways as likely as not: never turn off into someone's route.
-      let against = false;
-      for (let i = 0; i < path.arcs.length && path.arcStart[i] < stops[0].s; i += 1) if (svc.opposed(path.arcs[i])) against = true;
-      if (against) continue;
+      // The way has to be free at least far enough to get the tail off the runway.
+      let free = Infinity;
+      for (let i = 0; i < path.arcs.length && free === Infinity; i += 1) if (svc.opposed(path.arcs[i])) free = path.arcStart[i] - HOLD_SHORT;
+      if (free < vacateAt + 2) continue;
       svc.traffic.place(this.mover, path, lead, svc.now);
       this.mover.turnsBack = false;
       this.mover.startAt = svc.now + (option.exit.along - fromThreshold) / Math.max(20, (this.speed + option.exit.speed) / 2);
       // All the way to the first stop if the plan allows; if not, at least clear of the runway.
-      let result = svc.traffic.clear(this.mover, stops[0].s, svc.now, 0, false);
-      if (!result.ok) result = svc.traffic.clear(this.mover, Math.min(stops[0].s, vacateAt + 30), svc.now, 0, false);
+      let result = svc.traffic.clear(this.mover, Math.min(stops[0].s, free), svc.now, 0, false);
+      if (!result.ok) result = svc.traffic.clear(this.mover, Math.min(stops[0].s, free, vacateAt + 30), svc.now, 0, false);
       if (!result.ok) {
         svc.traffic.remove(this.mover);
         continue;
       }
+      this.ticket = svc.now;
       this.exit = option.exit;
       this.exitAlong = option.exit.along + info.end.displaced;
       this.vacateAt = vacateAt;
@@ -523,7 +583,13 @@ export class Aircraft {
     if (mover.end >= stop.s - 0.05) return;
     const braking = (mover.v * mover.v) / (2 * CONFIG.taxi.decel) + 45;
     if (mover.end - mover.s > braking) return;
-    const { result } = svc.traffic.clearAsFarAs(mover, stop.s, svc.now, 45, false);
+    // Never onto a stretch an earlier journey has still to come down the other way.
+    const target = Math.min(stop.s, this.rightOfWay(svc));
+    if (target < mover.end + 8) {
+      this.nextAsk = svc.now + 3;
+      return;
+    }
+    const { result } = svc.traffic.clearAsFarAs(mover, target, svc.now, 45, false);
     this.nextAsk = svc.now + (result.ok ? 1 : CONFIG.taxi.retry);
   }
 
@@ -573,7 +639,7 @@ export class Aircraft {
         granted.push(c);
       }
       const next = this.stops[1];
-      if (granted.length === stop.crossings!.length) svc.traffic.clearAsFarAs(mover, next ? next.s : mover.path!.total, svc.now, 0, false);
+      if (granted.length === stop.crossings!.length) svc.traffic.clearAsFarAs(mover, Math.min(next ? next.s : mover.path!.total, this.rightOfWay(svc)), svc.now, 0, false);
       if (granted.length < stop.crossings!.length || mover.end < stop.clearAt! - 0.5) {
         // Not every runway is free, or there is no room on the far side: give them back and wait.
         for (const c of granted) svc.tower.crossed(this.id, c.runway);
@@ -586,7 +652,11 @@ export class Aircraft {
     }
     if (stop.kind === 'lineUp') {
       const rollSeconds = Math.sqrt((2 * 1500) / CONFIG.runway.takeoffAccel[this.type.body]) + 8;
-      if (!svc.tower.mayLineUp(this.id, this.runwayEnd, svc.now, 42, rollSeconds)) return;
+      if (!svc.tower.mayLineUp(this.id, this.runwayEnd, svc.now, 42, rollSeconds)) {
+        // The gap asked for on the way out has gone by: ask for another.
+        if (svc.tower.plan.arrivals.includes(this.runwayEnd) && svc.now > this.gapUntil) this.gapUntil = svc.tower.openGap(this.runwayEnd, svc.now + 120) + 150;
+        return;
+      }
       const result = svc.traffic.clear(mover, mover.path!.total, svc.now, 0, false);
       if (!result.ok) {
         svc.tower.cancelLineUp(this.id, this.runwayEnd);
@@ -603,7 +673,8 @@ export class Aircraft {
   tryPushback(svc: AirsideServices): boolean {
     if (this.phase !== 'parked' || svc.now < this.nextAsk) return false;
     this.nextAsk = svc.now + 12;
-    svc.planFor(this.id);
+    // A journey planned now gives way to every journey already under way.
+    svc.planFor(this.id, svc.now);
     const net = svc.net;
     const end = svc.tower.departureEnd(this.type.body, (e) => svc.departuresFor(e));
     if (svc.departuresFor(end) >= CONFIG.taxi.queueLimit) return false;
@@ -616,7 +687,9 @@ export class Aircraft {
 
     const options: { push: PushbackOption; joinAt: number; route: number[]; cost: number }[] = [];
     for (const push of pushbackOptions(net, standNode, this.body + 10)) {
-      const route = net.route([push.forward], goal, { arcCost: svc.arcCost, stand: this.visit.stand });
+      // Nobody may be routed along the taxiway the push takes up, either way, nor against the way out.
+      if (push.out.some((arc) => net.arcBlock(arc).kind === 'twy' && svc.busy(arc))) continue;
+      const route = net.route([push.forward], goal, { arcCost: svc.arcCost, stand: this.visit.stand, closed: svc.opposed });
       if (!route || !route.arcs.length) continue;
       // A long push costs its own time and keeps the taxilane shut while it lasts.
       options.push({ push, joinAt: push.joinAt, route: route.arcs, cost: route.seconds + (2 * (push.joinAt + this.body)) / CONFIG.taxi.pushbackSpeed });
@@ -643,6 +716,8 @@ export class Aircraft {
       this.departureArcs = option.route;
       this.departureFrom = option.joinAt;
       this.departureLink = option.push.link ?? [];
+      this.pushArcs = option.push.out.filter((arc) => net.arcBlock(arc).kind === 'twy');
+      this.ticket = svc.now;
       this.visit.state = 'pushback';
       this.visit.offBlockAt = svc.now + result.delay;
       this.visit.departureRunway = end;
@@ -675,7 +750,10 @@ export class Aircraft {
     this.lineUpNodeAlong = (last.x - info.end.x) * info.ux + (last.y - info.end.y) * info.uy;
     this.nextAsk = svc.now;
     // A departure from a runway that also takes landings needs a hole in the arrivals.
-    if (svc.tower.plan.arrivals.includes(this.runwayEnd)) svc.tower.openGap(this.runwayEnd, svc.now + 240);
+    if (svc.tower.plan.arrivals.includes(this.runwayEnd)) {
+      const lineUp = this.stops.find((s) => s.kind === 'lineUp')!;
+      this.gapUntil = svc.tower.openGap(this.runwayEnd, svc.now + (lineUp.s - mover.s) / 11 + 40) + 150;
+    }
   }
 
   /** Lined up and waiting: ask to go. */
@@ -745,31 +823,4 @@ export class Aircraft {
     this.pitch = 0;
     this.bank = 0;
   }
-}
-
-/** Arcs leading down to a stand's stop point from far enough back to hold `length` of aircraft. */
-export function leadIn(net: TaxiNet, standNode: number, length: number): number[] {
-  const arcs: number[] = [];
-  let node = standNode;
-  let covered = 0;
-  while (covered < length) {
-    // Among the arcs that arrive at this node, the one that carries straight on into the next.
-    let best = -1;
-    let bestTurn = MAX_TURN;
-    for (const out of net.arcsFrom(node)) {
-      const arriving = out ^ 1;
-      if (arcs.length && arriving === (arcs[0] ^ 1)) continue;
-      const turn = arcs.length ? net.turn(arriving, arcs[0]) : 0;
-      if (turn < bestTurn || best === -1) {
-        if (turn > MAX_TURN) continue;
-        bestTurn = turn;
-        best = arriving;
-      }
-    }
-    if (best === -1) break;
-    arcs.unshift(best);
-    covered += net.arcBlock(best).len;
-    node = net.arcFrom(best);
-  }
-  return arcs;
 }

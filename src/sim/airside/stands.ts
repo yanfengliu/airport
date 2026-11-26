@@ -2,9 +2,9 @@
 // each other's way. An aircraft must be able to taxi to a stand from every landing runway and,
 // once pushed back, reach every departure runway. A few mapped parking positions sit on lines that
 // join the taxiways too sharply to follow, at the end of a taxilane too short to turn a long
-// aircraft in, or on a lead-in shorter than the aircraft their width would admit.
+// aircraft in, or on a line shorter than the aircraft their width would admit.
 
-import type { TaxiNet } from '../airfield/net.ts';
+import { MAX_TURN, type StandLine, type TaxiNet } from '../airfield/net.ts';
 import { NODE_CLEARANCE } from '../airfield/path.ts';
 import { CONFIG } from '../config.ts';
 import { pushbackOptions } from './pushback.ts';
@@ -30,40 +30,10 @@ export const SIZES: readonly { length: number; span: number }[] = [
 /** Taxiway an aircraft of a length needs behind the junction it will leave by. */
 export const pushRoom = (length: number): number => length + CONFIG.taxi.bodyMargin + 10;
 
-export interface LeadIn {
-  /** Blocks from the stop point back to the first taxiway, and their length. */
-  blocks: number[];
-  length: number;
-}
-
-/** Each stand's own line: the shortest way along stand lines from its stop point to a taxiway. */
-export function leadIns(net: TaxiNet): Map<string, LeadIn> {
-  const result = new Map<string, LeadIn>();
-  for (const [id, start] of net.standNode) {
-    const best = new Map<number, { length: number; blocks: number[] }>([[start, { length: 0, blocks: [] }]]);
-    const open = [start];
-    let found: LeadIn | null = null;
-    while (open.length) {
-      open.sort((a, b) => best.get(a)!.length - best.get(b)!.length);
-      const node = open.shift()!;
-      const here = best.get(node)!;
-      if (net.arcsFrom(node).some((arc) => net.arcBlock(arc).kind === 'twy')) {
-        found = here;
-        break;
-      }
-      for (const arc of net.arcsFrom(node)) {
-        const block = net.arcBlock(arc);
-        const to = net.arcTo(arc);
-        if (block.kind !== 'stand' || net.nodes[to].stand) continue;
-        const length = here.length + block.len;
-        if (length >= (best.get(to)?.length ?? Infinity)) continue;
-        best.set(to, { length, blocks: [...here.blocks, block.id] });
-        if (!open.includes(to)) open.push(to);
-      }
-    }
-    if (found) result.set(id, found);
-  }
-  return result;
+/** Can an aircraft follow the line from its junction to the stop point without too sharp a turn? */
+function followable(net: TaxiNet, line: StandLine): boolean {
+  for (let i = 1; i < line.arcsIn.length; i += 1) if (net.turn(line.arcsIn[i - 1], line.arcsIn[i]) > MAX_TURN) return false;
+  return line.arcsIn.length > 0;
 }
 
 export function standAccess(net: TaxiNet, arrivalEnds: readonly string[], departureEnds: readonly string[]): Map<string, StandAccess> {
@@ -72,9 +42,12 @@ export function standAccess(net: TaxiNet, arrivalEnds: readonly string[], depart
 
   for (const end of arrivalEnds) {
     const reached = net.reachableFrom(net.exits(end).map((exit) => exit.arc));
-    for (const [id, node] of net.standNode) {
-      // Arcs that arrive at the stop point are the reverses of the ones that leave it.
-      if (net.arcsFrom(node).some((arc) => reached[arc ^ 1])) access.get(id)!.from.push(end);
+    for (const id of net.standNode.keys()) {
+      const line = net.standLine(id);
+      if (!line || !followable(net, line)) continue;
+      // Some taxiway arc that a landing aircraft can come by must turn onto the line.
+      const first = line.arcsIn[0];
+      if (net.arcsFrom(line.junction).some((leaving) => reached[leaving ^ 1] && net.turn(leaving ^ 1, first) <= MAX_TURN)) access.get(id)!.from.push(end);
     }
   }
 
@@ -97,15 +70,14 @@ export function standAccess(net: TaxiNet, arrivalEnds: readonly string[], depart
 export interface UsableStands {
   /** Stands that work, with the widest wingspan each takes: its own, or less where a longer aircraft could not get out, or would not fit its line. */
   span: Map<string, number>;
-  /** Stands that cannot be occupied together: they share a lead-in line, or are alternates. */
+  /** Stands that cannot be occupied together: they share a line, or are alternates. */
   conflicts: Map<string, string[]>;
 }
 
 export function usableStands(net: TaxiNet, arrivalEnds: readonly string[], departureEnds: readonly string[]): UsableStands {
   const span = new Map<string, number>();
-  const lines = leadIns(net);
   for (const [id, a] of standAccess(net, arrivalEnds, departureEnds)) {
-    const line = lines.get(id);
+    const line = net.standLine(id);
     if (!line || a.from.length < arrivalEnds.length) continue;
     let widest = 0;
     SIZES.forEach((size, index) => {
@@ -117,7 +89,7 @@ export function usableStands(net: TaxiNet, arrivalEnds: readonly string[], depar
     if (widest > 0) span.set(id, Math.min(widest, net.stands.get(id)!.span));
   }
   const users = new Map<number, string[]>();
-  for (const id of span.keys()) for (const block of lines.get(id)!.blocks) users.set(block, [...(users.get(block) ?? []), id]);
+  for (const id of span.keys()) for (const block of net.standLine(id)!.blocks) users.set(block, [...(users.get(block) ?? []), id]);
   const conflicts = new Map<string, string[]>();
   const add = (id: string, other: string): void => {
     if (other !== id && span.has(other) && !(conflicts.get(id) ?? []).includes(other)) conflicts.set(id, [...(conflicts.get(id) ?? []), other]);

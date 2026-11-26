@@ -73,6 +73,8 @@ export class Tower {
   private readonly position: (aircraft: number) => RunwayPosition | null;
   /** Counters for the operations panel and the tests. */
   stats = { landings: 0, takeoffs: 0, goArounds: 0, crossings: 0 };
+  /** How many go-arounds each kind of obstruction has caused. */
+  goAroundReasons: Record<string, number> = {};
 
   constructor(net: TaxiNet, position: (aircraft: number) => RunwayPosition | null) {
     this.net = net;
@@ -172,16 +174,23 @@ export class Tower {
 
   /** At decision height: is the runway the arrival's alone? */
   mayLand(aircraft: number, end: string): boolean {
+    const reason = this.landingBlockedBy(aircraft, end);
+    if (reason) this.goAroundReasons[reason] = (this.goAroundReasons[reason] ?? 0) + 1;
+    return reason === null;
+  }
+
+  /** What is in the way of a landing, in a word, or null when the runway is clear. */
+  private landingBlockedBy(aircraft: number, end: string): string | null {
     const runway = this.runwayOf(end);
-    if (runway.cleared !== null) return false;
+    if (runway.cleared !== null) return 'departure lining up';
     for (const [id, occupant] of runway.occupants) {
       if (id === aircraft) continue;
       // A departure already well down the runway will be gone before the wheels touch.
       const p = this.position(id);
       if (occupant.kind === 'departing' && occupant.end === end && p && p.along > 1500 && p.speed > 55) continue;
-      return false;
+      return occupant.kind === 'landing' ? 'landing not yet clear' : occupant.kind === 'crossing' ? 'aircraft crossing' : occupant.kind === 'departing' ? 'departure rolling' : 'departure lined up';
     }
-    return true;
+    return null;
   }
 
   touchedDown(aircraft: number, end: string): void {
@@ -231,6 +240,12 @@ export class Tower {
     return true;
   }
 
+  /** Is a departure waiting to go on a runway that is also landing aircraft? */
+  private squeezed(runway: RunwayState): boolean {
+    if (runway.cleared === null) return false;
+    return this.plan.arrivals.some((end) => this.net.runwayEnds.get(end)!.runway.id === runway.id);
+  }
+
   /** The aircraft is on the centreline, stopped. */
   linedUp(aircraft: number, end: string): void {
     this.runwayOf(end).occupants.set(aircraft, { end, kind: 'linedUp' });
@@ -261,6 +276,8 @@ export class Tower {
     if (next && next.threshold - now < rollSeconds + 20) return false;
     const margin = CONFIG.runway.crossingMargin;
     for (const c of toCrossings) {
+      // A departure fitted between landings on the other runway goes first: its gap will not wait.
+      if (!this.squeezed(runway) && this.squeezed(this.runways.get(c.across)!)) return false;
       const from = now + c.from - margin;
       const to = now + c.to + margin;
       // Anything holding the same crossing point from the other runway.
@@ -307,6 +324,8 @@ export class Tower {
       if (!passed) return false;
     }
     if (runway.cleared !== null) {
+      // Nobody crosses in front of a departure that has only a gap between landings to go in.
+      if (this.squeezed(runway)) return false;
       const p = this.position(runway.cleared);
       // Someone cleared onto the runway who has not started to roll may be held; anyone else not.
       if (p && p.speed > 1) return false;
