@@ -145,8 +145,10 @@ async function start(): Promise<void> {
     focus.set(camera.x, camera.h, -camera.y);
     stage.update(secondsOfDay, focus, Math.max(160, camera.distance * 0.9));
     world.lights.begin();
-    aircraftLayer.update(sim.airside.aircraft, owed / CONFIG.dt);
-    if (sim.roads) vehicleLayer.update(sim.roads.traffic.vehicles, owed / CONFIG.dt, camera.distance);
+    // Moving lights are only worth placing once it is dark enough to see them.
+    const lamps = stage.day < 0.85 ? world.lights : null;
+    aircraftLayer.update(sim.airside.aircraft, owed / CONFIG.dt, lamps);
+    if (sim.roads) vehicleLayer.update(sim.roads.traffic.vehicles, owed / CONFIG.dt, camera.distance, lamps);
     if (sim.transit) trainLayer.update(sim.transit, owed / CONFIG.dt);
     world.update(realSeconds, stage.day, { height: canvas.height, fov: stage.camera.fov, fog: stage.fogDensity, lamp: stage.lampGain });
     stage.render();

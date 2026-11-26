@@ -111,6 +111,26 @@ export class RoadTraffic {
     return n;
   }
 
+  /**
+   * Pairs of vehicles in one lane of one link that are inside each other, or out of order; zero
+   * always, if the model is right. For the tests.
+   */
+  overlaps(): number {
+    let bad = 0;
+    for (const byLane of this.lanes) {
+      for (const list of byLane) {
+        for (let i = 1; i < list.length; i += 1) {
+          const behind = list[i - 1];
+          const ahead = list[i];
+          // A vehicle waiting at the end of its link for room on the next may sit level with the
+          // one ahead of it there; that is not an overlap on this link.
+          if (behind.s > ahead.s - ahead.length + 0.05) bad += 1;
+        }
+      }
+    }
+    return bad;
+  }
+
   meanSpeed(link: number): number {
     let n = 0;
     let sum = 0;

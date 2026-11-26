@@ -231,10 +231,21 @@ export class Lights {
     if (this.used >= this.capacity) return;
     const g = this.dynamic.geometry;
     const i = this.used;
-    (g.attributes.position.array as Float32Array).set([x, h, -y], i * 3);
-    (g.attributes.colour.array as Float32Array).set(colour, i * 3);
+    const k = i * 3;
+    // Written element by element: thousands of these a frame must not each make an array.
+    const position = g.attributes.position.array as Float32Array;
+    position[k] = x;
+    position[k + 1] = h;
+    position[k + 2] = -y;
+    const tint = g.attributes.colour.array as Float32Array;
+    tint[k] = colour[0];
+    tint[k + 1] = colour[1];
+    tint[k + 2] = colour[2];
     (g.attributes.size.array as Float32Array)[i] = size;
-    (g.attributes.flash.array as Float32Array).set([period, duty, offset], i * 3);
+    const flash = g.attributes.flash.array as Float32Array;
+    flash[k] = period;
+    flash[k + 1] = duty;
+    flash[k + 2] = offset;
     this.used += 1;
   }
 

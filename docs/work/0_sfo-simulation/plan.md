@@ -96,6 +96,14 @@ Opened 2026-11-25 under `../fleet/docs/skills/hard-problem.md`, after more than 
 
 **Branches** are recorded below as they report.
 
+| Branch | Mechanism family | State | Next |
+| --- | --- | --- | --- |
+| `hp-structure` (e4ffe14) | Structure: directions of travel, zones with entry rules, interlocking. | Interlocking written, not wired in; nothing runs. Cut off on 2026-11-25 by a usage limit, not by a result. | Parked as the fallback. |
+| `hp-reservation` (97f6026) | Reservation in space and time. | Nothing committed before the same usage limit. | Not resumed. |
+| `hp-repair` (3001b2e) | Instrument, trace, repair: `tools/sim/trace.ts` classifies every meeting and follows every long wait to its cause; ground cut into 5 m tiles held by fuselages; every journey wants its whole way and has a place in one order, and takes a tile only when nobody earlier wants it. | Six hours of seed 7 traced, benchmark not yet run. Cut off by the same usage limit. | Continued as `hp-repair-2` by a fresh owner on 2026-11-26: the only branch with a mechanism that runs and evidence to judge it by. |
+
+Running one branch rather than three is a choice of cost, not of evidence: the three earlier owners and the coordinator together ran out of one model's usage within hours.
+
 ## Outcome
 
 Pending while work is open.

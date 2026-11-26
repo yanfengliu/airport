@@ -4,7 +4,14 @@
 import * as THREE from 'three';
 import type { Aircraft } from '../../sim/airside/aircraft.ts';
 import { AIRCRAFT } from '../../sim/fleet.ts';
-import { buildAircraftGeometry } from '../models/aircraft.ts';
+import { LIGHT_COLOURS, type Lights } from '../lights.ts';
+import { buildAircraftGeometry, type AircraftGeometry } from '../models/aircraft.ts';
+
+/** Phases in which an aircraft has its engines running, and so its beacon flashing. */
+const RUNNING = new Set(['pushback', 'starting', 'taxiOut', 'lineUp', 'takeoff', 'climb', 'approach', 'landing', 'taxiIn', 'goAround']);
+/** Phases on or over a runway, when the strobes and landing lights are on. */
+const ON_RUNWAY = new Set(['lineUp', 'takeoff', 'climb', 'approach', 'landing', 'goAround']);
+const TAXIING = new Set(['taxiOut', 'taxiIn']);
 
 const CAPACITY = 64;
 
@@ -13,6 +20,7 @@ interface TypeMeshes {
   livery: THREE.InstancedMesh;
   /** Aircraft id shown by each instance, for picking. */
   ids: number[];
+  lights: AircraftGeometry['lights'];
 }
 
 export class AircraftLayer {
@@ -24,6 +32,7 @@ export class AircraftLayer {
   private readonly scale = new THREE.Vector3(1, 1, 1);
   private readonly euler = new THREE.Euler(0, 0, 0, 'YZX');
   private readonly colour = new THREE.Color();
+  private readonly lamp = new THREE.Vector3();
 
   constructor() {
     this.group.name = 'aircraft';
@@ -43,12 +52,15 @@ export class AircraftLayer {
         this.group.add(mesh);
       }
       livery.setColorAt(0, this.colour.set(0xffffff));
-      this.meshes.set(type.id, { body, livery, ids: [] });
+      this.meshes.set(type.id, { body, livery, ids: [], lights: geometry.lights });
     }
   }
 
-  /** Place every aircraft; `alpha` is how far the frame is between the last two simulation steps. */
-  update(aircraft: readonly Aircraft[], alpha: number): void {
+  /**
+   * Place every aircraft; `alpha` is how far the frame is between the last two simulation steps.
+   * With `lights`, each aircraft also shows its navigation lights, beacon, strobes and landing light.
+   */
+  update(aircraft: readonly Aircraft[], alpha: number, lights: Lights | null = null): void {
     for (const entry of this.meshes.values()) entry.ids.length = 0;
     for (const a of aircraft) {
       if (a.phase === 'gone') continue;
@@ -70,6 +82,7 @@ export class AircraftLayer {
       entry.body.setMatrixAt(index, this.matrix);
       entry.livery.setMatrixAt(index, this.matrix);
       entry.livery.setColorAt(index, this.colour.set(a.airline.colour));
+      if (lights) this.addLights(lights, entry.lights, a);
     }
     for (const entry of this.meshes.values()) {
       entry.body.count = entry.ids.length;
@@ -77,6 +90,28 @@ export class AircraftLayer {
       entry.body.instanceMatrix.needsUpdate = true;
       entry.livery.instanceMatrix.needsUpdate = true;
       if (entry.livery.instanceColor) entry.livery.instanceColor.needsUpdate = true;
+    }
+  }
+
+  /** Lights of one aircraft, placed with the pose just set in `position` and `quaternion`. */
+  private addLights(lights: Lights, at: AircraftGeometry['lights'], a: Aircraft): void {
+    const { WHITE, RED, GREEN } = LIGHT_COLOURS;
+    const put = (local: THREE.Vector3, colour: readonly [number, number, number], size: number, period = 0, duty = 0, offset = 0): void => {
+      this.lamp.copy(local).applyQuaternion(this.quaternion).add(this.position);
+      lights.add(this.lamp.x, -this.lamp.z, this.lamp.y, colour, size, period, duty, offset);
+    };
+    // Each aircraft flashes on its own beat, so a row of them does not blink together.
+    const beat = (a.id * 0.37) % 1;
+    put(at.left, RED, 1.3);
+    put(at.right, GREEN, 1.3);
+    put(at.tail, WHITE, 1.1);
+    if (RUNNING.has(a.phase)) put(at.beacon, RED, 1.8, 1.3, 0.12, beat);
+    if (ON_RUNWAY.has(a.phase)) {
+      put(at.left, WHITE, 3.2, 1.1, 0.06, beat);
+      put(at.right, WHITE, 3.2, 1.1, 0.06, beat + 0.05);
+      put(at.nose, WHITE, 6);
+    } else if (TAXIING.has(a.phase)) {
+      put(at.nose, WHITE, 3.5);
     }
   }
 

@@ -2,7 +2,10 @@
 
 import * as THREE from 'three';
 import { VEHICLE_LENGTH, type Vehicle, type VehicleKind } from '../../sim/roads/traffic.ts';
+import { LIGHT_COLOURS, type Lights } from '../lights.ts';
 import { buildVehicleGeometry } from '../models/vehicles.ts';
+
+const HEADLIGHT: readonly [number, number, number] = [1, 0.93, 0.78];
 
 const CAPACITY: Record<VehicleKind, number> = { car: 3200, suv: 1800, van: 700, taxi: 500, shuttle: 260, bus: 160, truck: 500 };
 
@@ -32,7 +35,8 @@ export class VehicleLayer {
     }
   }
 
-  update(vehicles: readonly Vehicle[], alpha: number, cameraDistance: number): void {
+  /** With `lights`, each vehicle also shows head and tail lights. */
+  update(vehicles: readonly Vehicle[], alpha: number, cameraDistance: number, lights: Lights | null = null): void {
     for (const kind of this.meshes.keys()) this.counts.set(kind, 0);
     if (cameraDistance <= this.maxDistance) {
       const m = this.matrix.elements;
@@ -68,6 +72,23 @@ export class VehicleLayer {
         m[15] = 1;
         mesh.setMatrixAt(index, this.matrix);
         mesh.setColorAt(index, this.colour.set(v.colour));
+        if (lights) {
+          // Just outside the bodywork, so the car itself does not hide them.
+          const front = v.length / 2 + 0.4;
+          const back = v.length / 2 + 0.3;
+          const side = v.kind === 'bus' || v.kind === 'truck' || v.kind === 'shuttle' ? 1 : 0.72;
+          const nx = -s * side;
+          const ny = c * side;
+          const fx = x + c * front;
+          const fy = y + s * front;
+          const bx = x - c * back;
+          const by = y - s * back;
+          // Larger than the lamps themselves: a headlight is small but far brighter than its size.
+          lights.add(fx + nx, fy + ny, z + 0.7, HEADLIGHT, 1.7);
+          lights.add(fx - nx, fy - ny, z + 0.7, HEADLIGHT, 1.7);
+          lights.add(bx + nx, by + ny, z + 0.8, LIGHT_COLOURS.RED, 1.1);
+          lights.add(bx - nx, by - ny, z + 0.8, LIGHT_COLOURS.RED, 1.1);
+        }
       }
     }
     for (const [kind, mesh] of this.meshes) {
