@@ -68,8 +68,8 @@ Ownership: the main agent owns the plan, the contracts, integration and acceptan
 
 ## Implementation steps
 
-- [ ] **M0 Foundation.** Repo shape under the fleet rules, toolchain, OSM fetch and layout build, committed layout with provenance, layout tests, this plan. Merged and pushed.
-- [ ] **M1 The place.** The static 3D airport from the layout, sky and time of day, camera controls and presets, the visual sweep tool. Merged and pushed.
+- [x] **M0 Foundation.** Repo shape under the fleet rules, toolchain, OSM fetch and layout build, committed layout with provenance, layout tests, this plan. Merged and pushed (a3fcf40, 2026-11-25).
+- [x] **M1 The place.** The static 3D airport from the layout, sky and time of day, camera controls and presets, the visual sweep tool. Merged and pushed (a3fcf40, 2026-11-25).
 - [ ] **M2 Airside.** Schedule, weather and runway configuration, tower and ground control, taxi reservations, gates, turnaround and ground equipment, aircraft models, a first flight board. Soak and determinism tests. Merged and pushed.
 - [ ] **M3 Roads and transit.** Road traffic, curbs, garages, shuttles, taxis and buses, AirTrain and BART, vehicle models. Soak test. Merged and pushed.
 - [ ] **M4 People and bags.** Terminal interiors, passengers, check-in, security, shops, gates, customs, baggage system and carousels, staff. Conservation tests. Merged and pushed.
