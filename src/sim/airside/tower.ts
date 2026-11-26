@@ -14,7 +14,20 @@ export interface RunwayPlan {
   longDepartures: string[];
 }
 
-export const WEST_PLAN: RunwayPlan = { name: 'West', arrivals: ['28L', '28R'], departures: ['01L', '01R'], longDepartures: ['28L', '28R'] };
+/**
+ * Seconds a departure cleared onto a runway that takes no landings may be held, beyond when it
+ * could otherwise roll, by traffic crossing in front of it. Without such a turn, a runway with a
+ * queue of departures is never crossed: the next lines up before the last is past the crossing.
+ */
+const CROSS_HOLDS_DEPARTURE = 30;
+/** Seconds taken to be lined up once cleared onto the runway, as far as crossing traffic is concerned. */
+const CROSS_LINING_UP = 15;
+/** Seconds longer at the hold line that give a departure the first turn to line up. */
+const FIRST_COME = 30;
+/** A departure that has not asked to line up for this long has gone elsewhere. */
+const ASK_LAPSES = 8;
+
+export const WEST_PLAN: RunwayPlan ={ name: 'West', arrivals: ['28L', '28R'], departures: ['01L', '01R'], longDepartures: ['28L', '28R'] };
 export const SOUTHEAST_PLAN: RunwayPlan = { name: 'Southeast', arrivals: ['19L', '19R'], departures: ['10L', '10R'], longDepartures: ['10L', '10R'] };
 
 /** Where two runways cross, as distances from each runway end's pavement edge. */
@@ -50,6 +63,11 @@ interface RunwayState {
   lastDeparture: { time: number; wake: WakeClass; end: string } | null;
   /** Aircraft told to line up or cleared to go, not yet airborne. */
   cleared: number | null;
+  /**
+   * Departures holding short asking to line up: since when, when they last asked, and when they
+   * last could not take a clearance they were given.
+   */
+  asking: Map<number, { since: number; last: number; failed: number }>;
 }
 
 /** What the tower needs to know about an aircraft on a runway. */
@@ -93,7 +111,7 @@ export class Tower {
       const id = info.runway.id;
       if (seen.has(id)) continue;
       seen.add(id);
-      this.runways.set(id, { id, occupants: new Map(), inbound: [], lastDeparture: null, cleared: null });
+      this.runways.set(id, { id, occupants: new Map(), inbound: [], lastDeparture: null, cleared: null, asking: new Map() });
     }
     const list = [...seen].map((id) => [...net.runwayEnds.values()].find((e) => e.runway.id === id)!);
     for (let i = 0; i < list.length; i += 1) {
@@ -136,13 +154,17 @@ export class Tower {
 
   /**
    * Give an arrival the first free landing slot at or after `earliest`. Slots are a fixed beat;
-   * in visual conditions each takes one aircraft per arrival runway, landing side by side.
+   * in visual conditions each takes one aircraft per arrival runway, landing side by side. With
+   * `latest`, null when no slot is free by then: the arrival waits to be given one.
    */
-  assignSlot(earliest: number, wake: WakeClass, prefer: string | null): { end: string; threshold: number } {
+  assignSlot(earliest: number, wake: WakeClass, prefer: string | null): { end: string; threshold: number };
+  assignSlot(earliest: number, wake: WakeClass, prefer: string | null, latest: number): { end: string; threshold: number } | null;
+  assignSlot(earliest: number, wake: WakeClass, prefer: string | null, latest = Infinity): { end: string; threshold: number } | null {
     const length = this.slotLength;
     const ends = this.visual ? this.plan.arrivals : this.plan.arrivals.slice(-1);
     const order = prefer && ends.includes(prefer) ? [prefer, ...ends.filter((e) => e !== prefer)] : ends;
     for (let k = Math.ceil(earliest / length); ; k += 1) {
+      if (k * length > latest) return null;
       for (const end of order) {
         const key = `${k}:${end}`;
         if (this.slots.has(key) || this.holes.has(key)) continue;
@@ -224,19 +246,42 @@ export class Tower {
 
   // ---- departures -----------------------------------------------------------------------
 
-  /** Which runway end a departure should use: the long runways for the big aircraft. */
-  departureEnd(body: BodyClass, queued: (end: string) => number): string {
-    const ends = body === 'wide' || body === 'super' ? this.plan.longDepartures : this.plan.departures;
-    return [...ends].sort((a, b) => queued(a) - queued(b) || a.localeCompare(b))[0];
+  /** The runway ends a departure may use, the long runways for the big aircraft: the plan's, not sorted. */
+  departureEndsFor(body: BodyClass): readonly string[] {
+    return body === 'wide' || body === 'super' ? this.plan.longDepartures : this.plan.departures;
+  }
+
+  /** The runway ends a departure may use, the one with the shortest queue first. */
+  departureEnds(body: BodyClass, queued: (end: string) => number): string[] {
+    return [...this.departureEndsFor(body)].sort((a, b) => queued(a) - queued(b) || a.localeCompare(b));
   }
 
   /** May the aircraft at the hold line enter the runway and line up? */
   mayLineUp(aircraft: number, end: string, now: number, lineUpSeconds: number, rollSeconds: number): boolean {
     const runway = this.runwayOf(end);
+    let mine = runway.asking.get(aircraft);
+    if (!mine) {
+      mine = { since: now, last: now, failed: -Infinity };
+      runway.asking.set(aircraft, mine);
+    }
+    mine.last = now;
     if (runway.cleared !== null && runway.cleared !== aircraft) return this.deny('another cleared to line up', runway.cleared);
+    // First come, first served between the hold lines of one runway: a departure that has held
+    // short much longer goes first, unless it could not take the last clearance it was given.
+    for (const [id, other] of runway.asking) {
+      if (id === aircraft) continue;
+      if (now - other.last > ASK_LAPSES) {
+        runway.asking.delete(id);
+        continue;
+      }
+      if (other.since < mine.since - FIRST_COME && now - other.failed > ASK_LAPSES * 2) return this.deny('another has held short longer', id);
+    }
     for (const [id, occupant] of runway.occupants) {
       if (id === aircraft) continue;
       const p = this.position(id);
+      // On a runway that takes no landings a departure may line up and wait while traffic crosses
+      // downfield: it is not cleared to roll until the crossing is over.
+      if (occupant.kind === 'crossing' && !this.takesLandings(runway)) continue;
       // Someone still on the pavement behind where this aircraft will start, or yet to pass it.
       if (occupant.kind === 'crossing' || occupant.kind === 'linedUp') return this.deny(`runway has one ${occupant.kind}`, id);
       if (occupant.end !== end) return this.deny('runway in use the other way', id);
@@ -252,22 +297,42 @@ export class Tower {
     return true;
   }
 
+  /** Does the plan in use land aircraft on this runway? */
+  private takesLandings(runway: RunwayState): boolean {
+    return this.plan.arrivals.some((end) => this.net.runwayEnds.get(end)!.runway.id === runway.id);
+  }
+
   /** Is a departure waiting to go on a runway that is also landing aircraft? */
   private squeezed(runway: RunwayState): boolean {
-    if (runway.cleared === null) return false;
-    return this.plan.arrivals.some((end) => this.net.runwayEnds.get(end)!.runway.id === runway.id);
+    return runway.cleared !== null && this.takesLandings(runway);
+  }
+
+  /**
+   * Seconds from now until the departure cleared onto a runway that takes no landings could start
+   * its roll if nobody crossed: when it is lined up, or soon after if it is still lining up, and
+   * clear of the last departure's wake.
+   */
+  private readyToRoll(runway: RunwayState, now: number): number {
+    const lined = runway.cleared !== null && runway.occupants.get(runway.cleared)?.kind === 'linedUp';
+    const last = runway.lastDeparture;
+    const wake = last ? last.time + CONFIG.runway.departureGap[last.wake] - now : 0;
+    return Math.max(lined ? 0 : CROSS_LINING_UP, wake);
   }
 
   /** The aircraft is on the centreline, stopped. */
   linedUp(aircraft: number, end: string): void {
-    this.runwayOf(end).occupants.set(aircraft, { end, kind: 'linedUp' });
+    const runway = this.runwayOf(end);
+    runway.occupants.set(aircraft, { end, kind: 'linedUp' });
+    runway.asking.delete(aircraft);
   }
 
-  /** The aircraft gave up its place at the hold line (rerouted, or the plan changed). */
-  cancelLineUp(aircraft: number, end: string): void {
+  /** The aircraft could not take its clearance to line up, or gave up its place at the hold line (rerouted, or the plan changed). */
+  cancelLineUp(aircraft: number, end: string, now: number): void {
     const runway = this.runwayOf(end);
     if (runway.cleared === aircraft) runway.cleared = null;
     runway.occupants.delete(aircraft);
+    const mine = runway.asking.get(aircraft);
+    if (mine) mine.failed = now;
   }
 
   /**
@@ -324,9 +389,13 @@ export class Tower {
   mayCross(aircraft: number, runwayId: string, referenceEnd: string, along: number, now: number): boolean {
     const runway = this.runways.get(runwayId)!;
     const length = this.net.runwayEnds.get(referenceEnd)!.runway.length;
+    const squeezed = this.squeezed(runway);
     for (const [id, occupant] of runway.occupants) {
       if (id === aircraft) continue;
       if (occupant.kind === 'crossing') continue;
+      // A departure lined up on a runway that takes no landings waits for the crossing to be over
+      // before it is cleared to roll; how long it may be kept is judged below.
+      if (occupant.kind === 'linedUp' && !squeezed) continue;
       const p = this.position(id);
       if (!p) return this.deny(`runway has one ${occupant.kind}`, id);
       const at = occupant.end === referenceEnd ? p.along : length - p.along;
@@ -337,10 +406,10 @@ export class Tower {
     }
     if (runway.cleared !== null) {
       // Nobody crosses in front of a departure that has only a gap between landings to go in.
-      if (this.squeezed(runway)) return this.deny('a squeezed departure is cleared onto the runway', runway.cleared);
-      const p = this.position(runway.cleared);
-      // Someone cleared onto the runway who has not started to roll may be held; anyone else not.
-      if (p && p.speed > 1) return this.deny('a departure is rolling', runway.cleared);
+      if (squeezed) return this.deny('a squeezed departure is cleared onto the runway', runway.cleared);
+      // Cleared to line up, not yet to take off (that clearance clears `cleared`): traffic may
+      // cross in front of it as long as it holds the departure up by no more than a little.
+      if (CONFIG.runway.crossTime - this.readyToRoll(runway, now) > CROSS_HOLDS_DEPARTURE) return this.deny('a departure is ready to go', runway.cleared);
     }
     const next = runway.inbound[0];
     if (next && next.threshold - now < CONFIG.runway.crossBeforeLanding) return this.deny('landing too close to cross', next.aircraft);

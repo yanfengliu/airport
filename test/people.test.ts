@@ -1,0 +1,62 @@
+// People in the terminals over a morning: nobody goes missing from the books, security keeps up,
+// bags get where they are going, and staff are at work. Bound: the full day is
+// `node tools/sim/people.ts --start 04:00 --hours 24`, which takes about a minute; this runs the
+// first morning wave, three hours, and checks the same things on it.
+
+import { describe, expect, it } from 'vitest';
+import { Sim } from '../src/sim/sim.ts';
+import { ROLE } from '../src/sim/terminal/people.ts';
+import { percentile } from '../src/sim/terminal/terminals.ts';
+import { loadLayoutFromDisk } from './helpers/layout.ts';
+
+const layout = loadLayoutFromDisk();
+
+describe('people in the terminals, over a morning', () => {
+  const sim = new Sim(layout, { seed: 3, startTime: 5 * 3600, people: true });
+  sim.run(3 * 3600);
+  const t = sim.terminals!;
+  const s = t.stats;
+  const here = t.audit();
+
+  it('accounts for everyone it creates', () => {
+    expect(s.departing.created).toBeGreaterThan(5000);
+    expect(s.arriving.created).toBeGreaterThan(1000);
+    expect(s.departing.created - s.departing.boarded - s.departing.missed - s.departing.cancelled - here.departingHere).toBe(0);
+    expect(s.arriving.created - s.arriving.left - here.arrivingHere).toBe(0);
+  });
+
+  it('boards almost everyone whose flight leaves', () => {
+    expect(s.departing.boarded).toBeGreaterThan(3000);
+    expect(s.departing.missed).toBeLessThan(0.02 * (s.departing.boarded + s.departing.missed));
+  });
+
+  it('keeps the wait at security under half an hour for 95 in 100', () => {
+    expect(s.security.served).toBeGreaterThan(3000);
+    expect(percentile(s.security, 0.95)).toBeLessThan(30 * 60);
+  });
+
+  it('mishandles fewer than one bag in a hundred', () => {
+    const bags = s.bags;
+    expect(bags.checked).toBeGreaterThan(2000);
+    expect(bags.loaded + bags.leftBehind + bags.misrouted).toBeLessThanOrEqual(bags.checked);
+    expect(bags.leftBehind + bags.misrouted + bags.lost).toBeLessThan(0.01 * (bags.checked + bags.delivered));
+  });
+
+  it('has staff of each kind at work, and shops taking money', () => {
+    const roles = new Map<number, number>();
+    for (let id = 0; id < t.people.high; id += 1) if (t.people.alive[id]) roles.set(t.people.role[id], (roles.get(t.people.role[id]) ?? 0) + 1);
+    for (const role of [ROLE.security, ROLE.agent, ROLE.gate, ROLE.shop, ROLE.cleaner, ROLE.officer]) expect(roles.get(role) ?? 0).toBeGreaterThan(0);
+    expect(Object.values(s.takings).reduce((a, b) => a + b, 0)).toBeGreaterThan(1000);
+  });
+});
+
+describe('determinism with people', () => {
+  it('gives the same terminals after an hour for the same seed', () => {
+    const run = (): number => {
+      const sim = new Sim(layout, { seed: 8, startTime: 7 * 3600, people: true });
+      sim.run(3600);
+      return sim.checksum();
+    };
+    expect(run()).toBe(run());
+  });
+});

@@ -138,6 +138,37 @@ function assignStands(rng: Rng, rotations: Rotation[], stands: readonly Stand[],
   }
 }
 
+/** Departures the runways can take in a quarter of an hour, in all and on the long runways. */
+const QUARTER = 900;
+const DEPARTURES_PER_QUARTER = 11;
+const LONG_RUNWAY_DEPARTURES_PER_QUARTER = 3;
+
+/**
+ * Fit the departures to what the runways can take, as a coordinated airport's schedule is: one
+ * that would overfill its quarter hour goes in the next with room, at the same minute past the
+ * quarter. The aircraft that need the long runways have a smaller share, since each of them
+ * needs a gap in the landings. Nothing is dropped, and nothing leaves earlier than planned.
+ */
+function coordinateDepartures(rotations: Rotation[]): void {
+  const quarters = DAY / QUARTER;
+  const all = new Array<number>(quarters).fill(0);
+  const long = new Array<number>(quarters).fill(0);
+  for (const r of [...rotations].sort((a, b) => a.dep - b.dep || a.id - b.id)) {
+    const body = AIRCRAFT[r.type].body;
+    const needsLength = body === 'wide' || body === 'super';
+    let q = Math.floor(r.dep / QUARTER);
+    // Twelve quarters at most: three hours late is as far as a flight is put back.
+    for (let shift = 0; shift < 12; shift += 1) {
+      const k = q % quarters;
+      if (all[k] < DEPARTURES_PER_QUARTER && (!needsLength || long[k] < LONG_RUNWAY_DEPARTURES_PER_QUARTER)) break;
+      q += 1;
+    }
+    r.dep = Math.max(r.dep, q * QUARTER + (r.dep % QUARTER));
+    all[q % quarters] += 1;
+    if (needsLength) long[q % quarters] += 1;
+  }
+}
+
 export function buildSchedule(rng: Rng, stands: readonly Stand[], options: ScheduleOptions): Rotation[] {
   const rotations: Rotation[] = [];
   const usedNumbers = new Set<string>();
@@ -197,6 +228,7 @@ export function buildSchedule(rng: Rng, stands: readonly Stand[], options: Sched
     }
   }
 
+  coordinateDepartures(rotations);
   rotations.sort((a, b) => a.arr - b.arr || a.id - b.id);
   rotations.forEach((r, index) => {
     r.id = index;

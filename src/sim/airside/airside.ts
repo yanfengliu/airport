@@ -3,12 +3,12 @@
 import { parkedClearance, type Parked } from '../../shared/footprint.ts';
 import type { TaxiNet } from '../airfield/net.ts';
 import { fuselageAt, newFuselage } from '../airfield/path.ts';
-import { Traffic } from '../airfield/traffic.ts';
+import { Traffic, newMover } from '../airfield/traffic.ts';
 import { CONFIG } from '../config.ts';
 import { AIRCRAFT, AIRLINE_BY_CODE, type AircraftType } from '../fleet.ts';
 import type { Rng } from '../rng.ts';
 import type { Rotation } from '../schedule.ts';
-import { Aircraft, approachSeconds, leadInPath, pushPlansFor, standPath, type AirsideServices } from './aircraft.ts';
+import { Aircraft, approachSeconds, leadInPath, pushPlansFor, standPath, wayInPath, waysIn, type AirsideServices } from './aircraft.ts';
 import { FlightBook, TAXI_IN_NOMINAL, type Visit } from './flights.ts';
 import { flowCosts } from './flows.ts';
 import type { UsableStands } from './stands.ts';
@@ -18,6 +18,8 @@ import { Tower } from './tower.ts';
 const AGAINST_TRAFFIC = 240;
 /** Room kept between the outlines of two aircraft on neighbouring stands, wings included, metres. */
 const BESIDE = 2;
+/** Seconds beyond the start of the approach up to which landing slots are given out. */
+const SLOT_HORIZON = 240;
 
 export interface SimEvent {
   time: number;
@@ -31,9 +33,9 @@ interface StandGround {
   /** Where it rests, parked. */
   rest: number[];
   restBox: [number, number, number, number];
-  /** The stand's own line, followed in. */
+  /** The stand's own line, followed in. The rest of the way in is judged by the arrival's own ways, `Aircraft.wayIn`. */
   lineIn: Set<number>;
-  /** Each way of pushing back, as far as the push goes. */
+  /** Each way of pushing back that leads to a runway, as far as the push goes. */
   pushes: Set<number>[];
   /** A box round the lead-in and every push. */
   reachBox: [number, number, number, number];
@@ -64,6 +66,10 @@ export class Airside {
   private readonly outlines = new Map<string, Parked | null>();
   private readonly grounds = new Map<string, StandGround | null>();
   private readonly shut = new Map<string, { lineIn: boolean; out: boolean }>();
+  /** Per runway end: the arcs from which a departure can taxi to it, and the arcs that arrive at its line-up. */
+  private readonly towards = new Map<string, { reaching: Uint8Array; goals: Set<number> }>();
+  /** Stands in for an aircraft not yet on the ground, for asking what ground is taken. */
+  private readonly probe = newMover(-2);
   private nextId = 1;
   private nextHousekeeping = 0;
   /** Set when the terminals simulate passengers: they then count people off and on. */
@@ -175,6 +181,7 @@ export class Airside {
     const visit = this.book.visits.get(forVisit);
     const type = visit ? AIRCRAFT[visit.rotation.type] : null;
     const mine = type ? this.outlineAt(stand, type) : null;
+    const mineRest = type ? this.groundOf(stand, type)?.rest : undefined;
     for (const a of this.aircraft) {
       if (a.visit.id === forVisit) continue;
       // An arrival is bound for its stand from the start of its approach.
@@ -187,28 +194,54 @@ export class Airside {
       // A parked aircraft needs only its way out; one still coming needs its way in as well.
       const coming = a.phase !== 'parked' && a.phase !== 'pushback';
       if (this.shutsIn(a.visit.stand, a.type, stand, type, true) || this.shutsIn(stand, type, a.visit.stand, a.type, coming)) return false;
+      // Nor may it rest on ground an arrival has still to pass over to reach its own stand.
+      if (coming && mineRest) {
+        const way = a.wayInGround();
+        if (way && mineRest.some((tile) => way.has(tile))) return false;
+      }
     }
     return true;
   }
 
-  /** The ground a stand asks of an aircraft of a type: where it rests, its lead-in, and each way of pushing back. */
+  /** Can a departure facing along `arc` taxi from there to runway `end`, as the router would find? */
+  private leadsTo(arc: number, end: string): boolean {
+    let known = this.towards.get(end);
+    if (!known) {
+      const goals: number[] = [];
+      for (const { node } of this.net.lineUpNodes(end)) for (const a of this.net.arcsFrom(node)) if (this.net.arcBlock(a).kind === 'twy') goals.push(a ^ 1);
+      known = { reaching: this.net.reaching(goals), goals: new Set(goals) };
+      this.towards.set(end, known);
+    }
+    // The route has to go somewhere after the push, so the arc it faces alone is not enough.
+    return known.reaching[arc] === 1 && !known.goals.has(arc);
+  }
+
+  /**
+   * The ground a stand asks of an aircraft of a type: where it rests, its lead-in, and each way of
+   * pushing back that leads to a runway it may take off from under the plan in use. A push that
+   * leads nowhere is no way out, however clear it is.
+   */
   private groundOf(stand: string, type: AircraftType): StandGround | null {
-    const key = `${stand}:${type.id}`;
+    const plan = this.tower.plan;
+    const key = `${stand}:${type.id}:${plan.name}`;
     const known = this.grounds.get(key);
     if (known !== undefined) return known;
+    const ends = this.tower.departureEndsFor(type.body);
     let ground: StandGround | null = null;
     const node = this.net.standNode.get(stand);
     const rest = standPath(this.net, stand, type.length);
     const lead = leadInPath(this.net, stand, type.length);
     if (node !== undefined && rest && lead) {
-      const pushes = pushPlansFor(this.net, node, type).map((plan) => {
+      const lineIn = new Set(lead.tiles);
+      const leading = pushPlansFor(this.net, node, type).filter((plan) => ends.some((end) => this.leadsTo(plan.push.forward, end)));
+      const pushes = leading.map((plan) => {
         const tiles = new Set<number>();
         for (let i = 0; i < plan.path.tiles.length && plan.path.from[i] <= plan.pushEnd; i += 1) tiles.add(plan.path.tiles[i]);
         return tiles;
       });
       const restTiles = Array.from(rest.tiles);
-      const reach = [...lead.tiles, ...pushes.flatMap((p) => [...p])];
-      ground = { rest: restTiles, restBox: this.boxOf(restTiles), lineIn: new Set(lead.tiles), pushes, reachBox: this.boxOf(reach) };
+      const all = [...lead.tiles, ...pushes.flatMap((p) => [...p])];
+      ground = { rest: restTiles, restBox: this.boxOf(restTiles), lineIn, pushes, reachBox: this.boxOf(all) };
     }
     this.grounds.set(key, ground);
     return ground;
@@ -238,7 +271,7 @@ export class Airside {
     const [ax0, ay0, ax1, ay1] = from.restBox;
     const [bx0, by0, bx1, by1] = to.reachBox;
     if (ax0 > bx1 || bx0 > ax1 || ay0 > by1 || by0 > ay1) return false;
-    const key = `${s}:${a.id}>${t}:${b.id}`;
+    const key = `${s}:${a.id}>${t}:${b.id}:${this.tower.plan.name}`;
     let known = this.shut.get(key);
     if (known === undefined) {
       const hits = (tiles: ReadonlySet<number>): boolean => from.rest.some((tile) => tiles.has(tile));
@@ -304,6 +337,9 @@ export class Airside {
     this.book.extendTo(this.now + 8 * 3600);
     this.book.prune(this.now);
     const lead = approachSeconds(CONFIG.approach.startDistance, 70) + 90;
+    // Landing slots are given out only a little ahead of the approach, so that the sequence can
+    // still make room for a departure that needs a gap; arrivals beyond it wait their turn.
+    const horizon = this.now + lead + SLOT_HORIZON;
     for (const visit of this.book.inboundAfter(this.now - 3600)) {
       const wantThreshold = visit.eta - TAXI_IN_NOMINAL;
       // The list is in timetable order, and a delayed flight can be due after a later one.
@@ -311,7 +347,8 @@ export class Airside {
       if (this.pending.some((p) => p.visit === visit) || visit.aircraft >= 0) continue;
       const type = AIRCRAFT[visit.rotation.type];
       const earliest = Math.max(wantThreshold, this.now + approachSeconds(CONFIG.approach.startDistance, type.vApp) + 5);
-      const slot = this.tower.assignSlot(earliest, type.wake, null);
+      const slot = this.tower.assignSlot(earliest, type.wake, null, horizon);
+      if (!slot) continue;
       this.pending.push({ visit, end: slot.end, threshold: slot.threshold });
       visit.eta = Math.max(visit.eta, slot.threshold + TAXI_IN_NOMINAL);
       if (slot.threshold - wantThreshold > 600 && !visit.delayNote) visit.delayNote = 'Arrival flow';
@@ -324,10 +361,11 @@ export class Airside {
       const p = this.pending[i];
       const type = AIRCRAFT[p.visit.rotation.type];
       if (this.now < p.threshold - approachSeconds(CONFIG.approach.startDistance, type.vApp)) continue;
-      if (p.visit.state === 'scheduled' && !this.standFree(p.visit.stand, p.visit.id)) {
+      let wayIn: Set<number> | null = null;
+      if (p.visit.state === 'scheduled') {
         // Its stand is fixed before the approach starts, and is its own from then on.
-        const other = this.otherStand(p.visit);
-        if (!other) {
+        const found = this.standFor(p);
+        if (!found) {
           // Nowhere to park it: it holds off the approach, and takes a later landing slot.
           const slot = this.tower.assignSlot(this.now + approachSeconds(CONFIG.approach.startDistance, type.vApp) + 60, type.wake, null);
           p.end = slot.end;
@@ -337,13 +375,66 @@ export class Airside {
           this.totals.heldForStand += 1;
           continue;
         }
-        this.event('gate-change', `${p.visit.rotation.arrFlight} gate changed ${p.visit.stand} to ${other}`, -1);
-        p.visit.stand = other;
+        if (found.stand !== p.visit.stand) {
+          this.event('gate-change', `${p.visit.rotation.arrFlight} gate changed ${p.visit.stand} to ${found.stand}`, -1);
+          p.visit.stand = found.stand;
+        }
+        wayIn = found.wayIn;
       }
       this.pending.splice(i, 1);
       if (p.visit.state !== 'scheduled') continue;
-      this.create(p.visit).startApproach(this.svc, p.end, p.threshold);
+      const aircraft = this.create(p.visit);
+      aircraft.startApproach(this.svc, p.end, p.threshold);
+      aircraft.wayIn = wayIn;
     }
+  }
+
+  /**
+   * A stand for an arrival about to start its approach, with the ground of its ways in: free, and
+   * with some way in from the runway it lands on that runs over no ground an aircraft rests on or
+   * will rest on. Null when there is none.
+   */
+  private standFor(p: PendingArrival): { stand: string; wayIn: Set<number> } | null {
+    const avoid = new Set<string>();
+    let stand = p.visit.stand;
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      if (avoid.has(stand) || !this.standFree(stand, p.visit.id)) {
+        const other = this.otherStand(p.visit, avoid);
+        if (!other) return null;
+        stand = other;
+      }
+      const wayIn = this.openWaysIn(p.visit, stand, p.end);
+      if (wayIn) return { stand, wayIn };
+      avoid.add(stand);
+    }
+    return null;
+  }
+
+  /**
+   * The ground of the ways a landing on `end` would try to `stand` that no aircraft parked, or
+   * bound for a stand of its own, rests on; null when there are none.
+   */
+  private openWaysIn(visit: Visit, stand: string, end: string): Set<number> | null {
+    const node = this.net.standNode.get(stand);
+    const info = this.net.runwayEnds.get(end);
+    if (node === undefined || !info) return null;
+    const type = AIRCRAFT[visit.rotation.type];
+    // Where the arrivals already on their way will rest: their ground is not yet marked as theirs.
+    const coming: number[][] = [];
+    for (const a of this.aircraft) {
+      if (a.phase !== 'approach' || a.wayFixed) continue;
+      const ground = this.groundOf(a.visit.stand, a.type);
+      if (ground) coming.push(ground.rest);
+    }
+    this.svc.planFor(-1);
+    const tiles = new Set<number>();
+    for (const way of waysIn(this.svc, end, stand, node, CONFIG.approach.touchdownBeyondThreshold, type.vApp - 3)) {
+      const path = wayInPath(this.net, info, way, type);
+      if (this.traffic.restingOn(this.probe, path) !== -1) continue;
+      if (coming.some((rest) => rest.some((tile) => path.index.has(tile)))) continue;
+      for (const tile of path.tiles) tiles.add(tile);
+    }
+    return tiles.size ? tiles : null;
   }
 
   /** Time-driven turnaround: when boarding opens, when doors close, when to ask to push. */

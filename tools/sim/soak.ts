@@ -8,6 +8,10 @@
 // A seed passes when, over the run:
 //   - at least 99% of the day's flights land and at least 99% take off;
 //   - no aircraft waits more than 20 minutes on the ground for the way ahead;
+//   - no departure is held at its stand more than 20 minutes once it is ready to go (doors closed,
+//     departure time reached): waiting to be let push back is waiting for a taxi clearance too.
+//     Added 2026-11-26, after runs that passed every other limit held departures at their stands
+//     for up to 6,890 s; the measures above are unchanged.
 //   - go-arounds are at most 3% of landings;
 //   - no two parked aircraft overlap, wings included;
 //   - no two aircraft on the ground ever have their fuselages within four metres of each other;
@@ -38,6 +42,7 @@ const asJson = argv.includes('--json');
 const LIMITS = {
   completed: 0.99,
   longestWait: 20 * 60,
+  longestGateHold: 20 * 60,
   goAroundShare: 0.03,
   usableGates: 85,
   wallSeconds: 60,
@@ -64,6 +69,7 @@ interface Result {
   takeoffs: number;
   goArounds: number;
   longestWait: number;
+  longestGateHold: number;
   standOverlaps: number;
   bodyHits: number;
   wingBrushes: number;
@@ -84,10 +90,22 @@ function run(seed: number): Result {
   let firstHit = '';
   /** Fuselage meetings by what the two aircraft were doing. */
   const kinds: Record<string, number> = {};
+  /** When each departure still at its stand was ready to go, by visit. */
+  const readyAt = new Map<number, number>();
+  let longestGateHold = 0;
   while (sim.time < end) {
     sim.step();
     if (sim.steps % 4) continue;
     const list = sim.airside.aircraft;
+    for (const a of list) {
+      const v = a.visit;
+      if (a.phase === 'parked' && v.doorsClosed && sim.time >= v.etd) {
+        if (!readyAt.has(v.id)) readyAt.set(v.id, sim.time);
+      } else if (readyAt.has(v.id)) {
+        longestGateHold = Math.max(longestGateHold, sim.time - readyAt.get(v.id)!);
+        readyAt.delete(v.id);
+      }
+    }
     for (let i = 0; i < list.length; i += 1) {
       const a = list[i];
       if (a.alt > 3 || a.phase === 'gone') continue;
@@ -117,6 +135,7 @@ function run(seed: number): Result {
       }
     }
   }
+  for (const at of readyAt.values()) longestGateHold = Math.max(longestGateHold, sim.time - at);
   const stats = sim.airside.tower.stats;
   const flights = sim.rotations.length;
   const stuckAtEnd = sim.airside.aircraft.filter((a) => a.waitingSince >= 0 && sim.time - a.waitingSince > LIMITS.longestWait).length;
@@ -128,6 +147,7 @@ function run(seed: number): Result {
     takeoffs: stats.takeoffs,
     goArounds: stats.goArounds,
     longestWait: Math.round(sim.airside.totals.longestWait),
+    longestGateHold: Math.round(longestGateHold),
     standOverlaps: pairs.stand.size,
     bodyHits: pairs.body.size,
     wingBrushes: pairs.wing.size,
@@ -142,6 +162,7 @@ function run(seed: number): Result {
   if (result.landings < LIMITS.completed * flights) result.failures.push(`only ${result.landings} of ${flights} landed`);
   if (result.takeoffs < LIMITS.completed * flights) result.failures.push(`only ${result.takeoffs} of ${flights} took off`);
   if (result.longestWait > LIMITS.longestWait) result.failures.push(`an aircraft waited ${result.longestWait} s`);
+  if (result.longestGateHold > LIMITS.longestGateHold) result.failures.push(`a departure was held at its stand ${result.longestGateHold} s`);
   if (result.goArounds > LIMITS.goAroundShare * Math.max(1, result.landings)) result.failures.push(`${result.goArounds} go-arounds`);
   if (result.standOverlaps > 0) result.failures.push(`${result.standOverlaps} pairs of parked aircraft overlapped`);
   if (result.bodyHits > 0) result.failures.push(`${result.bodyHits} pairs of fuselages met ${JSON.stringify(kinds)}`);
@@ -159,7 +180,7 @@ if (asJson) {
 } else {
   for (const r of results) {
     console.log(
-      `seed ${String(r.seed).padEnd(4)} ${r.failures.length ? 'FAIL' : 'pass'}  landed ${r.landings}/${r.flights}  took off ${r.takeoffs}/${r.flights}  go-arounds ${r.goArounds}  longest wait ${r.longestWait} s  ` +
+      `seed ${String(r.seed).padEnd(4)} ${r.failures.length ? 'FAIL' : 'pass'}  landed ${r.landings}/${r.flights}  took off ${r.takeoffs}/${r.flights}  go-arounds ${r.goArounds}  longest wait ${r.longestWait} s  gate hold ${r.longestGateHold} s  ` +
         `stands ${r.standOverlaps} bodies ${r.bodyHits} (wings ${r.wingBrushes})  gates ${r.usableGates}  ${r.wallSeconds} s  checksum ${r.checksum}` +
         (r.failures.length ? `\n          ${r.failures.join('; ')}` : ''),
     );
