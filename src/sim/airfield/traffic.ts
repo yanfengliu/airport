@@ -1,374 +1,525 @@
-// Ground traffic control: who may be on which piece of taxiway, and in what order.
+// Ground traffic control, built the way a railway interlocking is.
 //
-// Every block and node has a queue of the aircraft cleared to use it, in the order they will. An
-// aircraft may move onto a resource only when it is first in that resource's queue. A new
-// clearance is added to the queues at the places a conflict-free timetable puts it: nominal
-// timings for the new aircraft, estimates for everyone already cleared. Orders taken from one
-// consistent timetable cannot form a cycle, so however late anyone runs, nobody waits in a ring:
-// delays stretch the timetable, they do not knot it.
+// Every aircraft on the ground follows a path and is cleared along it a stretch at a time. The
+// ground a clearance covers is the ground the fuselage sweeps: the path is turned into a row of
+// poses a few metres apart, each the straight line of the fuselage with the lead point there, and
+// two poses are on the same ground when those lines come within APART metres. Three rules:
+//
+//  1. Nothing is cleared through the place where another aircraft stands or will come to rest.
+//  2. A clearance gives way to every clearance made before it: where two cross, the later aircraft
+//     waits until the earlier has gone by. The earliest clearance of all waits for nobody, so
+//     every clearance, once given, is carried out.
+//  3. An aircraft may come to rest only where that leaves no ring of aircraft each standing across
+//     the next one's way on. With no ring there is always an aircraft with nobody standing in its
+//     way, and it can be cleared all the way to where it is going.
+//
+// Rules 1 and 2 keep aircraft apart. Rules 2 and 3 keep them moving: a wait is always for an
+// earlier clearance or for an aircraft further down a chain that ends, never round a ring.
 
-import type { TaxiNet } from './net.ts';
-import { pointAt, retime, timeAt, type Path, type PathPoint } from './path.ts';
+import { bodyAt, type Path, type PathPoint } from './path.ts';
 
-/** Seconds kept between one aircraft leaving a resource and the next arriving, in the plan. */
-const BUFFER = 4;
-/** Metres short of an uncleared resource at which an aircraft stops. */
-const STOP_GAP = 5;
+/** Metres of travel between the poses an envelope is made of. */
+export const STEP = 3;
+/** Fuselage centrelines closer than this, metres, are on the same ground. */
+export const APART = 11;
+/** Closer than this, metres, and the interlocking has failed; counted by the audit. */
+const TOUCHING = 5;
+const CHUNK = 8;
+
+/** The ground a body sweeps along a path. */
+export interface Envelope {
+  /** Nose x, y and tail x, y of the fuselage for each pose; pose k has the lead point at k * STEP. */
+  seg: Float64Array;
+  count: number;
+  /** Bounds of each run of CHUNK poses: least x, least y, greatest x, greatest y. */
+  box: Float64Array;
+}
+
+/** A place on another aircraft's path that must be behind it before this one goes further. */
+interface Gate {
+  /** The first pose this aircraft may not take up until the gate opens. */
+  at: number;
+  other: Mover;
+  /** The other aircraft's lead point must have come this far along its path. */
+  need: number;
+  /** The clearance of the other aircraft the gate belongs to; a newer one means it has gone by. */
+  epoch: number;
+}
 
 export interface Mover {
   id: number;
+  /** Fuselage length, and how far behind the lead point the nose is. */
+  length: number;
+  front: number;
   path: Path | null;
+  env: Envelope | null;
+  /** True while the path is followed tail first. */
+  reversing: boolean;
   /** Lead point's distance along the path, and its speed. */
   s: number;
   v: number;
-  /** Where the current clearance ends. */
+  /** Where the current clearance ends: the aircraft rests there until cleared on. */
   end: number;
-  /** Spans (in path order) that are in the queues, and that may be entered now. */
-  claimed: number;
-  granted: number;
-  /** Per span: 1 once the tail has cleared it and the claim is gone. */
-  released: Uint8Array;
-  /** Estimated arrival at and departure from each span, simulation seconds. */
-  enter: Float64Array;
-  exit: Float64Array;
-  /** The aircraft does not move before this time. */
+  /** The aircraft does not move, and is not yet on its path, before this time. */
   startAt: number;
-  /** Span index of each resource on the path. */
-  index: Map<number, number>;
-  /** Its next move is back the way its path came: parked nose-in, or pushed back and about to taxi. */
-  turnsBack: boolean;
+  /** Off its stand and going somewhere: the rest of its path is its way on. */
+  bound: boolean;
+  /** Taxiing in to a stand. */
+  inbound: boolean;
+  /** Taxiing out to a runway: others bound for a runway may queue behind it. */
+  queued: boolean;
+  /** The way it goes after this path, when that is already fixed: a pushback's way out. */
+  onward: Envelope | null;
+  onwardFrom: number;
+  gates: Gate[];
+  gateFrom: number;
+  epoch: number;
 }
 
-export interface ClearResult {
+export interface ClaimOptions {
+  /** Refuse unless the clearance reaches the whole way. */
+  whole?: boolean;
+  /** Short of the whole way, the aircraft may rest only behind one for which this holds. */
+  behind?: (other: Mover) => boolean;
+  /** The smallest advance worth making, metres. */
+  least?: number;
+  /** The ground up to this distance must be free to enter at once. */
+  openTo?: number;
+  /** Refuse to rest across the way on of any aircraft for which this holds. */
+  yieldTo?: (other: Mover) => boolean;
+}
+
+export interface ClaimResult {
   ok: boolean;
-  /** Seconds the plan has the aircraft wait before moving. */
-  delay: number;
-  /** When blocked: the distance along the path where the blocking resource starts. */
-  blockedAt: number;
-  /** When blocked: the aircraft in the way, and whether it will move without outside help. */
+  /** Where the clearance now ends. */
+  end: number;
+  /** When refused or cut short: the aircraft in the way, or -1. */
   blocker: number;
-  blockerHolding: boolean;
+  /** Refused because resting there would close a ring, or stand in the way of one it yields to. */
+  ring: boolean;
 }
 
-export function newMover(id: number): Mover {
-  return { id, path: null, s: 0, v: 0, end: 0, claimed: 0, granted: 0, released: new Uint8Array(0), enter: new Float64Array(0), exit: new Float64Array(0), startAt: 0, index: new Map(), turnsBack: false };
+export interface PlaceOptions {
+  reversing?: boolean;
+  bound?: boolean;
+  inbound?: boolean;
+  queued?: boolean;
+  env?: Envelope;
+  onward?: Envelope | null;
+  onwardFrom?: number;
 }
+
+export function newMover(id: number, length: number, front: number): Mover {
+  return { id, length, front, path: null, env: null, reversing: false, s: 0, v: 0, end: 0, startAt: 0, bound: false, inbound: false, queued: false, onward: null, onwardFrom: 0, gates: [], gateFrom: 0, epoch: 0 };
+}
+
+export function buildEnvelope(path: Path, length: number, front: number, reversing: boolean): Envelope {
+  const count = Math.floor(path.total / STEP) + 2;
+  const seg = new Float64Array(count * 4);
+  const pose: PathPoint = { x: 0, y: 0, heading: 0 };
+  const a: PathPoint = { x: 0, y: 0, heading: 0 };
+  const b: PathPoint = { x: 0, y: 0, heading: 0 };
+  const half = length / 2;
+  for (let k = 0; k < count; k += 1) {
+    bodyAt(path, Math.min(k * STEP, path.total), length, front, reversing, pose, a, b);
+    const ux = Math.cos(pose.heading) * half;
+    const uy = Math.sin(pose.heading) * half;
+    seg[k * 4] = pose.x + ux;
+    seg[k * 4 + 1] = pose.y + uy;
+    seg[k * 4 + 2] = pose.x - ux;
+    seg[k * 4 + 3] = pose.y - uy;
+  }
+  const chunks = Math.ceil(count / CHUNK);
+  const box = new Float64Array(chunks * 4);
+  for (let c = 0; c < chunks; c += 1) {
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    for (let k = c * CHUNK; k < Math.min(count, (c + 1) * CHUNK); k += 1) {
+      x0 = Math.min(x0, seg[k * 4], seg[k * 4 + 2]);
+      x1 = Math.max(x1, seg[k * 4], seg[k * 4 + 2]);
+      y0 = Math.min(y0, seg[k * 4 + 1], seg[k * 4 + 3]);
+      y1 = Math.max(y1, seg[k * 4 + 1], seg[k * 4 + 3]);
+    }
+    box[c * 4] = x0;
+    box[c * 4 + 1] = y0;
+    box[c * 4 + 2] = x1;
+    box[c * 4 + 3] = y1;
+  }
+  return { seg, count, box };
+}
+
+function pointToLine2(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
+  const ex = px - (ax + dx * t);
+  const ey = py - (ay + dy * t);
+  return ex * ex + ey * ey;
+}
+
+/** Are two fuselage lines, four numbers each at p[i] and q[j], within `apart` metres of each other? */
+function near(p: Float64Array, i: number, q: Float64Array, j: number, apart: number): boolean {
+  const ax = p[i];
+  const ay = p[i + 1];
+  const bx = p[i + 2];
+  const by = p[i + 3];
+  const cx = q[j];
+  const cy = q[j + 1];
+  const dx = q[j + 2];
+  const dy = q[j + 3];
+  if (Math.min(ax, bx) - apart > Math.max(cx, dx) || Math.max(ax, bx) + apart < Math.min(cx, dx)) return false;
+  if (Math.min(ay, by) - apart > Math.max(cy, dy) || Math.max(ay, by) + apart < Math.min(cy, dy)) return false;
+  const d1 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+  const d2 = (bx - ax) * (dy - ay) - (by - ay) * (dx - ax);
+  const d3 = (dx - cx) * (ay - cy) - (dy - cy) * (ax - cx);
+  const d4 = (dx - cx) * (by - cy) - (dy - cy) * (bx - cx);
+  if (d1 * d2 < 0 && d3 * d4 < 0) return true;
+  const limit = apart * apart;
+  return pointToLine2(ax, ay, cx, cy, dx, dy) < limit || pointToLine2(bx, by, cx, cy, dx, dy) < limit || pointToLine2(cx, cy, ax, ay, bx, by) < limit || pointToLine2(dx, dy, ax, ay, bx, by) < limit;
+}
+
+const REFUSED = (end: number, blocker: number, ring: boolean): ClaimResult => ({ ok: false, end, blocker, ring });
 
 export class Traffic {
-  private readonly queues: number[][];
-  private readonly movers = new Map<number, Mover>();
-  private estimatedAt = -1;
+  private readonly movers: Mover[] = [];
+  /** Changes whenever anyone's resting place or way on does. */
+  private version = 0;
+  private readonly blockerCache = new Map<number, { version: number; list: Mover[] }>();
+  private readonly counted = new Set<string>();
+  private readonly pose: PathPoint = { x: 0, y: 0, heading: 0 };
   private readonly scratchA: PathPoint = { x: 0, y: 0, heading: 0 };
   private readonly scratchB: PathPoint = { x: 0, y: 0, heading: 0 };
-  /** Counted for the soak tests: a claim released out of turn means the order was broken. */
+  private readonly rest = new Float64Array(4);
+  /**
+   * Counted for the soak tests: the times an aircraft was found on ground an earlier clearance
+   * had not given up. The audit measures it from where the aircraft actually are.
+   */
   outOfOrder = 0;
-  readonly net: TaxiNet;
-
-  constructor(net: TaxiNet) {
-    this.net = net;
-    this.queues = Array.from({ length: net.blocks.length + net.nodes.length }, () => []);
-  }
 
   get activeCount(): number {
-    return this.movers.size;
+    return this.movers.length;
   }
 
-  holder(res: number): number {
-    const q = this.queues[res];
-    return q.length ? q[0] : -1;
+  /** Put an aircraft on a path where it stands, at rest. */
+  place(mover: Mover, path: Path, s: number, now: number, options: PlaceOptions = {}): void {
+    this.set(mover, path, s, now, options);
+    if (!this.movers.includes(mover)) this.movers.push(mover);
+    this.version += 1;
   }
 
-  queueOf(res: number): readonly number[] {
-    return this.queues[res];
+  /** The same aircraft on another path, to try clearances on without committing to them. */
+  candidate(mover: Mover, path: Path, s: number, now: number, options: PlaceOptions = {}): Mover {
+    const trial = newMover(mover.id, mover.length, mover.front);
+    this.set(trial, path, s, now, options);
+    return trial;
   }
 
-  /** Put an aircraft on a path where it stands, holding the ground its body covers. */
-  place(mover: Mover, path: Path, s: number, now: number): void {
-    this.remove(mover);
+  /** Make a candidate, with the clearances it has been given, the aircraft's own. */
+  adopt(mover: Mover, trial: Mover): void {
+    const epoch = mover.epoch + 1;
+    Object.assign(mover, trial);
+    mover.epoch = epoch;
+    if (!this.movers.includes(mover)) this.movers.push(mover);
+    this.version += 1;
+  }
+
+  private set(mover: Mover, path: Path, s: number, now: number, options: PlaceOptions): void {
     mover.path = path;
+    mover.reversing = options.reversing ?? false;
+    mover.env = options.env ?? buildEnvelope(path, mover.length, mover.front, mover.reversing);
     mover.s = s;
     mover.v = 0;
     mover.end = s;
-    mover.claimed = 0;
-    mover.granted = 0;
-    mover.released = new Uint8Array(path.spans.length);
-    mover.enter = new Float64Array(path.spans.length).fill(now);
-    mover.exit = new Float64Array(path.spans.length).fill(Infinity);
     mover.startAt = now;
-    mover.index = new Map();
-    for (let i = 0; i < path.spans.length; i += 1) mover.index.set(path.spans[i].res, i);
-    this.movers.set(mover.id, mover);
-    retime(path, s, 0, s);
-    // What it already stands on comes first in every queue: it is there.
-    for (let i = 0; i < path.spans.length; i += 1) {
-      const span = path.spans[i];
-      if (span.from > s) break;
-      if (span.to <= s) {
-        mover.released[i] = 1;
-      } else {
-        const q = this.queues[span.res];
-        const at = q.indexOf(mover.id);
-        if (at > 0) q.splice(at, 1);
-        if (at !== 0) q.unshift(mover.id);
-      }
-      mover.claimed = i + 1;
-      mover.granted = i + 1;
-    }
-    this.estimatedAt = -1;
+    mover.bound = options.bound ?? false;
+    mover.inbound = options.inbound ?? false;
+    mover.queued = options.queued ?? false;
+    mover.onward = options.onward ?? null;
+    mover.onwardFrom = options.onwardFrom ?? 0;
+    mover.gates = [];
+    mover.gateFrom = 0;
+    mover.epoch += 1;
   }
 
-  /**
-   * Replace an aircraft's path with one that starts on the ground it holds, keeping its claims.
-   * `s` is the lead point's distance along the new path.
-   */
-  replace(mover: Mover, path: Path, s: number, now: number): void {
-    const held = new Set<number>();
-    if (mover.path) {
-      for (let i = 0; i < mover.claimed; i += 1) if (!mover.released[i]) held.add(mover.path.spans[i].res);
-    }
-    const keeps = new Set<number>();
-    for (const span of path.spans) if (span.from <= s && span.to > s) keeps.add(span.res);
-    for (const res of held) {
-      if (keeps.has(res)) continue;
-      const q = this.queues[res];
-      const at = q.indexOf(mover.id);
-      if (at >= 0) q.splice(at, 1);
-    }
-    mover.path = null;
-    this.movers.delete(mover.id);
-    this.place(mover, path, s, now);
+  /** The aircraft has arrived where it was going and has no way on. */
+  settle(mover: Mover): void {
+    mover.bound = false;
+    mover.inbound = false;
+    mover.queued = false;
+    mover.onward = null;
+    this.version += 1;
   }
 
-  /** Take an aircraft off the network and drop every claim it has. */
+  /** Take an aircraft off the ground. */
   remove(mover: Mover): void {
-    if (mover.path) {
-      for (let i = 0; i < mover.claimed; i += 1) {
-        if (mover.released[i]) continue;
-        const q = this.queues[mover.path.spans[i].res];
-        const at = q.indexOf(mover.id);
-        if (at >= 0) q.splice(at, 1);
-      }
-    }
+    const at = this.movers.indexOf(mover);
+    if (at >= 0) this.movers.splice(at, 1);
     mover.path = null;
-    mover.claimed = 0;
-    mover.granted = 0;
-    this.movers.delete(mover.id);
-    this.estimatedAt = -1;
+    mover.env = null;
+    mover.onward = null;
+    mover.gates = [];
+    mover.gateFrom = 0;
+    mover.bound = false;
+    mover.epoch += 1;
+    this.blockerCache.delete(mover.id);
+    this.version += 1;
   }
 
   /**
-   * Ask to move the clearance limit to `end`. On success the aircraft is queued for every
-   * resource on the way. With `holdAtOrigin` it waits where it is until the way is clear in the
-   * plan; otherwise it sets off and waits wherever its turn comes.
+   * Ask to move the clearance limit towards `target`. Whatever is given is given at once and the
+   * aircraft may set off; it waits on the way wherever an earlier clearance crosses its own.
    */
-  clear(mover: Mover, end: number, now: number, maxDelay: number, holdAtOrigin: boolean): ClearResult {
+  claim(mover: Mover, target: number, options: ClaimOptions = {}): ClaimResult {
+    const env = mover.env;
     const path = mover.path;
-    if (!path) return { ok: false, delay: 0, blockedAt: 0, blocker: -1, blockerHolding: false };
-    const target = Math.min(end, path.total);
-    if (target <= mover.end + 0.01) return { ok: true, delay: 0, blockedAt: 0, blocker: -1, blockerHolding: false };
-    this.estimate(now);
-    const startDelay = Math.max(0, mover.startAt - now);
-    const spans = path.spans;
-    let last = mover.claimed;
-    while (last < spans.length && spans[last].from <= target) last += 1;
+    if (!env || !path) return REFUSED(0, -1, false);
+    const from = mover.end;
+    const goal = Math.min(target, path.total);
+    if (goal <= from + 0.01) return { ok: true, end: from, blocker: -1, ring: false };
+    const seg = env.seg;
+    const first = Math.floor(from / STEP) + 1;
+    const last = Math.min(env.count - 1, Math.ceil(goal / STEP));
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    for (let i = first; i <= last; i += 1) {
+      x0 = Math.min(x0, seg[i * 4], seg[i * 4 + 2]);
+      x1 = Math.max(x1, seg[i * 4], seg[i * 4 + 2]);
+      y0 = Math.min(y0, seg[i * 4 + 1], seg[i * 4 + 3]);
+      y1 = Math.max(y1, seg[i * 4 + 1], seg[i * 4 + 3]);
+    }
+    x0 -= APART;
+    y0 -= APART;
+    x1 += APART;
+    y1 += APART;
 
-    const fromSpeed = mover.v;
-    retime(path, mover.s, fromSpeed, target);
-    let failure: ClearResult | null = null;
-    for (let delay = 0; delay <= maxDelay; delay += 5) {
-      failure = null;
-      const base = now + startDelay + delay;
-      for (let i = mover.claimed; i < last; i += 1) {
-        const span = spans[i];
-        const arrive = base + timeAt(path, span.from);
-        const leave = span.to > target ? Infinity : base + timeAt(path, span.to);
-        for (const otherId of this.queues[span.res]) {
-          if (otherId === mover.id) continue;
-          const other = this.movers.get(otherId)!;
-          const k = this.spanIndex(other, span.res);
-          const otherEnter = other.enter[k];
-          const otherExit = other.exit[k];
-          const before = otherExit + BUFFER <= arrive;
-          const after = otherEnter >= leave + BUFFER;
-          if (!before && !after) {
-            failure = { ok: false, delay, blockedAt: span.from, blocker: otherId, blockerHolding: otherExit === Infinity };
-            break;
+    const gates: Gate[] = [];
+    // The first pose that cannot be taken up at all, and who is resting there.
+    let cut = last + 1;
+    let cutBy: Mover | null = null;
+    for (const other of this.movers) {
+      const oe = other.env;
+      if (other.id === mover.id || !oe) continue;
+      // The poses the other still has to pass through; from `hard` on it rests in them.
+      const lo = Math.max(0, Math.min(oe.count - 1, Math.floor(other.s / STEP)));
+      const hard = Math.floor(other.end / STEP);
+      const hi = Math.min(oe.count - 1, Math.ceil(other.end / STEP));
+      let touches = false;
+      for (let c = Math.floor(lo / CHUNK); c <= Math.floor(hi / CHUNK) && !touches; c += 1) {
+        touches = !(oe.box[c * 4] > x1 || oe.box[c * 4 + 2] < x0 || oe.box[c * 4 + 1] > y1 || oe.box[c * 4 + 3] < y0);
+      }
+      if (!touches) continue;
+      for (let i = first; i < cut; i += 1) {
+        const p = i * 4;
+        const px0 = Math.min(seg[p], seg[p + 2]) - APART;
+        const px1 = Math.max(seg[p], seg[p + 2]) + APART;
+        const py0 = Math.min(seg[p + 1], seg[p + 3]) - APART;
+        const py1 = Math.max(seg[p + 1], seg[p + 3]) + APART;
+        // The last of the other's poses that this one is in the way of.
+        let latest = -1;
+        for (let c = Math.floor(hi / CHUNK); c >= Math.floor(lo / CHUNK) && latest < 0; c -= 1) {
+          if (oe.box[c * 4] > px1 || oe.box[c * 4 + 2] < px0 || oe.box[c * 4 + 1] > py1 || oe.box[c * 4 + 3] < py0) continue;
+          for (let j = Math.min(hi, c * CHUNK + CHUNK - 1); j >= Math.max(lo, c * CHUNK); j -= 1) {
+            if (near(seg, p, oe.seg, j * 4, APART)) {
+              latest = j;
+              break;
+            }
           }
         }
-        if (failure) break;
+        if (latest < 0) continue;
+        if (latest >= hard) {
+          cut = i;
+          cutBy = other;
+          break;
+        }
+        gates.push({ at: i, other, need: (latest + 1) * STEP, epoch: other.epoch });
       }
-      if (!failure) {
-        this.insert(mover, path, last, target, base);
-        mover.end = target;
-        if (holdAtOrigin && delay > 0) mover.startAt = now + startDelay + delay;
-        this.estimatedAt = -1;
-        return { ok: true, delay, blockedAt: 0, blocker: -1, blockerHolding: false };
-      }
-      // Someone standing in the way with no clearance to leave will not move for a delay.
-      if (failure.blockerHolding) break;
     }
-    retime(path, mover.s, fromSpeed, mover.end);
-    return failure ?? { ok: false, delay: 0, blockedAt: 0, blocker: -1, blockerHolding: false };
+
+    const reach = cut <= last ? Math.min(goal, (cut - 1) * STEP) : goal;
+    const blocker = cutBy ? cutBy.id : -1;
+    if (reach < goal - 0.01 && (options.whole || !options.behind || !cutBy || !options.behind(cutBy))) return REFUSED(from, blocker, false);
+    if (reach - from < (options.least ?? 0.5)) return REFUSED(from, blocker, false);
+    const reachPose = Math.ceil(reach / STEP);
+    const kept = gates.filter((g) => g.at <= reachPose).sort((p, q) => p.at - q.at);
+    if (options.openTo !== undefined) {
+      const openPose = Math.ceil(Math.min(options.openTo, reach) / STEP);
+      for (const g of kept) {
+        if (g.at > openPose) break;
+        if (!this.open(g)) return REFUSED(from, g.other.id, false);
+      }
+    }
+    if (!this.restsFreely(mover, reach, options.yieldTo)) return REFUSED(from, blocker, true);
+    mover.end = reach;
+    for (const g of kept) mover.gates.push(g);
+    this.version += 1;
+    return { ok: true, end: reach, blocker, ring: false };
   }
 
-  /**
-   * Clear as far towards `end` as the traffic allows: the full distance if it can, otherwise up
-   * to just short of whatever is standing in the way. Returns the new limit, or the old one.
-   */
-  clearAsFarAs(mover: Mover, end: number, now: number, maxDelay: number, holdAtOrigin: boolean, minAdvance = 25): { end: number; result: ClearResult } {
-    let target = end;
-    let result = this.clear(mover, target, now, maxDelay, holdAtOrigin);
-    for (let attempt = 0; attempt < 4 && !result.ok && result.blockerHolding; attempt += 1) {
-      // Queue up behind someone going the same way, but never close in on someone who will have
-      // to come out past us: nose to nose on a taxiway, neither can move again.
-      if (this.oncoming(mover, result.blockedAt, result.blocker)) break;
-      target = result.blockedAt - STOP_GAP - 3;
-      if (target < Math.max(mover.end, mover.s) + minAdvance) break;
-      result = this.clear(mover, target, now, maxDelay, holdAtOrigin);
-    }
-    return { end: mover.end, result };
-  }
-
-  /** Will the aircraft standing in the way at `at` on the mover's path next move towards the mover? */
-  private oncoming(mover: Mover, at: number, blockerId: number): boolean {
-    const other = this.movers.get(blockerId);
-    if (!other?.path || !mover.path) return false;
-    const mine = pointAt(mover.path, at, this.scratchA).heading;
-    const theirs = pointAt(other.path, other.s, this.scratchB).heading + (other.turnsBack ? Math.PI : 0);
-    return Math.cos(mine - theirs) < -0.3;
+  private open(gate: Gate): boolean {
+    return gate.other.epoch !== gate.epoch || gate.other.s >= gate.need;
   }
 
   /** The farthest the lead point may go right now. */
   limit(mover: Mover, now: number): number {
-    const path = mover.path;
-    if (!path || now < mover.startAt) return mover.s;
-    const spans = path.spans;
-    while (mover.granted < mover.claimed && this.queues[spans[mover.granted].res][0] === mover.id) mover.granted += 1;
-    if (mover.granted < mover.claimed) return Math.min(mover.end, spans[mover.granted].from - STOP_GAP);
+    if (!mover.path || now < mover.startAt) return mover.s;
+    const gates = mover.gates;
+    while (mover.gateFrom < gates.length) {
+      const gate = gates[mover.gateFrom];
+      if (!this.open(gate)) return Math.max(mover.s, Math.min(mover.end, (gate.at - 1) * STEP));
+      mover.gateFrom += 1;
+    }
     return mover.end;
   }
 
-  /** Give up the resources the tail has cleared. Call after moving. */
-  release(mover: Mover): void {
-    const path = mover.path;
-    if (!path) return;
-    const spans = path.spans;
-    for (let i = 0; i < mover.granted; i += 1) {
-      if (mover.released[i] || spans[i].to > mover.s) continue;
-      mover.released[i] = 1;
-      const q = this.queues[spans[i].res];
-      if (q[0] === mover.id) q.shift();
-      else {
-        const at = q.indexOf(mover.id);
-        if (at >= 0) {
-          q.splice(at, 1);
-          this.outOfOrder += 1;
-        }
+  /** The aircraft whose passing this one is waiting for, or -1. */
+  waitingFor(mover: Mover): number {
+    const gate = mover.gates[mover.gateFrom];
+    return gate && !this.open(gate) ? gate.other.id : -1;
+  }
+
+  /** Blocks under aircraft that are bound somewhere and rest, or will come to rest, on them. */
+  restBlocks(blockCount: number, except: (mover: Mover) => boolean): Set<number> {
+    const out = new Set<number>();
+    for (const m of this.movers) {
+      if (!m.bound || !m.path || except(m)) continue;
+      for (const span of m.path.spans) {
+        if (span.from > m.end) break;
+        if (span.to > m.end && span.res < blockCount) out.add(span.res);
       }
     }
+    return out;
   }
 
-  /** Aircraft that hold, or are queued for, any of the resources a path covers between two distances. */
-  occupants(path: Path, from: number, to: number, except: number): number[] {
-    const found = new Set<number>();
-    for (const span of path.spans) {
-      if (span.to < from || span.from > to) continue;
-      for (const id of this.queues[span.res]) if (id !== except) found.add(id);
+  // ---- rule 3: no ring of aircraft standing in each other's way ---------------------------
+
+  /** Does any pose of an envelope, from pose `from` on, come within APART of the line in `rest`? */
+  private sweeps(env: Envelope | null, from: number, rest: Float64Array): boolean {
+    if (!env || from >= env.count) return false;
+    const x0 = Math.min(rest[0], rest[2]) - APART;
+    const x1 = Math.max(rest[0], rest[2]) + APART;
+    const y0 = Math.min(rest[1], rest[3]) - APART;
+    const y1 = Math.max(rest[1], rest[3]) + APART;
+    const box = env.box;
+    for (let c = Math.floor(from / CHUNK); c * CHUNK < env.count; c += 1) {
+      if (box[c * 4] > x1 || box[c * 4 + 2] < x0 || box[c * 4 + 1] > y1 || box[c * 4 + 3] < y0) continue;
+      const stop = Math.min(env.count, (c + 1) * CHUNK);
+      for (let k = Math.max(from, c * CHUNK); k < stop; k += 1) if (near(env.seg, k * 4, rest, 0, APART)) return true;
     }
-    return [...found];
+    return false;
   }
 
-  private spanIndex(mover: Mover, res: number): number {
-    return mover.index.get(res) ?? 0;
+  /** Does the way on of `z`, beyond where its clearance ends, pass through the line in `rest`? */
+  private wayThrough(z: Mover, rest: Float64Array): boolean {
+    if (!z.bound) return false;
+    return this.sweeps(z.env, Math.ceil(z.end / STEP) + 1, rest) || this.sweeps(z.onward, z.onwardFrom, rest);
   }
 
-  /** Queue the mover for spans [claimed, last), each at the place its planned time gives it. */
-  private insert(mover: Mover, path: Path, last: number, target: number, base: number): void {
-    const spans = path.spans;
-    for (let i = mover.claimed; i < last; i += 1) {
-      const span = spans[i];
-      const arrive = base + timeAt(path, span.from);
-      const leave = span.to > target ? Infinity : base + timeAt(path, span.to);
-      mover.enter[i] = arrive;
-      mover.exit[i] = leave;
-      const q = this.queues[span.res];
-      let at = q.length;
-      for (let k = 0; k < q.length; k += 1) {
-        const other = this.movers.get(q[k])!;
-        if (other.enter[this.spanIndex(other, span.res)] >= leave) {
-          at = k;
-          break;
-        }
+  /** Does the resting place of `y` lie on the way given by an envelope from a pose on, or by a second envelope? */
+  private restsOn(y: Mover, env: Envelope | null, from: number, onward: Envelope | null, onwardFrom: number): boolean {
+    const ye = y.env;
+    if (!ye) return false;
+    const lo = Math.max(0, Math.min(ye.count - 1, Math.floor(y.end / STEP)));
+    const hi = Math.min(ye.count - 1, Math.ceil(y.end / STEP));
+    for (let k = lo; k <= hi; k += 1) {
+      this.rest.set(ye.seg.subarray(k * 4, k * 4 + 4));
+      if (this.sweeps(env, from, this.rest) || this.sweeps(onward, onwardFrom, this.rest)) return true;
+    }
+    return false;
+  }
+
+  /** The aircraft resting across the way on of `y`. */
+  private blockers(y: Mover): Mover[] {
+    const known = this.blockerCache.get(y.id);
+    if (known && known.version === this.version) return known.list;
+    const list: Mover[] = [];
+    if (y.bound) {
+      const from = Math.ceil(y.end / STEP) + 1;
+      for (const w of this.movers) if (w.id !== y.id && this.restsOn(w, y.env, from, y.onward, y.onwardFrom)) list.push(w);
+    }
+    this.blockerCache.set(y.id, { version: this.version, list });
+    return list;
+  }
+
+  /** May the aircraft come to rest with its lead point at `reach`? */
+  private restsFreely(mover: Mover, reach: number, yieldTo?: (other: Mover) => boolean): boolean {
+    const env = mover.env!;
+    const pose = this.pose;
+    bodyAt(mover.path!, reach, mover.length, mover.front, mover.reversing, pose, this.scratchA, this.scratchB);
+    const half = mover.length / 2;
+    const rest = new Float64Array(4);
+    rest[0] = pose.x + Math.cos(pose.heading) * half;
+    rest[1] = pose.y + Math.sin(pose.heading) * half;
+    rest[2] = pose.x - Math.cos(pose.heading) * half;
+    rest[3] = pose.y - Math.sin(pose.heading) * half;
+    // Whose way on would it be standing across?
+    const across: Mover[] = [];
+    for (const z of this.movers) if (z.id !== mover.id && this.wayThrough(z, rest)) across.push(z);
+    if (!across.length) return true;
+    if (yieldTo && across.some(yieldTo)) return false;
+    // Who rests across its own way on from there, who across theirs, and so on: a ring closes if
+    // the chain comes back to one of those it would be standing across.
+    const from = Math.ceil(reach / STEP) + 1;
+    const seen = new Set<number>([mover.id]);
+    const chain: Mover[] = [];
+    for (const y of this.movers) {
+      if (y.id === mover.id || !this.restsOn(y, env, from, mover.onward, mover.onwardFrom)) continue;
+      seen.add(y.id);
+      chain.push(y);
+    }
+    while (chain.length) {
+      const y = chain.pop()!;
+      if (across.includes(y)) return false;
+      for (const w of this.blockers(y)) {
+        if (seen.has(w.id)) continue;
+        seen.add(w.id);
+        chain.push(w);
       }
-      q.splice(at, 0, mover.id);
     }
-    mover.claimed = last;
-    // Spans cleared earlier that ran past the old limit now have an end to them.
-    for (let i = 0; i < last; i += 1) {
-      if (!mover.released[i] && mover.exit[i] === Infinity && spans[i].to <= target) mover.exit[i] = base + timeAt(path, spans[i].to);
-    }
+    return true;
   }
+
+  /** The aircraft resting across this one's way on, for reports. */
+  inTheWayOf(mover: Mover): number[] {
+    return this.blockers(mover).map((m) => m.id);
+  }
+
+  // ---- audit ----------------------------------------------------------------------------
 
   /**
-   * Bring every aircraft's estimated times up to date: nominal running from where it is now,
-   * waiting wherever the queues make it wait. Repeated until the estimates stop moving.
+   * Measure, from where the aircraft actually are, whether any two are on the same ground. This
+   * is the check on the rules above; a pair found is counted once.
    */
-  private estimate(now: number): void {
-    if (this.estimatedAt === now) return;
-    this.estimatedAt = now;
-    const list = [...this.movers.values()];
-    for (const m of list) retime(m.path!, m.s, m.v, m.end);
-    for (let pass = 0; pass < 8; pass += 1) {
-      let moved = 0;
-      for (const m of list) {
-        const path = m.path!;
-        const spans = path.spans;
-        const base = Math.max(now, m.startAt);
-        let delay = 0;
-        // Delay picked up at each gate, by the distance at which it applies.
-        const gateAt: number[] = [];
-        const gateDelay: number[] = [];
-        for (let i = 0; i < m.claimed; i += 1) {
-          if (m.released[i]) continue;
-          const span = spans[i];
-          let enter = span.from <= m.s ? Math.min(m.enter[i], now) : base + timeAt(path, span.from) + delay;
-          if (span.from > m.s && i >= m.granted) {
-            let gate = 0;
-            for (const otherId of this.queues[span.res]) {
-              if (otherId === m.id) break;
-              const other = this.movers.get(otherId)!;
-              gate = Math.max(gate, other.exit[this.spanIndex(other, span.res)] + BUFFER);
-            }
-            if (gate > enter && gate !== Infinity) {
-              delay += gate - enter;
-              enter = gate;
-              gateAt.push(span.from);
-              gateDelay.push(delay);
-            } else if (gate === Infinity) {
-              enter = Infinity;
-            }
-          }
-          if (Math.abs(enter - m.enter[i]) > 0.5 && !(enter === Infinity && m.enter[i] === Infinity)) moved += 1;
-          m.enter[i] = enter;
-        }
-        for (let i = 0; i < m.claimed; i += 1) {
-          if (m.released[i]) continue;
-          const span = spans[i];
-          let exit = Infinity;
-          if (span.to <= m.end && m.enter[i] !== Infinity) {
-            let d = 0;
-            for (let g = 0; g < gateAt.length; g += 1) if (gateAt[g] <= span.to) d = gateDelay[g];
-            exit = base + timeAt(path, span.to) + d;
-            // Blocked for good somewhere before the tail clears this span: no end in sight.
-            for (let k = i; k < m.claimed; k += 1) {
-              if (spans[k].from > span.to) break;
-              if (m.enter[k] === Infinity) exit = Infinity;
-            }
-          }
-          m.exit[i] = exit;
-        }
+  audit(now: number): void {
+    const list = this.movers;
+    const lines = new Float64Array(list.length * 4);
+    const pose = this.pose;
+    for (let i = 0; i < list.length; i += 1) {
+      const m = list[i];
+      if (!m.path) continue;
+      bodyAt(m.path, m.s, m.length, m.front, m.reversing, pose, this.scratchA, this.scratchB);
+      const half = m.length / 2;
+      lines[i * 4] = pose.x + Math.cos(pose.heading) * half;
+      lines[i * 4 + 1] = pose.y + Math.sin(pose.heading) * half;
+      lines[i * 4 + 2] = pose.x - Math.cos(pose.heading) * half;
+      lines[i * 4 + 3] = pose.y - Math.sin(pose.heading) * half;
+    }
+    for (let i = 0; i < list.length; i += 1) {
+      const a = list[i];
+      if (!a.path || now < a.startAt) continue;
+      for (let j = i + 1; j < list.length; j += 1) {
+        const b = list[j];
+        if (!b.path || now < b.startAt || (!a.bound && !b.bound)) continue;
+        if (!near(lines, i * 4, lines, j * 4, TOUCHING)) continue;
+        const key = a.id < b.id ? `${a.id}:${b.id}` : `${b.id}:${a.id}`;
+        if (this.counted.has(key)) continue;
+        this.counted.add(key);
+        this.outOfOrder += 1;
       }
-      if (!moved) break;
     }
   }
 }

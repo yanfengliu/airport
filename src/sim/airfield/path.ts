@@ -165,6 +165,28 @@ export function pointAt(path: Path, s: number, out: PathPoint): PathPoint {
   return out;
 }
 
+/**
+ * Where a body is when its lead point is at distance s: the middle of the fuselage and the way it
+ * faces. The nose sits `front` metres behind the lead point, or a whole length further back when
+ * the path is followed tail first; the nose wheel and the main wheels are on the line. Returns
+ * false when the two wheel points coincide, at the very start of a path, and the heading is the
+ * line's own.
+ */
+export function bodyAt(path: Path, s: number, length: number, front: number, reversing: boolean, out: PathPoint, a: PathPoint, b: PathPoint): boolean {
+  const nose = reversing ? s - front - length : s - front;
+  const sign = reversing ? 1 : -1;
+  pointAt(path, nose + sign * 0.12 * length, a);
+  pointAt(path, nose + sign * 0.55 * length, b);
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  const known = dx * dx + dy * dy > 0.01;
+  out.heading = known ? Math.atan2(dy, dx) : reversing ? a.heading + Math.PI : a.heading;
+  // The middle of the fuselage is half a length behind the nose, a little ahead of the main wheels.
+  out.x = a.x + (b.x - a.x) * 0.88;
+  out.y = a.y + (b.y - a.y) * 0.88;
+  return known;
+}
+
 /** Nominal seconds from the path's `start` until the lead point reaches s. */
 export function timeAt(path: Path, s: number): number {
   if (s <= path.start) return 0;
