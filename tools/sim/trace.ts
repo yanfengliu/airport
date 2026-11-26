@@ -30,6 +30,8 @@ const [hh, mm] = option('start', '04:00').split(':').map(Number);
 const show = Number(option('show', '3'));
 const longWait = Number(option('wait', '300'));
 const quiet = argv.includes('--quiet');
+/** `--dump HH:MM` prints every aircraft that is waiting, or held at its stand, at that time. */
+const dumpAt = argv.includes('--dump') ? option('dump', '').split(':').map(Number) : null;
 
 const layout = Object.fromEntries(LAYOUT_FILES.map((name) => [name, JSON.parse(readFileSync(join(root, 'public', 'data', `${name}.json`), 'utf8'))])) as unknown as Layout;
 const cpuStart = process.cpuUsage();
@@ -46,14 +48,11 @@ function outline(a: Aircraft): Parked {
 
 const name = (a: Aircraft): string => `${a.phase === 'taxiIn' || a.phase === 'landing' || a.phase === 'approach' ? a.visit.rotation.arrFlight : a.visit.rotation.depFlight}#${a.id} ${a.type.id} ${a.phase}@${a.visit.stand}`;
 
+/** A piece of ground as the traffic control knows it: a tile, named by its centre. */
 function describeRes(res: number): string {
   if (res < 0) return '-';
-  if (res < net.blocks.length) {
-    const b = net.blocks[res];
-    return `${b.kind}${b.ref ? ` ${b.ref}` : ''} block ${res} (${Math.round((b.pts[0] + b.pts[b.pts.length - 2]) / 2)},${Math.round((b.pts[1] + b.pts[b.pts.length - 1]) / 2)})`;
-  }
-  const n = net.nodes[res - net.blocks.length];
-  return `node ${res - net.blocks.length} (${Math.round(n.x)},${Math.round(n.y)})`;
+  const c = net.grid.centre(res);
+  return `tile ${c.x},${c.y}`;
 }
 
 /** The pieces of ground an aircraft's body is on, as the traffic control sees it. */
@@ -81,27 +80,10 @@ function classify(a: Aircraft, b: Aircraft): Meeting {
   if (onRunway.has(a.phase) || onRunway.has(b.phase)) relation = 'one on a runway';
   else if (!ga.length || !gb.length) relation = 'one holds no ground';
   else if (ga.some((r) => gb.includes(r))) relation = 'both hold the same ground';
-  else {
-    const nodesOf = (list: number[]): Set<number> => {
-      const out = new Set<number>();
-      for (const r of list) {
-        if (r >= net.blocks.length) out.add(r - net.blocks.length);
-        else {
-          out.add(net.blocks[r].a);
-          out.add(net.blocks[r].b);
-        }
-      }
-      return out;
-    };
-    const na = nodesOf(ga);
-    const joined = [...nodesOf(gb)].filter((n) => na.has(n));
-    const kinds = [ga, gb].map((list) => [...new Set(list.filter((r) => r < net.blocks.length).map((r) => net.blocks[r].kind))].sort().join('/') || 'node').sort().join(' and ');
-    relation = `${joined.length ? 'ground joined at a node' : 'ground not joined'} (${kinds})`;
-  }
+  else relation = 'each on its own ground';
   const angle = Math.round((Math.acos(Math.max(-1, Math.min(1, Math.cos(a.heading - b.heading)))) * 180) / Math.PI);
   const text =
-    `${clock()} ${name(a)} v=${a.speed.toFixed(1)} at ${Math.round(a.x)},${Math.round(a.y)} | ${name(b)} v=${b.speed.toFixed(1)} at ${Math.round(b.x)},${Math.round(b.y)} | headings ${angle} deg apart\n` +
-    `      A on ${ga.map(describeRes).join('; ') || 'nothing'}\n      B on ${gb.map(describeRes).join('; ') || 'nothing'}`;
+    `${clock()} ${name(a)} v=${a.speed.toFixed(1)} at ${Math.round(a.x)},${Math.round(a.y)} | ${name(b)} v=${b.speed.toFixed(1)} at ${Math.round(b.x)},${Math.round(b.y)} | headings ${angle} deg apart; A holds ${ga.length} tiles, B ${gb.length}`;
   return { cls: `${phases}: ${relation}`, text };
 }
 
@@ -180,15 +162,59 @@ function checkWaits(): void {
   }
 }
 
+// ---- held at the stand ------------------------------------------------------------------
+
+/** Aircraft ready to go but still on their stands: the longest such hold, and what refused them. */
+let longestGateHold = 0;
+let longestGateHoldText = '';
+const refusals: Record<string, number> = {};
+let brokenOrder = 0;
+
+function checkGates(): void {
+  for (const a of sim.airside.aircraft) {
+    if (a.phase === 'landing' && a.refusal) refusals[`landing: ${a.refusal.replace(/#\d+/, '#')}`] = (refusals[`landing: ${a.refusal.replace(/#\d+/, '#')}`] ?? 0) + 1;
+    if (a.phase !== 'parked' || !a.visit.doorsClosed || sim.time < a.visit.etd) continue;
+    const held = sim.time - a.visit.etd;
+    if (a.refusal) refusals[`push: ${a.refusal.replace(/#\d+/, '#')}`] = (refusals[`push: ${a.refusal.replace(/#\d+/, '#')}`] ?? 0) + 1;
+    if (held > longestGateHold) {
+      longestGateHold = held;
+      longestGateHoldText = `${clock()} ${name(a)} held ${Math.round(held)} s: ${a.refusal}`;
+    }
+  }
+  if (traffic.orderBroken()) brokenOrder += 1;
+}
+
 // ---- run --------------------------------------------------------------------------------
 
+function dump(): void {
+  console.log(`STATE at ${clock()}`);
+  for (const a of sim.airside.aircraft) {
+    const heldAtStand = a.phase === 'parked' && a.visit.doorsClosed && sim.time >= a.visit.etd;
+    if (a.phase === 'parked' && !heldAtStand) continue;
+    if (a.phase === 'approach' || a.phase === 'climb' || a.phase === 'goAround') continue;
+    const by = heldAtStand ? Number(/#(\d+)/.exec(a.refusal)?.[1] ?? -1) : a.holdBy;
+    const other = by >= 0 ? byId.get(by) : undefined;
+    console.log(
+      `  ${name(a)} at ${Math.round(a.x)},${Math.round(a.y)} v=${a.speed.toFixed(1)} rank ${a.mover.rank} ` +
+        (heldAtStand ? `held ${Math.round(sim.time - a.visit.etd)} s: ${a.refusal}` : a.waitingSince >= 0 ? `waited ${Math.round(sim.time - a.waitingSince)} s: ${a.holdKind}${a.holdRes >= 0 ? ` at ${describeRes(a.holdRes)}` : ''}` : 'moving') +
+        (other ? ` -> ${name(other)} rank ${other.mover.rank}` : ''),
+    );
+  }
+}
+
 let nextWaitCheck = sim.time;
+let dumped = false;
 while (sim.time < end) {
   sim.step();
+  if (dumpAt && !dumped && sim.secondsOfDay >= dumpAt[0] * 3600 + dumpAt[1] * 60) {
+    dumped = true;
+    dump();
+  }
   if (sim.steps % 4 === 0) checkMeetings();
   if (sim.time >= nextWaitCheck) {
     nextWaitCheck += 30;
     checkWaits();
+    checkGates();
   }
 }
 
@@ -205,6 +231,9 @@ for (const [cause, count] of Object.entries(causes).sort((p, q) => q[1] - p[1]))
   if (!quiet) console.log(`    first at ${firstOf[cause]}`);
 }
 console.log(`RINGS: ${rings.size} distinct`);
+console.log(`\nHELD AT THE STAND: longest ${Math.round(longestGateHold)} s (${longestGateHoldText}); refusals seen, by half-minute samples:`);
+for (const [why, count] of Object.entries(refusals).sort((p, q) => q[1] - p[1])) console.log(`  ${String(count).padStart(5)}  ${why}`);
+console.log(`ORDER: ${JSON.stringify(traffic.stats)}; samples with someone holding ground wanted by one before it: ${brokenOrder}`);
 
 const stats = sim.airside.tower.stats;
 const flights = sim.rotations.length;

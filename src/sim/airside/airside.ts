@@ -1,12 +1,14 @@
 // The airside: every aircraft, the tower and the ground traffic control, stepped together.
 
+import { parkedClearance, type Parked } from '../../shared/footprint.ts';
 import type { TaxiNet } from '../airfield/net.ts';
+import { fuselageAt, newFuselage } from '../airfield/path.ts';
 import { Traffic } from '../airfield/traffic.ts';
 import { CONFIG } from '../config.ts';
-import { AIRCRAFT, AIRLINE_BY_CODE } from '../fleet.ts';
+import { AIRCRAFT, AIRLINE_BY_CODE, type AircraftType } from '../fleet.ts';
 import type { Rng } from '../rng.ts';
 import type { Rotation } from '../schedule.ts';
-import { Aircraft, approachSeconds, type AirsideServices } from './aircraft.ts';
+import { Aircraft, approachSeconds, standPath, type AirsideServices } from './aircraft.ts';
 import { FlightBook, TAXI_IN_NOMINAL, type Visit } from './flights.ts';
 import { flowCosts } from './flows.ts';
 import type { UsableStands } from './stands.ts';
@@ -14,6 +16,8 @@ import { Tower } from './tower.ts';
 
 /** Seconds of route cost for each block taken against the way another aircraft is routed along it. */
 const AGAINST_TRAFFIC = 240;
+/** Room kept between the outlines of two aircraft on neighbouring stands, wings included, metres. */
+const BESIDE = 2;
 
 export interface SimEvent {
   time: number;
@@ -44,6 +48,7 @@ export class Airside {
   /** Stands that share a lead-in line and so cannot be occupied together. */
   private readonly conflicts: ReadonlyMap<string, readonly string[]>;
   private readonly svc: AirsideServices;
+  private readonly outlines = new Map<string, Parked | null>();
   private nextId = 1;
   private nextHousekeeping = 0;
   /** Totals for the tests and the operations panel. */
@@ -56,9 +61,6 @@ export class Airside {
     const flow = flowCosts(net);
     // Arcs other aircraft are routed along, refreshed whenever one plans a route.
     const routed = new Uint8Array(net.blocks.length * 2);
-    const routedBy = new Int32Array(net.blocks.length * 2).fill(-1);
-    const routedNode = new Uint8Array(net.nodes.length);
-    const held: number[] = [];
     const ahead: number[] = [];
     this.traffic = new Traffic(this.net);
     this.tower = new Tower(this.net, (id) => this.byId.get(id)?.runwayPosition() ?? null);
@@ -71,34 +73,18 @@ export class Airside {
       rng: rng.fork('aircraft'),
       now: startTime,
       arcCost: (arc) => flow[arc] + (routed[arc ^ 1] ? AGAINST_TRAFFIC : 0),
-      planFor: (aircraft, ticket) => {
+      planFor: (aircraft) => {
         routed.fill(0);
-        routedBy.fill(-1);
-        routedNode.fill(0);
-        let marking = -1;
-        const mark = (arc: number): void => {
-          routed[arc] = 1;
-          routedBy[arc] = marking;
-          routedNode[net.arcFrom(arc)] = 1;
-          routedNode[net.arcTo(arc)] = 1;
-        };
         for (const a of this.aircraft) {
           if (a.id === aircraft) continue;
-          marking = a.id;
-          held.length = 0;
           ahead.length = 0;
-          a.routeAhead(held, ahead);
-          for (const arc of held) mark(arc);
-          // The earlier journey has the right of way; of two planned together, the lower number.
-          if (a.ticket < ticket || (a.ticket === ticket && a.id < aircraft)) for (const arc of ahead) mark(arc);
+          a.routeAhead(ahead);
+          for (const arc of ahead) routed[arc] = 1;
         }
       },
-      crossed: (node) => routedNode[node] === 1,
       opposed: (arc) => routed[arc ^ 1] === 1,
-      opposer: (arc) => routedBy[arc ^ 1],
-      busy: (arc) => routed[arc] === 1 || routed[arc ^ 1] === 1,
       standFree: (stand, forVisit) => this.standFree(stand, forVisit),
-      otherStand: (visit) => this.otherStand(visit),
+      otherStand: (visit, avoid) => this.otherStand(visit, avoid),
       departuresFor: (end) => this.aircraft.reduce((n, a) => n + (a.runwayEnd === end && (a.phase === 'pushback' || a.phase === 'starting' || a.phase === 'taxiOut' || a.phase === 'lineUp') ? 1 : 0), 0),
       event: (kind, text, aircraft) => this.event(kind, text, aircraft),
     };
@@ -145,18 +131,45 @@ export class Airside {
     if (kind === 'on-block') this.totals.arrived += 1;
   }
 
-  /** No aircraft is on the stand or on one that shares its line, and none but `forVisit` is on its way to either. */
+  /** The outline of an aircraft of a type as it stands parked at a stand; null for a stand with no line. */
+  private outlineAt(stand: string, type: AircraftType): Parked | null {
+    const key = `${stand}:${type.id}`;
+    const known = this.outlines.get(key);
+    if (known !== undefined) return known;
+    const path = standPath(this.net, stand, type.length);
+    let outline: Parked | null = null;
+    if (path) {
+      const at = fuselageAt(path, path.total, newFuselage());
+      // The outline is placed by the nose wheel, four metres behind the nose.
+      const ahead = type.length / 2 - 4;
+      outline = { x: at.x + Math.cos(at.heading) * ahead, y: at.y + Math.sin(at.heading) * ahead, heading: at.heading, span: type.span, length: type.length };
+    }
+    this.outlines.set(key, outline);
+    return outline;
+  }
+
+  /**
+   * No aircraft is on the stand or on one that shares its line, none but `forVisit` is on its way
+   * to either, and the visit's aircraft parked there would touch none parked on, or bound for, a
+   * stand nearby.
+   */
   private standFree(stand: string, forVisit: number): boolean {
     const shared = this.conflicts.get(stand);
+    const visit = this.book.visits.get(forVisit);
+    const mine = visit ? this.outlineAt(stand, AIRCRAFT[visit.rotation.type]) : null;
     for (const a of this.aircraft) {
-      if (a.visit.id === forVisit || (a.visit.stand !== stand && !shared?.includes(a.visit.stand))) continue;
-      if (a.phase === 'parked' || a.phase === 'taxiIn' || a.phase === 'landing') return false;
-      if (a.phase === 'pushback' && a.mover.s < a.body + 30) return false;
+      if (a.visit.id === forVisit) continue;
+      const there = a.phase === 'parked' || a.phase === 'taxiIn' || a.phase === 'landing' || (a.phase === 'pushback' && a.mover.s < a.body + 30);
+      if (!there) continue;
+      if (a.visit.stand === stand || shared?.includes(a.visit.stand)) return false;
+      if (!mine) continue;
+      const theirs = this.outlineAt(a.visit.stand, a.type);
+      if (theirs && parkedClearance(mine, theirs) < BESIDE) return false;
     }
     return true;
   }
 
-  private otherStand(visit: Visit): string | null {
+  private otherStand(visit: Visit, avoid?: ReadonlySet<string>): string | null {
     const type = AIRCRAFT[visit.rotation.type];
     const airline = AIRLINE_BY_CODE[visit.rotation.airline];
     const wanted = visit.rotation.customs || visit.rotation.internationalOut ? airline.internationalAreas : airline.areas;
@@ -176,7 +189,7 @@ export class Airside {
     let bestScore = Infinity;
     for (const stand of this.net.stands.values()) {
       const span = this.usable.get(stand.id);
-      if (span === undefined || span + 0.5 < type.span) continue;
+      if (span === undefined || span + 0.5 < type.span || avoid?.has(stand.id)) continue;
       if (!this.standFree(stand.id, visit.id)) continue;
       const score = (stand.contact ? rank(stand.area) : 50) * 100 + (soon.has(stand.id) ? 40 : 0) + (span - type.span);
       if (score < bestScore) {

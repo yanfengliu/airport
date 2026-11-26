@@ -6,6 +6,7 @@
 
 import { angleDiff } from '../../shared/geo.ts';
 import type { Airfield, Runway, RunwayEnd, Stand, TaxiEdgeKind } from '../../shared/layout.ts';
+import { TileGrid } from './tiles.ts';
 
 const BLOCK_MAX = 85;
 const BLOCK_TARGET = 60;
@@ -97,6 +98,8 @@ export class TaxiNet {
   readonly stands = new Map<string, Stand>();
   readonly standNode = new Map<string, number>();
   readonly runwayEnds = new Map<string, RunwayEndInfo>();
+  /** The ground as tiles, for keeping aircraft apart. */
+  readonly grid: TileGrid;
   /** Arcs leaving each node. */
   private readonly out: number[][] = [];
   private readonly lines = new Map<string, StandLine | null>();
@@ -118,6 +121,17 @@ export class TaxiNet {
         from = to;
       }
     }
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const n of this.nodes) {
+      minX = Math.min(minX, n.x);
+      minY = Math.min(minY, n.y);
+      maxX = Math.max(maxX, n.x);
+      maxY = Math.max(maxY, n.y);
+    }
+    this.grid = new TileGrid(minX, minY, maxX, maxY);
     for (let n = 0; n < this.nodes.length; n += 1) this.out.push([]);
     for (const b of this.blocks) {
       this.out[b.a].push(b.id * 2);
