@@ -258,6 +258,21 @@ export class Traffic {
     this.dropJourney(mover);
   }
 
+  /**
+   * Give back whatever ground the aircraft holds, or is to rest on, outside `keep`'s: parked, it
+   * keeps only the ground it rests on, not the last of what it taxied over.
+   */
+  trim(mover: Mover, keep: Path): void {
+    const path = mover.path;
+    if (!path) return;
+    for (let i = 0; i < path.tiles.length; i += 1) {
+      const tile = path.tiles[i];
+      if (keep.index.has(tile)) continue;
+      if (i < mover.entered && this.holder[tile] === mover.id) this.holder[tile] = -1;
+      if (this.restOf[tile] === mover.id) this.restOf[tile] = -1;
+    }
+  }
+
   private dropJourney(mover: Mover): void {
     if (mover.rank < 0) return;
     const path = mover.path;

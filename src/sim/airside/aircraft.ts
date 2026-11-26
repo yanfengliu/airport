@@ -509,8 +509,9 @@ export class Aircraft {
    * to roll towards a turn-off, `inSeconds` from now. False when no way off can be had.
    */
   private chooseExit(svc: AirsideServices, fromThreshold: number, speed: number, inSeconds: number): boolean {
-    // A stand whose every way in runs over ground a parked aircraft rests on is passed over for another.
-    for (let attempt = 0; attempt < 3; attempt += 1) {
+    // A stand whose every way in runs over ground a parked aircraft rests on is passed over for
+    // another; the stands nearby are often shut in by the same aircraft, so several are tried.
+    for (let attempt = 0; attempt < 8; attempt += 1) {
       const result = this.chooseExitTo(svc, fromThreshold, speed, inSeconds);
       if (result !== 'shut in') return result === 'ok';
     }
@@ -741,6 +742,9 @@ export class Aircraft {
         this.stops = [];
         this.phase = 'parked';
         svc.traffic.finish(mover);
+        // Parked, it rests on its stand's ground and no more, which is what its neighbours are planned around.
+        this.parkedPath = standPath(svc.net, this.visit.stand, this.type.length);
+        if (this.parkedPath) svc.traffic.trim(mover, this.parkedPath);
         this.waitingSince = -1;
         mover.waitingSince = -1;
         this.avoid.clear();
@@ -804,8 +808,12 @@ export class Aircraft {
       return;
     }
     if (stop.kind === 'lineUp') {
-      const rollSeconds = Math.sqrt((2 * 1500) / CONFIG.runway.takeoffAccel[this.type.body]) + 8;
-      if (!svc.tower.mayLineUp(this.id, this.runwayEnd, svc.now, 42, rollSeconds)) {
+      // The same time on the runway the take-off clearance will ask for, after the time it takes to
+      // roll onto the runway and stop there: cleared any later, it would stand lined up in the way
+      // of the next landing.
+      const rollSeconds = (this.type.vRot + 4) / CONFIG.runway.takeoffAccel[this.type.body] + 6;
+      const lineUpSeconds = (mover.path!.total - mover.s) / 4 + 12;
+      if (!svc.tower.mayLineUp(this.id, this.runwayEnd, svc.now, lineUpSeconds, rollSeconds)) {
         this.noteLimit(`line up: ${svc.tower.denial}`, svc.tower.deniedBy);
         // The gap asked for on the way out has gone by: ask for another.
         if (svc.tower.plan.arrivals.includes(this.runwayEnd) && svc.now > this.gapUntil) this.gapUntil = svc.tower.openGap(this.runwayEnd, svc.now + 120) + 150;
@@ -964,7 +972,11 @@ export class Aircraft {
       .crossingsAlong(this.runwayEnd)
       .filter((c) => c.along > this.along)
       .map((c) => ({ across: c.across, from: Math.sqrt((2 * Math.max(1, c.along - 80 - this.along)) / accel), to: Math.sqrt((2 * (c.along + 80 - this.along)) / accel) }));
-    if (!svc.tower.mayTakeOff(this.id, this.runwayEnd, svc.now, this.type.wake, toRotate + 6, crossings)) return;
+    if (!svc.tower.mayTakeOff(this.id, this.runwayEnd, svc.now, this.type.wake, toRotate + 6, crossings)) {
+      this.refusal = `take off: ${svc.tower.denial}`;
+      return;
+    }
+    this.refusal = '';
     this.phase = 'takeoff';
     this.visit.state = 'airborne';
     svc.event('takeoff', `${this.visit.rotation.depFlight} cleared for take-off ${this.runwayEnd}`, this.id);

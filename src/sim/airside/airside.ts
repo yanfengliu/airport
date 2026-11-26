@@ -175,8 +175,8 @@ export class Airside {
     const mine = type ? this.outlineAt(stand, type) : null;
     for (const a of this.aircraft) {
       if (a.visit.id === forVisit) continue;
-      // Bound for its stand once its way there is fixed, which for an arrival is at decision height.
-      const there = a.phase === 'parked' || a.phase === 'taxiIn' || a.phase === 'landing' || (a.phase === 'approach' && a.mover.rank >= 0) || (a.phase === 'pushback' && a.mover.s < a.body + 30);
+      // An arrival is bound for its stand from the start of its approach.
+      const there = a.phase === 'parked' || a.phase === 'taxiIn' || a.phase === 'landing' || a.phase === 'approach' || (a.phase === 'pushback' && a.mover.s < a.body + 30);
       if (!there) continue;
       if (a.visit.stand === stand || shared?.includes(a.visit.stand)) return false;
       if (!mine || !type) continue;
@@ -322,15 +322,21 @@ export class Airside {
       const p = this.pending[i];
       const type = AIRCRAFT[p.visit.rotation.type];
       if (this.now < p.threshold - approachSeconds(CONFIG.approach.startDistance, type.vApp)) continue;
-      if (p.visit.state === 'scheduled' && !this.standFree(p.visit.stand, p.visit.id) && !this.otherStand(p.visit)) {
-        // Nowhere to park it: it holds off the approach, and takes a later landing slot.
-        const slot = this.tower.assignSlot(this.now + approachSeconds(CONFIG.approach.startDistance, type.vApp) + 60, type.wake, null);
-        p.end = slot.end;
-        p.threshold = slot.threshold;
-        p.visit.eta = Math.max(p.visit.eta, slot.threshold + TAXI_IN_NOMINAL);
-        if (!p.visit.delayNote) p.visit.delayNote = 'Holding for a stand';
-        this.totals.heldForStand += 1;
-        continue;
+      if (p.visit.state === 'scheduled' && !this.standFree(p.visit.stand, p.visit.id)) {
+        // Its stand is fixed before the approach starts, and is its own from then on.
+        const other = this.otherStand(p.visit);
+        if (!other) {
+          // Nowhere to park it: it holds off the approach, and takes a later landing slot.
+          const slot = this.tower.assignSlot(this.now + approachSeconds(CONFIG.approach.startDistance, type.vApp) + 60, type.wake, null);
+          p.end = slot.end;
+          p.threshold = slot.threshold;
+          p.visit.eta = Math.max(p.visit.eta, slot.threshold + TAXI_IN_NOMINAL);
+          if (!p.visit.delayNote) p.visit.delayNote = 'Holding for a stand';
+          this.totals.heldForStand += 1;
+          continue;
+        }
+        this.event('gate-change', `${p.visit.rotation.arrFlight} gate changed ${p.visit.stand} to ${other}`, -1);
+        p.visit.stand = other;
       }
       this.pending.splice(i, 1);
       if (p.visit.state !== 'scheduled') continue;

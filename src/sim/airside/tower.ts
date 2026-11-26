@@ -242,9 +242,12 @@ export class Tower {
       if (occupant.end !== end) return this.deny('runway in use the other way', id);
       if (!p || p.along < 600) return this.deny(`runway has one ${occupant.kind} not yet past`, id);
     }
-    // On a runway that also takes landings there must be room before the next one.
+    // On a runway that also takes landings there must be room before the next one: from when it
+    // can roll, lined up and clear of the last departure's wake, the take-off clearance's own margin.
     const next = runway.inbound[0];
-    if (next && next.threshold - now < lineUpSeconds + rollSeconds + 22) return this.deny('landing too close to line up', next.aircraft);
+    const last = runway.lastDeparture;
+    const rollAt = Math.max(now + lineUpSeconds, last && last.end === end ? last.time + CONFIG.runway.departureGap[last.wake] : now);
+    if (next && next.threshold - rollAt < rollSeconds + 20 + 6) return this.deny('landing too close to line up', next.aircraft);
     runway.cleared = aircraft;
     return true;
   }
