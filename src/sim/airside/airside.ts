@@ -548,10 +548,13 @@ export class Airside {
     const length = this.tower.slotLength;
     for (let k = Math.ceil(after / length); ; k += 1) {
       const at = k * length;
-      // A gap already planned there, behind a super-heavy arrival say, serves as well.
-      if (this.tower.isHole(end, at)) return at;
+      const taken = this.tower.slotTaken(end, at);
+      // A gap already planned there, behind a super-heavy arrival say, serves as well, but only if
+      // no arrival has any of the slot: after a change of beat, a gap and a slot given in the old
+      // beat can both overlap it (review 1, R4).
+      if (this.tower.isHole(end, at) && !taken) return at;
       const taker = this.pending.find((p) => p.end === end && Math.abs(p.threshold - at) < 1);
-      if (this.tower.slotTaken(end, at) && !taker) continue;
+      if (taken && !taker) continue;
       this.tower.addHole(end, at);
       if (taker) {
         this.tower.releaseSlot(taker.end, taker.threshold);

@@ -129,6 +129,26 @@ describe('a change of visibility behind a super-heavy', () => {
   });
 });
 
+describe('a gap for a departure after a change of beat', () => {
+  it('is never a slot an arrival has, though a gap planned in the old beat overlaps it', () => {
+    // Review 1's recheck (R4): under instrument spacing a super-heavy has the slot at J and the
+    // gap behind it, a medium the slot after; paired approaches resume, and a departure asks for a
+    // gap: the planned gap overlapped the slot it named, and so did the medium's.
+    const sim = new Sim(layout, { seed: 7, startTime: 4 * 3600 });
+    const airside = sim.airside as unknown as { tower: Tower; openGap(end: string, after: number): number };
+    const { tower } = airside;
+    // Late in the day, where no slot is given out yet.
+    const J = 700 * CONFIG.runway.slotInstrument;
+    tower.setPaired(false);
+    expect(tower.assignSlot(J, 'J', '28R')).toEqual({ end: '28R', threshold: J });
+    expect(tower.assignSlot(J + 2 * CONFIG.runway.slotInstrument, 'M', '28R')).toEqual({ end: '28R', threshold: J + 2 * CONFIG.runway.slotInstrument });
+    tower.setPaired(true);
+    const gap = airside.openGap('28R', J + 100);
+    expect(gap).toBeGreaterThanOrEqual(J + 100);
+    expect(tower.slotTaken('28R', gap)).toBe(false);
+  });
+});
+
 describe('a closed runway', () => {
   it('takes no new departures, and they go from its neighbour', () => {
     const sim = new Sim(layout, { seed: 7, startTime: 15 * 3600 });
