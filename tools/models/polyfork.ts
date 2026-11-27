@@ -91,6 +91,22 @@ const MODELS: Wanted[] = [
   { id: 'spectator-d086fe', role: 'character', drop: HELD, dropped: 'what it held in its hand removed' },
   { id: 'barista-505240', role: 'character', drop: HELD, dropped: 'what it held in its hand removed' },
   { id: 'shopkeeper-be5547', role: 'character', drop: HELD, dropped: 'what it held in its hand removed' },
+  // Outside: the ground equipment that works round a parked aircraft.
+  { id: 'pushback-tug-8eab46', role: 'prop' },
+  { id: 'towbarless-pushback-tug-989602', role: 'prop' },
+  { id: 'ground-power-unit-326361', role: 'prop' },
+  { id: 'belt-loader-3d84fd', role: 'prop' },
+  { id: 'baggage-tug-fb69f7', role: 'prop' },
+  { id: 'baggage-cart-b1bb82', role: 'prop' },
+  { id: 'container-loader-254a74', role: 'prop' },
+  { id: 'container-dolly-0e4b32', role: 'prop' },
+  { id: 'uld-container-a055c6', role: 'prop' },
+  { id: 'catering-truck-496150', role: 'prop' },
+  { id: 'hydrant-fuel-dispenser-b87cdb', role: 'prop' },
+  { id: 'aviation-fuel-tanker-truck-37ed29', role: 'prop' },
+  { id: 'airstairs-truck-de0f4b', role: 'prop' },
+  { id: 'apron-passenger-bus-c46aef', role: 'prop' },
+  { id: 'lavatory-service-truck-023f33', role: 'prop' },
 ];
 
 /** Frames sampled from each character's built-in clips, and the seat height the sitting pose is made for, metres. */

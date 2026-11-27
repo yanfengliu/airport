@@ -1,16 +1,18 @@
 // The ground equipment round a parked aircraft, placed as the layer places it
-// (src/render/dynamic/gse-places.ts), each piece made of the parts the model is built from
-// (src/render/models/gse-parts.ts), round the aircraft as it is drawn (src/shared/airframe.ts): no
-// two pieces stand in each other, and none stands in a wing, an engine, the tailplane or the
+// (src/render/dynamic/gse-places.ts), each piece the box its Polyfork model is drawn in
+// (public/models/index.json), round the aircraft as it is drawn (src/shared/airframe.ts): no two
+// pieces stand in each other, and none stands in a wing, an engine, the tailplane or the
 // fuselage. Review 1 found the fuel truck, moved behind a low wing, standing in the baggage carts
 // there (UA 1791's B752 at F20, seed 7 at 08:30). Bound: every type in the fleet, with every piece
-// of equipment out at once.
+// it can have out at once, at a stand with a jet bridge and at one without.
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { gseAround, type GsePlace } from '../src/render/dynamic/gse-places.ts';
-import { gseParts, partExtent } from '../src/render/models/gse-parts.ts';
+import { GSE_MODELS, gseAround, pushbackLayout, turnaroundLayout, type GseKind, type GsePlace } from '../src/render/dynamic/gse-places.ts';
 import { airframe, surfaceOver, type Surface } from '../src/shared/airframe.ts';
 import { AIRCRAFT, type AircraftType } from '../src/sim/fleet.ts';
+import { repoRoot } from './helpers/layout.ts';
 
 /** Room kept between two things, metres: closer than this, they are in each other. */
 const TOUCH = 0.01;
@@ -24,13 +26,14 @@ interface Part {
 }
 
 function partsOf(p: GsePlace, index: number): Part[] {
+  const m = GSE_MODELS[p.kind];
+  const back = p.length ? -p.length / 2 : m.back;
+  const front = p.length ? p.length / 2 : m.front;
   const c = Math.cos(p.turn);
   const s = Math.sin(p.turn);
-  return gseParts(p.kind).map((part, i) => {
-    const e = partExtent(part);
-    const corners = ([[e.x0, e.y0], [e.x1, e.y0], [e.x1, e.y1], [e.x0, e.y1]] as const).map(([x, y]): [number, number] => [p.along + x * c - y * s, p.side + x * s + y * c]);
-    return { name: `${p.kind} ${index} part ${i}`, corners, z0: e.z0, z1: e.z1 };
-  });
+  // The model's front is the way the piece heads; its left is to the left of that.
+  const corners = ([[back, m.right], [front, m.right], [front, m.left], [back, m.left]] as const).map(([u, v]): [number, number] => [p.along + u * c - v * s, p.side + u * s + v * c]);
+  return [{ name: `${p.kind} ${index}`, corners, z0: p.h, z1: p.h + m.top }];
 }
 
 /** How far two convex outlines on the ground overlap, along the line that parts them best; 0 or less when they are apart. */
@@ -99,27 +102,57 @@ function inAircraft(type: AircraftType, part: Part): string | null {
 }
 
 describe('ground equipment round a parked aircraft', () => {
-  // Everything out at once: doors open with bags coming and going, catering, fuel, and stairs at a remote stand.
-  const busy = (type: AircraftType) => ({ phase: 'parked' as const, type, visit: { onBlockAt: 0, etd: 20_000, doorsClosed: false, deplaned: 100, boardingOpen: false, rotation: { paxIn: 100 } } });
+  const types = Object.values(AIRCRAFT);
+  const layouts = (type: AircraftType): [string, readonly GsePlace[]][] => [['at a gate', turnaroundLayout(type, false)], ['at a remote stand', turnaroundLayout(type, true)]];
 
-  it('puts out every piece for a busy turnaround', () => {
-    for (const type of Object.values(AIRCRAFT)) {
-      const kinds = gseAround(busy(type), 1_000, true).map((p) => p.kind).sort();
+  it('is drawn with the models it is laid out by, at their sizes', () => {
+    const index = JSON.parse(readFileSync(join(repoRoot, 'public', 'models', 'index.json'), 'utf8')) as { id: string; box: number[] }[];
+    const list = Array.isArray(index) ? index : (index as unknown as { models: { id: string; box: number[] }[] }).models;
+    for (const [kind, m] of Object.entries(GSE_MODELS) as [GseKind, (typeof GSE_MODELS)[GseKind]][]) {
+      if (!m.id) continue;
+      const model = list.find((e) => e.id === m.id);
+      expect(model, `${kind}: ${m.id} converted`).toBeDefined();
+      const [x0, , z0, sx, sy, sz] = model!.box;
+      expect(m.right, `${kind} right`).toBeCloseTo(x0, 1);
+      expect(m.left, `${kind} left`).toBeCloseTo(x0 + sx, 1);
+      expect(m.back, `${kind} back`).toBeCloseTo(z0, 1);
+      expect(m.front, `${kind} front`).toBeCloseTo(z0 + sz, 1);
+      if (kind !== 'stairsLow') expect(m.top, `${kind} top`).toBeCloseTo(model!.box[1] + sy, 1);
+    }
+  });
+
+  it('has every piece out for a busy turnaround, and stairs and a bus only where there is no bridge', () => {
+    // Everything out at once: doors open with bags coming and going, catering, fuel, the lavatory truck.
+    const busy = (type: AircraftType) => ({ phase: 'parked' as const, type, visit: { onBlockAt: 0, etd: 20_000, doorsClosed: false, deplaned: 100, boardingOpen: false, rotation: { paxIn: 100 } } });
+    for (const type of types) {
       const wide = type.body === 'wide' || type.body === 'super';
-      expect(kinds).toEqual((wide ? ['carts', 'carts', 'catering', 'fuel', 'loader', 'loader', 'power', 'stairs'] : ['carts', 'catering', 'fuel', 'loader', 'power', 'stairs']));
+      const count = (list: GsePlace[], kind: GseKind) => list.filter((p) => p.kind === kind).length;
+      const gate = gseAround(busy(type), 1_000, false);
+      expect(count(gate, wide ? 'kloader' : 'loader'), type.id).toBe(wide ? 2 : 1);
+      expect(count(gate, wide ? 'dolly' : 'cart'), type.id).toBe(wide ? 6 : 3);
+      for (const kind of ['power', 'catering', 'hydrant', 'lavatory'] as GseKind[]) expect(count(gate, kind), `${type.id} ${kind}`).toBe(1);
+      expect(count(gate, 'stairs') + count(gate, 'stairsLow') + count(gate, 'bus') + count(gate, 'tanker'), type.id).toBe(0);
+      const remote = gseAround(busy(type), 1_000, true);
+      expect(count(remote, wide ? 'stairs' : 'stairsLow'), type.id).toBe(wide ? 1 : 2);
+      expect(count(remote, 'tanker'), type.id).toBe(1);
+      expect(count(remote, 'hydrant'), type.id).toBe(0);
     }
   });
 
   it('stands no piece in another, for every type', () => {
     const faults: string[] = [];
-    for (const type of Object.values(AIRCRAFT)) {
-      const pieces = gseAround(busy(type), 1_000, true).map(partsOf);
-      for (let i = 0; i < pieces.length; i += 1) {
-        for (let j = i + 1; j < pieces.length; j += 1) {
-          for (const a of pieces[i]) {
-            for (const b of pieces[j]) {
-              const deep = Math.min(overlap(a.corners, b.corners), Math.min(a.z1, b.z1) - Math.max(a.z0, b.z0));
-              if (deep > TOUCH) faults.push(`${type.id}: ${a.name} in ${b.name} by ${deep.toFixed(2)} m`);
+    for (const type of types) {
+      for (const [where, layout] of layouts(type)) {
+        const pieces = layout.map(partsOf);
+        for (let i = 0; i < pieces.length; i += 1) {
+          for (let j = i + 1; j < pieces.length; j += 1) {
+            for (const a of pieces[i]) {
+              for (const b of pieces[j]) {
+                // A container stands on its dolly.
+                if ((a.name.startsWith('uld') && b.name.startsWith('dolly')) || (b.name.startsWith('uld') && a.name.startsWith('dolly'))) continue;
+                const deep = Math.min(overlap(a.corners, b.corners), Math.min(a.z1, b.z1) - Math.max(a.z0, b.z0));
+                if (deep > TOUCH) faults.push(`${type.id} ${where}: ${a.name} in ${b.name} by ${deep.toFixed(2)} m`);
+              }
             }
           }
         }
@@ -130,14 +163,26 @@ describe('ground equipment round a parked aircraft', () => {
 
   it('stands no piece in the drawn wing, an engine, the tailplane or the fuselage, for every type', () => {
     const faults: string[] = [];
-    for (const type of Object.values(AIRCRAFT)) {
-      for (const [i, place] of gseAround(busy(type), 1_000, true).entries()) {
-        for (const part of partsOf(place, i)) {
-          const hit = inAircraft(type, part);
-          if (hit) faults.push(`${type.id}: ${part.name} in the ${hit}`);
+    for (const type of types) {
+      for (const [where, layout] of [...layouts(type), ['pushing back', pushbackLayout(type)] as [string, readonly GsePlace[]]]) {
+        for (const [i, place] of layout.entries()) {
+          for (const part of partsOf(place, i)) {
+            const hit = inAircraft(type, part);
+            if (hit) faults.push(`${type.id} ${where}: ${part.name} in the ${hit}`);
+          }
         }
       }
     }
     expect(faults).toEqual([]);
+  });
+
+  it('puts each container on a dolly and each train behind its tug', () => {
+    for (const type of types) {
+      const layout = turnaroundLayout(type, false);
+      for (const uld of layout.filter((p) => p.kind === 'uld')) {
+        const under = layout.filter((p) => p.kind === 'dolly' && Math.abs(p.side - uld.side) < 0.01 && Math.abs(p.along - uld.along) < 1.6);
+        expect(under.length, `${type.id}: a dolly under the container at ${uld.along.toFixed(1)}`).toBe(1);
+      }
+    }
   });
 });
