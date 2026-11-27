@@ -47,6 +47,8 @@ export interface AirsideServices {
    * departure that needs it; returns the time of the gap.
    */
   openGap(end: string, after: number): number;
+  /** Can a departure facing along `arc` taxi from there to runway `end` at all, whoever is in the way? */
+  leadsTo(arc: number, end: string): boolean;
   event(kind: string, text: string, aircraft: number): void;
 }
 
@@ -920,17 +922,18 @@ export class Aircraft {
     // Whether any way of pushing back leads to the runway, free or not.
     let leads = false;
     for (const plan of this.pushPlans) {
-      // A push that is blocked for now is taken to lead somewhere: it is waited for.
+      // A push that is blocked for now, and leads to this runway once it is clear, is waited for;
+      // one that leads elsewhere is no way to this runway, blocked or not.
       const parked = traffic.restingOn(this.mover, plan.path, plan.pushEnd);
       if (parked !== -1) {
         this.refusal = `push runs over ground #${parked} rests on`;
-        leads = true;
+        if (svc.leadsTo(plan.push.forward, end)) leads = true;
         continue;
       }
       const held = traffic.heldAhead(this.mover, plan.path, plan.pushEnd);
       if (held !== -1) {
         this.refusal = `push not clear of #${held}`;
-        leads = true;
+        if (svc.leadsTo(plan.push.forward, end)) leads = true;
         continue;
       }
       if (!planned.done) {

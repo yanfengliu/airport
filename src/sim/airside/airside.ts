@@ -118,6 +118,7 @@ export class Airside {
       otherStand: (visit, avoid) => this.otherStand(visit, avoid),
       departuresFor: (end) => this.aircraft.reduce((n, a) => n + (a.runwayEnd === end && (a.phase === 'pushback' || a.phase === 'starting' || a.phase === 'taxiOut' || a.phase === 'lineUp') ? 1 : 0), 0),
       openGap: (end, after) => this.openGap(end, after),
+      leadsTo: (arc, end) => this.leadsTo(arc, end),
       event: (kind, text, aircraft) => this.event(kind, text, aircraft),
     };
     this.book.extendTo(startTime + 8 * 3600);
