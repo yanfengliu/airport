@@ -11,9 +11,16 @@ import { Stage } from '../render/stage.ts';
 import { buildStaticWorld } from '../render/world.ts';
 import { formatClock } from '../shared/sun.ts';
 import { CONFIG } from '../sim/config.ts';
+import { AIRLINE_BY_CODE } from '../sim/fleet.ts';
 import { Sim } from '../sim/sim.ts';
-import { INSIDE, SPEEDS, createHud, type Inside } from '../ui/hud.ts';
+import { WEATHER_PRESETS, type Weather } from '../sim/weather.ts';
+import { createBoard } from '../ui/board.ts';
+import { INSIDE, SPEEDS, createHud, type Inside, type PanelId } from '../ui/hud.ts';
+import { createInspector } from '../ui/inspector.ts';
+import { createOpsPanel } from '../ui/ops.ts';
+import { describeAircraft, pickAircraft } from './inspect.ts';
 import { loadLayout } from './layout-loader.ts';
+import { opsSnapshot } from './ops-source.ts';
 import { PRESETS, presetById } from './presets.ts';
 
 declare global {
@@ -59,12 +66,21 @@ async function start(): Promise<void> {
 
   let secondsOfDay = parseClock(params.get('t'), 8.5 * 3600);
   const seed = Number(params.get('seed') ?? 7) || 7;
+  /** What the viewer has set the airport up for: kept when the day is started again at another time. */
+  const operator = {
+    weather: WEATHER_PRESETS.some((p) => p.id === params.get('weather')) ? params.get('weather')! : 'clear',
+    runways: new Set<string>(),
+    checkpoints: new Set<number>(),
+  };
+  const weatherOf = (id: string): Weather => (WEATHER_PRESETS.find((p) => p.id === id) ?? WEATHER_PRESETS[0]).weather;
   // The simulation is started some minutes early and run up to the clock time, so the first
   // frame already has aircraft on approach, taxiing and at the gates.
   const WARM_UP = 30 * 60;
   const ROAD_WARM_UP = 7 * 60;
   const startSim = (at: number): Sim => {
-    const fresh = new Sim(layout, { seed, startTime: at - WARM_UP, roads: true, people: true });
+    const fresh = new Sim(layout, { seed, startTime: at - WARM_UP, roads: true, people: true, weather: weatherOf(operator.weather) });
+    for (const id of operator.runways) fresh.setRunwayClosed(id, true);
+    for (const id of operator.checkpoints) fresh.setCheckpointClosed(id, true);
     // The roads fill in a few minutes; the airfield needs longer to get its aircraft into place.
     fresh.roadsRunning = false;
     fresh.run(WARM_UP - ROAD_WARM_UP);
@@ -116,17 +132,111 @@ async function start(): Promise<void> {
     presetId = null;
   };
 
-  const hud = createHud(document.querySelector<HTMLElement>('#hud')!, PRESETS, provenance.attribution, {
+  // ---- panels: operations, flight boards, the aircraft inspector ----------------------------
+  const hudRoot = document.querySelector<HTMLElement>('#hud')!;
+  const panels: Record<PanelId, boolean> = { flights: params.get('board') === '1', ops: params.get('ops') !== '0' };
+  const ops = createOpsPanel(WEATHER_PRESETS, {
+    setWeather: (id) => {
+      operator.weather = id;
+      sim.setWeather(weatherOf(id));
+      refreshPanels();
+    },
+    setRunwayClosed: (id, closed) => {
+      if (closed) operator.runways.add(id);
+      else operator.runways.delete(id);
+      sim.setRunwayClosed(id, closed);
+      refreshPanels();
+    },
+    setCheckpointClosed: (id, closed) => {
+      const refused = sim.setCheckpointClosed(id, closed);
+      if (refused) ops.notice(refused);
+      else if (closed) operator.checkpoints.add(id);
+      else operator.checkpoints.delete(id);
+      refreshPanels();
+    },
+  });
+  /** The aircraft shown in the inspector, and the one the camera follows, by id; null for none. */
+  let selected: number | null = null;
+  let followed: number | null = null;
+  const inspector = createInspector({
+    toggleFollow: () => follow(!(camera.isFollowing && followed === selected)),
+    close: () => select(null),
+  });
+  const refreshInspector = (): void => {
+    const a = selected !== null ? sim.airside.byIdMap.get(selected) : undefined;
+    if (!a || a.phase === 'gone') {
+      selected = null;
+      inspector.show(null);
+      return;
+    }
+    inspector.show(describeAircraft(sim, a, camera.isFollowing && followed === a.id));
+  };
+  const follow = (on: boolean): void => {
+    if (on && selected !== null) {
+      const id = selected;
+      followed = id;
+      presetId = null;
+      camera.setFollow(() => {
+        const a = sim.airside.byIdMap.get(id);
+        return a && a.phase !== 'gone' ? { x: a.x, y: a.y, h: a.alt } : null;
+      });
+    } else {
+      camera.setFollow(null);
+      followed = null;
+    }
+    refreshInspector();
+  };
+  const select = (id: number | null, andFollow = false): void => {
+    selected = id;
+    if (andFollow) follow(true);
+    else if (followed !== null && followed !== id) follow(false);
+    refreshInspector();
+  };
+  const board = createBoard(
+    {
+      departures: (limit) => sim.airside.book.departuresBoard(sim.time, limit),
+      arrivals: (limit) => sim.airside.book.arrivalsBoard(sim.time, limit),
+      airlineName: (code) => AIRLINE_BY_CODE[code]?.name ?? code,
+    },
+    (visit) => {
+      const a = sim.airside.aircraft.find((x) => x.visit.id === visit && x.phase !== 'gone');
+      if (a) select(a.id, true);
+      else ops.notice('That flight has no aircraft here yet');
+    },
+  );
+  const refreshPanels = (): void => {
+    ops.root.hidden = !panels.ops;
+    board.root.hidden = !panels.flights;
+    if (panels.ops) ops.update(opsSnapshot(sim), operator.weather);
+    if (panels.flights) board.refresh();
+    refreshInspector();
+  };
+  const togglePanel = (id: PanelId): void => {
+    panels[id] = !panels[id];
+    refreshPanels();
+  };
+  camera.onClick = (x, y) => {
+    const a = pickAircraft(sim, stage.camera, canvas, x, y);
+    select(a ? a.id : null);
+  };
+
+  const hud = createHud(hudRoot, PRESETS, provenance.attribution, {
     setSpeed,
     jumpTo: (seconds) => {
-      // Another time of day is another run of the same day.
+      // Another time of day is another run of the same day, set up as the viewer left it.
       secondsOfDay = seconds;
+      select(null);
+      follow(false);
       sim = startSim(seconds);
       owed = 0;
+      refreshPanels();
     },
     goToPreset: (id) => goToPreset(id),
     setInside,
+    togglePanel,
   });
+  hudRoot.append(board.root, ops.root, inspector.root);
+  refreshPanels();
   if (params.get('hud') === '0') hud.setVisible(false);
 
   window.addEventListener('keydown', (event) => {
@@ -147,8 +257,15 @@ async function start(): Promise<void> {
       const order = INSIDE.map((o) => o.id);
       setInside(order[(order.indexOf(inside) + 1) % order.length]);
     } else if (event.code === 'KeyH') {
-      const root = document.querySelector<HTMLElement>('#hud')!;
-      hud.setVisible(root.style.display === 'none');
+      hud.setVisible(hudRoot.style.display === 'none');
+    } else if (event.code === 'KeyB') {
+      togglePanel('flights');
+    } else if (event.code === 'KeyO') {
+      togglePanel('ops');
+    } else if (event.code === 'KeyF') {
+      if (selected !== null) follow(!(camera.isFollowing && followed === selected));
+    } else if (event.code === 'Escape') {
+      select(null);
     }
   });
 
@@ -176,8 +293,14 @@ async function start(): Promise<void> {
     }
     world.update(realSeconds, stage.day, { height: canvas.height, fov: stage.camera.fov, fog: stage.fogDensity, lamp: stage.lampGain });
     stage.render();
-    hud.update({ secondsOfDay, speed, fps, presetId, inside });
+    hud.update({ secondsOfDay, speed, fps, presetId, inside, panels });
+    // The panels are text: once a second of real time is often enough.
+    if (realSeconds >= nextPanels || realSeconds < nextPanels - 2) {
+      nextPanels = realSeconds + 1;
+      refreshPanels();
+    }
   };
+  let nextPanels = 0;
 
   /** Run the simulation on by a span of simulated time, in whole steps, keeping the remainder. */
   const advance = (seconds: number): void => {
@@ -218,6 +341,18 @@ async function start(): Promise<void> {
     sim: () => sim,
     fps: () => fps,
     renderInfo: () => ({ calls: stage.renderer.info.render.calls, triangles: stage.renderer.info.render.triangles }),
+    ops: () => opsSnapshot(sim),
+    selected: () => selected,
+    following: () => (camera.isFollowing ? followed : null),
+    operator: () => ({ weather: operator.weather, runways: [...operator.runways], checkpoints: [...operator.checkpoints] }),
+    /** Screen position of an aircraft's middle, for driving clicks at it. */
+    screenOf: (id: number) => {
+      const a = sim.airside.byIdMap.get(id);
+      if (!a) return null;
+      const p = new THREE.Vector3(a.x, a.alt + 2, -a.y).project(stage.camera);
+      const box = canvas.getBoundingClientRect();
+      return { x: box.left + ((p.x + 1) / 2) * box.width, y: box.top + ((1 - p.y) / 2) * box.height, onScreen: p.z > -1 && p.z < 1 && Math.abs(p.x) < 1 && Math.abs(p.y) < 1 };
+    },
   };
   window.render_game_to_text = () =>
     JSON.stringify({

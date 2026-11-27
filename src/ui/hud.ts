@@ -21,11 +21,19 @@ export const INSIDE: { id: Inside; label: string; title: string }[] = [
   { id: 'arrivals', label: 'Arrivals', title: 'Lift the roofs: baggage claim and the way out (I cycles)' },
 ];
 
+/** Panels the top bar opens and closes, with the key that does the same. */
+export type PanelId = 'flights' | 'ops';
+export const PANELS: { id: PanelId; label: string; key: string; title: string }[] = [
+  { id: 'flights', label: 'Flights', key: 'B', title: 'Departure and arrival boards (B)' },
+  { id: 'ops', label: 'Operations', key: 'O', title: 'Runways, weather, delays, security, bags and roads (O)' },
+];
+
 export interface HudActions {
   setSpeed(speed: number): void;
   jumpTo(secondsOfDay: number): void;
   goToPreset(id: string): void;
   setInside(inside: Inside): void;
+  togglePanel(id: PanelId): void;
 }
 
 export interface HudState {
@@ -34,6 +42,7 @@ export interface HudState {
   fps: number;
   presetId: string | null;
   inside: Inside;
+  panels: Record<PanelId, boolean>;
 }
 
 export interface Hud {
@@ -81,6 +90,15 @@ export function createHud(root: HTMLElement, presets: readonly Preset[], attribu
       on: { click: () => actions.setInside(option.id) },
     }),
   );
+  const panelButtons = PANELS.map((panel) =>
+    el('button', {
+      class: 'chip ghost',
+      text: panel.label,
+      title: panel.title,
+      attrs: { 'data-panel': panel.id, type: 'button' },
+      on: { click: () => actions.togglePanel(panel.id) },
+    }),
+  );
   const fps = el('span', { class: 'fps', text: '' });
 
   const top = el('div', { class: 'bar top' }, [
@@ -89,6 +107,7 @@ export function createHud(root: HTMLElement, presets: readonly Preset[], attribu
     el('div', { class: 'group', attrs: { role: 'group', 'aria-label': 'Simulation speed' } }, speedButtons),
     el('div', { class: 'group', attrs: { role: 'group', 'aria-label': 'Time of day' } }, jumpButtons),
     el('div', { class: 'group', attrs: { role: 'group', 'aria-label': 'Inside the terminals' } }, insideButtons),
+    el('div', { class: 'group', attrs: { role: 'group', 'aria-label': 'Panels' } }, panelButtons),
   ]);
   const bottom = el('div', { class: 'bar bottom' }, [el('div', { class: 'group wrap', attrs: { role: 'group', 'aria-label': 'Camera views' } }, presetButtons)]);
   const credit = el('div', { class: 'credit' }, [fps, el('span', { text: attribution })]);
@@ -115,6 +134,7 @@ export function createHud(root: HTMLElement, presets: readonly Preset[], attribu
         shownInside = state.inside;
         for (const button of insideButtons) button.classList.toggle('on', button.dataset.inside === state.inside);
       }
+      for (const button of panelButtons) button.classList.toggle('on', state.panels[button.dataset.panel as PanelId]);
     },
     setVisible(visible: boolean): void {
       root.style.display = visible ? '' : 'none';

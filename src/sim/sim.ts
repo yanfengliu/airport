@@ -46,12 +46,15 @@ export class Sim {
   roadsRunning = true;
   /** Seconds since midnight of the first day. */
   time: number;
+  /** When the run began, seconds since midnight of the first day. */
+  readonly startTime: number;
   steps = 0;
 
   constructor(layout: Layout, options: SimOptions) {
     this.layout = layout;
     this.seed = options.seed;
     this.time = options.startTime;
+    this.startTime = options.startTime;
     const rng = new Rng(options.seed);
     const net = new TaxiNet(layout.airfield);
     const arrivalEnds = [...WEST_PLAN.arrivals, ...SOUTHEAST_PLAN.arrivals];
@@ -74,6 +77,23 @@ export class Sim {
 
   get secondsOfDay(): number {
     return ((this.time % DAY) + DAY) % DAY;
+  }
+
+  // ---- commands: what the operations panel may change ----------------------------------------
+
+  /** New weather; the runways follow it, with a changeover if the plan changes. */
+  setWeather(weather: Weather): void {
+    this.airside.setWeather(weather);
+  }
+
+  /** Close a runway (by its id, such as "10L/28R") to new movements, or open it again. */
+  setRunwayClosed(runway: string, closed: boolean): void {
+    this.airside.setRunwayClosed(runway, closed);
+  }
+
+  /** Close a security checkpoint (by its place id) or open it again; the reason when it cannot be closed. */
+  setCheckpointClosed(place: number, closed: boolean): string | null {
+    return this.terminals ? this.terminals.setCheckpointClosed(place, closed) : 'No people in this run';
   }
 
   /** Advance by one fixed step. */

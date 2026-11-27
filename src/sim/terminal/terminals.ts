@@ -106,6 +106,8 @@ export class Terminals {
   private readonly divertedTo = new Map<string, Place>();
   /** What the terminals did that the operations log shows. */
   readonly events: { time: number; kind: string; text: string }[] = [];
+  /** Checked bags in the bag system: pairs of the time each lot is ready to go out, and how many. */
+  private readonly bagsMoving: number[] = [];
   /** Queues by place: check-in halls, checkpoints, customs, gates. */
   readonly queues = new Map<number, ServiceQueue>();
   private readonly queueId = new Map<number, number>();
@@ -380,6 +382,7 @@ export class Terminals {
     this.manageBoarding(now);
     this.manageLanes(now);
     this.manageStaff(now);
+    this.pruneBags();
   }
 
   /** Departing parties for every flight leaving within the lookahead, at the times they reach the airport. */
@@ -767,7 +770,28 @@ export class Terminals {
     if (!visit || ready > visit.etd - 900) this.stats.bags.leftBehind += bags;
     else if (this.rng.chance(0.002)) this.stats.bags.misrouted += bags;
     else this.stats.bags.loaded += bags;
+    // Each is in the bag system, being sorted and screened, until it is ready to go out to its aircraft.
+    this.bagsMoving.push(ready, bags);
     this.bags[person] = 0;
+  }
+
+  /** Checked bags still being sorted and screened in the bag system. */
+  bagsInSystem(): number {
+    let n = 0;
+    for (let i = 0; i < this.bagsMoving.length; i += 2) if (this.bagsMoving[i] > this.now) n += this.bagsMoving[i + 1];
+    return n;
+  }
+
+  /** Forget the lots of bags that have left the bag system. */
+  private pruneBags(): void {
+    let kept = 0;
+    for (let i = 0; i < this.bagsMoving.length; i += 2) {
+      if (this.bagsMoving[i] <= this.now) continue;
+      this.bagsMoving[kept] = this.bagsMoving[i];
+      this.bagsMoving[kept + 1] = this.bagsMoving[i + 1];
+      kept += 2;
+    }
+    this.bagsMoving.length = kept;
   }
 
   private serviceTime(person: number, queue: number): number {
@@ -840,16 +864,12 @@ export class Terminals {
       if (place.kind === 'holdroom') continue;
       let people = 0;
       for (const p of queue.line) people += this.people.size[p] || 1;
-      // A closed checkpoint keeps one lane for whoever was already on the way, and no more.
-      if (this.closedCheckpoints.has(placeId)) {
-        queue.setOpen(people > 0 ? 1 : 0);
-        continue;
-      }
       // Mean seconds a server spends per person.
       const mean = place.kind === 'checkpoint' ? 24 : place.kind === 'checkin' ? 32 : 45;
-      // Enough servers to bring the wait down to ten minutes, at least one, two by day.
+      // Enough servers to bring the wait down to ten minutes, at least one, two by day. A closed
+      // checkpoint takes nobody new, but works through whoever is in line, then shuts.
       const want = Math.ceil((people * mean) / 600);
-      const least = night ? 1 : 2;
+      const least = this.closedCheckpoints.has(placeId) ? (people > 0 ? 1 : 0) : night ? 1 : 2;
       const open = Math.max(least, Math.min(queue.servers.length, want));
       // Lanes open at once but close one at a time, so a short lull does not empty them.
       const now0 = queue.openServers;

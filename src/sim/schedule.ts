@@ -138,6 +138,28 @@ function assignStands(rng: Rng, rotations: Rotation[], stands: readonly Stand[],
   }
 }
 
+/**
+ * Registration prefixes of the airlines' home countries, and whether letters or digits follow;
+ * an airline not listed is American and its aircraft carry N-numbers.
+ */
+const REGISTRATION: Record<string, [string, 'letters' | 'digits']> = {
+  AC: ['C-F', 'letters'], WS: ['C-G', 'letters'], BA: ['G-', 'letters'], VS: ['G-V', 'letters'], LH: ['D-A', 'letters'], LX: ['HB-J', 'letters'],
+  AF: ['F-G', 'letters'], KL: ['PH-B', 'letters'], EI: ['EI-', 'letters'], IB: ['EC-', 'letters'], TP: ['CS-T', 'letters'], TK: ['TC-J', 'letters'],
+  EK: ['A6-E', 'letters'], QR: ['A7-B', 'letters'], AI: ['VT-A', 'letters'], SQ: ['9V-S', 'letters'], CX: ['B-K', 'letters'], BR: ['B-16', 'digits'],
+  CI: ['B-18', 'digits'], JL: ['JA7', 'digits'], NH: ['JA8', 'digits'], ZG: ['JA82', 'digits'], KE: ['HL7', 'digits'], OZ: ['HL8', 'digits'],
+  PR: ['RP-C7', 'digits'], VN: ['VN-A', 'digits'], CA: ['B-20', 'digits'], MU: ['B-32', 'digits'], QF: ['VH-Z', 'letters'], NZ: ['ZK-N', 'letters'],
+  FJ: ['DQ-F', 'letters'], TN: ['F-O', 'letters'], AM: ['XA-A', 'letters'], CM: ['HP-1', 'digits'],
+};
+
+/** A registration for the aircraft flying rotation `index` for an airline, varied by the index. */
+function registration(airline: string, index: number): string {
+  const home = REGISTRATION[airline];
+  const letter = (k: number): string => String.fromCharCode(65 + (k % 26));
+  if (!home) return `N${100 + ((index * 37) % 900)}${airline}`;
+  const [prefix, kind] = home;
+  return kind === 'letters' ? `${prefix}${letter(index)}${letter(index * 7 + 3)}${prefix.length < 4 ? letter(index * 11 + 5) : ''}` : `${prefix}${String((index * 37) % 1000).padStart(3, '0')}`;
+}
+
 /** Departures the runways can take in a quarter of an hour, in all and on the long runways. */
 const QUARTER = 900;
 const DEPARTURES_PER_QUARTER = 11;
@@ -232,8 +254,7 @@ export function buildSchedule(rng: Rng, stands: readonly Stand[], options: Sched
   rotations.sort((a, b) => a.arr - b.arr || a.id - b.id);
   rotations.forEach((r, index) => {
     r.id = index;
-    const serial = 100 + ((index * 37) % 900);
-    r.tail = AIRLINES.find((a) => a.code === r.airline)!.share > 0.004 && !DESTINATIONS[r.to].international ? `N${serial}${r.airline}` : `${r.airline}-${String.fromCharCode(65 + (index % 26))}${String.fromCharCode(65 + ((index * 7) % 26))}${String.fromCharCode(65 + ((index * 11) % 26))}`;
+    r.tail = registration(r.airline, index);
   });
   assignStands(rng, rotations, stands, options.conflicts ?? new Map());
   return rotations;
