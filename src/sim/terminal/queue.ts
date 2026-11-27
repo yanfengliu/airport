@@ -91,6 +91,11 @@ export class ServiceQueue {
     this.joinedAt.set(person, now);
   }
 
+  /** Everyone still in line, with how long each has waited so far. */
+  waiting(now: number): { person: number; waited: number }[] {
+    return this.line.map((person) => ({ person, waited: now - (this.joinedAt.get(person) ?? now) }));
+  }
+
   /**
    * Take someone out of the line, or away from the server serving them, who has given up or been
    * called away: a server still holding them would finish with whoever is given their place next.

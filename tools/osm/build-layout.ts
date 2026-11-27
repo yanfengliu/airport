@@ -30,6 +30,16 @@ const manifestPath = join(rawDir, 'manifest.json');
 if (!existsSync(manifestPath)) throw new Error('artifacts/osm-raw/manifest.json is missing: run `node tools/osm/fetch.mjs` first');
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { bbox: [number, number, number, number]; themes: Provenance['themes'] & Record<string, { osmBase?: string }> };
 
+// One provenance covers every file. Rebuilding only some of them is right only when the raw extract
+// is the one the others were built from; otherwise the provenance would claim the new sources for
+// files built from the old.
+const provenancePath = join(outDir, 'provenance.json');
+if (only.length < LAYOUT_FILES.length && existsSync(provenancePath)) {
+  const before = JSON.parse(readFileSync(provenancePath, 'utf8')) as Provenance;
+  const changed = Object.entries(manifest.themes).filter(([name, t]) => before.themes[name]?.sha256 !== t.sha256).map(([name]) => name);
+  if (changed.length) throw new Error(`the raw extract has changed since public/data was built (${changed.join(', ')}): build every section, not only ${only.join(', ')}`);
+}
+
 const osm = new OsmData();
 for (const theme of Object.keys(manifest.themes)) osm.load(join(rawDir, `${theme}.json`));
 

@@ -35,7 +35,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bodyClearance, parkedClearance, type Parked } from '../../src/shared/footprint.ts';
+import { bodyClearance, fuselageClearance, shapeClearance, shapeOf, type Parked, type Shape } from '../../src/shared/footprint.ts';
 import { LAYOUT_FILES, type Layout } from '../../src/shared/layout.ts';
 import type { Aircraft } from '../../src/sim/airside/aircraft.ts';
 import { NOT_YET } from '../../src/sim/airside/flights.ts';
@@ -58,9 +58,17 @@ const LIMITS = {
   goAroundShare: 0.03,
   usableGates: 85,
   wallSeconds: 60,
-  /** Outlines closer than this, metres, are touching. */
-  touching: 1,
-  /** Fuselage centrelines closer than this, metres, are one aircraft inside another. */
+  /**
+   * Aircraft drawn at their true size, fuselage at its width and wings with their chord, closer
+   * than this, metres, are touching: parked, they overlap; moving, their wings brush.
+   */
+  touching: 0.5,
+  /** Fuselages, at their width, closer than this, metres, are one inside the other. */
+  fuselageGap: 0.3,
+  /**
+   * The measure before 2026-11-26, reported beside the new one: fuselage centrelines closer than
+   * this, metres, which passed two wide bodies side by side whatever their width.
+   */
   bodies: 4,
   runwayConflicts: 0,
 } as const;
@@ -131,7 +139,7 @@ function outline(a: Aircraft): Parked {
   // The simulation places an aircraft by a point half its length behind the nose; the outline is
   // placed by the nose wheel, four metres behind the nose.
   const ahead = a.type.length / 2 - 4;
-  return { x: a.x + Math.cos(a.heading) * ahead, y: a.y + Math.sin(a.heading) * ahead, heading: a.heading, span: a.type.span, length: a.type.length };
+  return { x: a.x + Math.cos(a.heading) * ahead, y: a.y + Math.sin(a.heading) * ahead, heading: a.heading, span: a.type.span, length: a.type.length, fuselage: a.type.fuselage };
 }
 
 interface Result {
@@ -147,6 +155,8 @@ interface Result {
   longestGateHold: number;
   standOverlaps: number;
   bodyHits: number;
+  /** Pairs by the old measure, centrelines within four metres: reported, not judged. */
+  centrelineHits: number;
   wingBrushes: number;
   runwayConflicts: number;
   firstConflict: string;
@@ -163,7 +173,7 @@ function run(seed: number): Result {
   const started = performance.now();
   const sim = new Sim(layout, { seed, startTime: hh * 3600 + mm * 60 });
   const end = sim.time + hours * 3600;
-  const pairs = { stand: new Set<string>(), body: new Set<string>(), wing: new Set<string>(), runway: new Set<string>() };
+  const pairs = { stand: new Set<string>(), body: new Set<string>(), centrelines: new Set<string>(), wing: new Set<string>(), runway: new Set<string>() };
   let firstHit = '';
   const firstConflict: string[] = [];
   const name = (a: Aircraft): string => `${a.visit.rotation.arrFlight} ${a.type.id} (${a.phase})`;
@@ -194,6 +204,13 @@ function run(seed: number): Result {
         readyAt.delete(v.id);
       }
     }
+    // Each aircraft's outline is worked out once a check, the first time a pair needs it.
+    const shapes = new Map<number, Shape>();
+    const shape = (x: Aircraft, p: Parked): Shape => {
+      let known = shapes.get(x.id);
+      if (!known) shapes.set(x.id, (known = shapeOf(p)));
+      return known;
+    };
     for (let i = 0; i < list.length; i += 1) {
       const a = list[i];
       if (a.alt > 3 || a.phase === 'gone') continue;
@@ -206,13 +223,16 @@ function run(seed: number): Result {
         if (dx * dx + dy * dy >= reach * reach) continue;
         const pa = outline(a);
         const pb = outline(b);
+        const sa = shape(a, pa);
+        const sb = shape(b, pb);
         const key = `${a.id}:${b.id}`;
         const describe = (): string => `${a.visit.rotation.arrFlight} ${a.type.id} (${a.phase} ${a.visit.stand}) and ${b.visit.rotation.arrFlight} ${b.type.id} (${b.phase} ${b.visit.stand}) at ${Math.round(a.x)},${Math.round(a.y)}, ${Math.round(sim.time)} s`;
-        if (bodyClearance(pa, pb) < LIMITS.bodies) {
+        if (bodyClearance(pa, pb) < LIMITS.bodies) pairs.centrelines.add(key);
+        if (fuselageClearance(sa, sb) < LIMITS.fuselageGap) {
           if (!pairs.body.has(key) && !firstHit) firstHit = `fuselages: ${describe()}`;
           if (!pairs.body.has(key)) kinds[[a.phase, b.phase].sort().join('+')] = (kinds[[a.phase, b.phase].sort().join('+')] ?? 0) + 1;
           pairs.body.add(key);
-        } else if (parkedClearance(pa, pb) < LIMITS.touching) {
+        } else if (shapeClearance(sa, sb, LIMITS.touching) < LIMITS.touching) {
           if (a.phase === 'parked' && b.phase === 'parked') {
             if (!pairs.stand.has(key) && !firstHit) firstHit = `at stands: ${describe()}`;
             pairs.stand.add(key);
@@ -246,6 +266,7 @@ function run(seed: number): Result {
     longestGateHold: Math.round(longestGateHold),
     standOverlaps: pairs.stand.size,
     bodyHits: pairs.body.size,
+    centrelineHits: pairs.centrelines.size,
     wingBrushes: pairs.wing.size,
     runwayConflicts: pairs.runway.size,
     firstConflict: firstConflict[0] ?? '',
@@ -281,7 +302,7 @@ if (asJson) {
   for (const r of results) {
     console.log(
       `seed ${String(r.seed).padEnd(4)} ${r.failures.length ? 'FAIL' : 'pass'}  landed ${r.landings}/${r.flights}  took off ${r.takeoffs}/${r.flights}  cycles ${r.cycles}/${r.cohort}  go-arounds ${r.goArounds}  longest wait ${r.longestWait} s  gate hold ${r.longestGateHold} s  ` +
-        `stands ${r.standOverlaps} bodies ${r.bodyHits} (wings ${r.wingBrushes})  runway conflicts ${r.runwayConflicts}  gates ${r.usableGates}  ${r.wallSeconds} s  checksum ${r.checksum}` +
+        `stands ${r.standOverlaps} bodies ${r.bodyHits} (centrelines within 4 m ${r.centrelineHits}; wings ${r.wingBrushes})  runway conflicts ${r.runwayConflicts}  gates ${r.usableGates}  ${r.wallSeconds} s  checksum ${r.checksum}` +
         (r.failures.length ? `\n          ${r.failures.join('; ')}` : ''),
     );
   }

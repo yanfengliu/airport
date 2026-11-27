@@ -1,5 +1,7 @@
 // Local planar coordinates for the airport: metres east (x) and north (y) of a fixed origin.
-// An equirectangular tangent projection is accurate to centimetres over the ~6 km the layout spans.
+// An equirectangular tangent projection on a sphere of the earth's mean radius: within about 0.2%
+// of the true ground distance at SFO's latitude, some metres across the ~6 km the layout spans,
+// which keeps the runways within their published lengths' 1%.
 
 export const ORIGIN_LAT = 37.619;
 export const ORIGIN_LON = -122.375;

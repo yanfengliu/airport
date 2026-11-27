@@ -1002,6 +1002,24 @@ export class Terminals {
     return this.placeByQueue[queue] ?? null;
   }
 
+  /**
+   * The waits at one kind of place: of those served, and of those still in line as if they were
+   * served now, so that a line still growing when a run ends counts against it.
+   */
+  waitsWithLines(kind: 'checkpoint' | 'checkin' | 'customs'): WaitStats {
+    const base = kind === 'checkpoint' ? this.stats.security : kind === 'checkin' ? this.stats.checkin : this.stats.customs;
+    const out: WaitStats = { served: base.served, histogram: Uint32Array.from(base.histogram), longest: base.longest };
+    for (const [placeId, queue] of this.queues) {
+      if (this.plan.places[placeId]?.kind !== kind) continue;
+      for (const { person, waited } of queue.waiting(this.now)) {
+        out.served += this.people.size[person];
+        out.histogram[Math.min(out.histogram.length - 1, Math.floor(waited / 20))] += this.people.size[person];
+        out.longest = Math.max(out.longest, waited);
+      }
+    }
+    return out;
+  }
+
   private onCalled(person: number, queue: number, waited: number): void {
     const place = this.placeOfQueue(queue);
     if (!place) return;

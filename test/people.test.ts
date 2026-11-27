@@ -39,7 +39,8 @@ describe('people in the terminals, over a morning', () => {
 
   it('keeps the wait at security under half an hour for 95 in 100', () => {
     expect(s.security.served).toBeGreaterThan(3000);
-    expect(percentile(s.security, 0.95)).toBeLessThan(30 * 60);
+    // Those still in line when the morning ends count too, as if served now.
+    expect(percentile(t.waitsWithLines('checkpoint'), 0.95)).toBeLessThan(30 * 60);
   });
 
   it('accounts for every bag, and mishandles fewer than one in a hundred', () => {

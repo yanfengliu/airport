@@ -7,7 +7,7 @@ import type { AreaKind, Layout, PolygonData } from '../../shared/layout.ts';
 import { FLOOR, FLOOR_HEIGHT, type Place } from '../../sim/terminal/plan.ts';
 import type { Terminals } from '../../sim/terminal/terminals.ts';
 import { MeshBuilder, box, fillPolygon, rgb, wallPolygon, type RGB } from '../builder.ts';
-import { solidMesh } from './common.ts';
+import { ORDER, solidMesh } from './common.ts';
 
 const SLAB: RGB = rgb(0xd8d3c8);
 const LOWER_SLAB: RGB = rgb(0xcfc8ba);
@@ -73,6 +73,8 @@ export function buildInteriors(layout: Layout, terminals: Terminals): Interiors 
   const upstairs = FLOOR_HEIGHT[FLOOR.landside];
   const downstairs = FLOOR_HEIGHT[FLOOR.arrivals];
   const material = new THREE.MeshLambertMaterial({ vertexColors: true });
+  // Rooms are painted on the floor: they keep to the floor's depth and do not write their own.
+  const roomMaterial = new THREE.MeshLambertMaterial({ vertexColors: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2 });
   const make = (name: string, level: number, slab: RGB, rooms: (kind: AreaKind) => boolean): { group: THREE.Group; props: MeshBuilder } => {
     const floor = new MeshBuilder();
     const props = new MeshBuilder();
@@ -81,14 +83,32 @@ export function buildInteriors(layout: Layout, terminals: Terminals): Interiors 
       // A low wall round the edge, so the plan reads.
       wallPolygon(floor, b.poly, level - 0.05, level + 1.1, EDGE);
     }
+    // The rooms are mapped on several levels of the building and all shown on this one floor: one
+    // mesh per mapped level, drawn over the floor in order of level, so that where two overlap in
+    // plan the upper one shows, every frame, instead of the two flickering.
+    const byLevel = new Map<number, MeshBuilder>();
     for (const a of layout.terminals.areas) {
       const colour = ROOM[a.kind];
       if (!colour || !rooms(a.kind)) continue;
-      fillPolygon(floor, a.poly as PolygonData, level + 0.02, colour);
+      const mapped = a.level ?? 0;
+      let builder = byLevel.get(mapped);
+      if (!builder) byLevel.set(mapped, (builder = new MeshBuilder()));
+      fillPolygon(builder, a.poly as PolygonData, level + 0.02, colour);
     }
     const group = new THREE.Group();
     group.name = name;
-    group.add(solidMesh(floor, material, `${name}-floor`, false));
+    // Drawn after the paint on the ground: the paint is pulled towards the camera so the layers on
+    // the ground do not fight, and from far off that is enough to cover a floor half a metre up.
+    const floorMesh = solidMesh(floor, material, `${name}-floor`, false);
+    floorMesh.renderOrder = ORDER.paintText + 1;
+    group.add(floorMesh);
+    [...byLevel.keys()].sort((p, q) => p - q).forEach((mapped, rank) => {
+      const mesh = new THREE.Mesh(byLevel.get(mapped)!.build(), roomMaterial);
+      mesh.name = `${name}-rooms-${mapped}`;
+      mesh.renderOrder = ORDER.paintText + 2 + rank;
+      mesh.matrixAutoUpdate = false;
+      group.add(mesh);
+    });
     group.visible = false;
     return { group, props };
   };

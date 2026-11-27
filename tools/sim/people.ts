@@ -87,6 +87,6 @@ if (b.collected + b.lost + t.arrivingBagsInside() !== b.arrived) failures.push('
 if (share(s.departing.missed, s.departing.boarded + s.departing.missed) >= 0.02) failures.push('2% or more missed their flight');
 if (share(s.connecting.missed, s.connecting.boarded + s.connecting.missed) >= 0.02) failures.push('2% or more missed their connection');
 if (share(b.leftBehind + b.misrouted + b.lost, b.checked + b.arrived) >= 0.01) failures.push('1% or more of bags mishandled');
-if (percentile(s.security, 0.95) >= 30 * 60) failures.push('the 95th-percentile security wait is 30 minutes or more');
+if (percentile(t.waitsWithLines('checkpoint'), 0.95) >= 30 * 60) failures.push('the 95th-percentile security wait, those still in line counted, is 30 minutes or more');
 console.log(failures.length ? `FAIL: ${failures.join('; ')}` : 'pass: everyone and every bag accounted for, misses, mishandling and security waits within their limits');
 process.exit(failures.length ? 1 : 0);

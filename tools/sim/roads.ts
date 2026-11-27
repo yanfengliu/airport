@@ -74,3 +74,4 @@ const stops = s.stopsMade + s.stopsMissed;
 if (stops && s.stopsMissed > 0.05 * stops) failures.push(`${s.stopsMissed} of ${stops} curb stops given up`);
 if (hours >= 24) console.log(failures.length ? `FAIL: ${failures.join('; ')}` : 'pass: nobody stuck ten minutes, the freeways carry their demand, the curbs are served');
 console.log(`ran ${hours} h in ${elapsed.toFixed(1)} s (${Math.round((hours * 3600) / elapsed)}x real time, ${((elapsed * 1000) / steps).toFixed(2)} ms a step); checksum ${roads.checksum()}`);
+process.exit(hours >= 24 && failures.length ? 1 : 0);

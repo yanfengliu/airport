@@ -72,15 +72,13 @@ export const CONFIG = {
   },
 
   taxi: {
+    /** Metres two parked aircraft keep between them, drawn at their true size, wings and all. */
+    outlineGap: 1,
     accel: 0.9,
     decel: 1.2,
     pushbackSpeed: 2.1,
     /** Seconds from the end of pushback until the aircraft taxis: engine start, tug away. */
     engineStart: [110, 200] as [number, number],
-    /** How often an aircraft that cannot proceed asks again. */
-    retry: 6,
-    /** Longest a departure is held at its stand waiting for a clear way out. */
-    maxGateHold: 900,
     /** Body length is padded by this much when reserving ground. */
     bodyMargin: 9,
     /** Aircraft queued for one runway before more are held at their stands. */

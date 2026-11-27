@@ -1,6 +1,6 @@
 // The airside: every aircraft, the tower and the ground traffic control, stepped together.
 
-import { parkedClearance, type Parked } from '../../shared/footprint.ts';
+import { parkedClearance, shapeClearance, shapeOf, type Parked, type Shape } from '../../shared/footprint.ts';
 import type { TaxiNet } from '../airfield/net.ts';
 import { fuselageAt, newFuselage } from '../airfield/path.ts';
 import { Traffic, newMover } from '../airfield/traffic.ts';
@@ -65,6 +65,7 @@ export class Airside {
   private readonly conflicts: ReadonlyMap<string, readonly string[]>;
   private readonly svc: AirsideServices;
   private readonly outlines = new Map<string, Parked | null>();
+  private readonly shapes = new Map<string, Shape | null>();
   private readonly grounds = new Map<string, StandGround | null>();
   private readonly shut = new Map<string, { lineIn: boolean; out: boolean }>();
   /** Per runway end: the arcs from which a departure can taxi to it, and the arcs that arrive at its line-up. */
@@ -173,10 +174,21 @@ export class Airside {
       const at = fuselageAt(path, path.total, newFuselage());
       // The outline is placed by the nose wheel, four metres behind the nose.
       const ahead = type.length / 2 - 4;
-      outline = { x: at.x + Math.cos(at.heading) * ahead, y: at.y + Math.sin(at.heading) * ahead, heading: at.heading, span: type.span, length: type.length };
+      outline = { x: at.x + Math.cos(at.heading) * ahead, y: at.y + Math.sin(at.heading) * ahead, heading: at.heading, span: type.span, length: type.length, fuselage: type.fuselage };
     }
     this.outlines.set(key, outline);
     return outline;
+  }
+
+  /** The same outline drawn at true size, ready to compare: once per stand and type. */
+  private shapeAt(stand: string, type: AircraftType): Shape | null {
+    const key = `${stand}:${type.id}`;
+    const known = this.shapes.get(key);
+    if (known !== undefined) return known;
+    const outline = this.outlineAt(stand, type);
+    const shape = outline ? shapeOf(outline) : null;
+    this.shapes.set(key, shape);
+    return shape;
   }
 
   /**
@@ -198,7 +210,12 @@ export class Airside {
       if (a.visit.stand === stand || shared?.includes(a.visit.stand)) return false;
       if (!mine || !type) continue;
       const theirs = this.outlineAt(a.visit.stand, a.type);
+      // Clear of it by the stand rule, and drawn as they are, wings with their chord and the
+      // fuselage at its width, a metre apart at least.
       if (theirs && parkedClearance(mine, theirs) < BESIDE) return false;
+      const mineShape = this.shapeAt(stand, type);
+      const theirShape = this.shapeAt(a.visit.stand, a.type);
+      if (mineShape && theirShape && shapeClearance(mineShape, theirShape, CONFIG.taxi.outlineGap) < CONFIG.taxi.outlineGap) return false;
       // A parked aircraft needs only its way out; one still coming needs its way in as well.
       const coming = a.phase !== 'parked' && a.phase !== 'pushback';
       if (this.shutsIn(a.visit.stand, a.type, stand, type, true) || this.shutsIn(stand, type, a.visit.stand, a.type, coming)) return false;
