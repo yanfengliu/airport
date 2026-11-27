@@ -1,6 +1,6 @@
 // Trains run: AirTrain round both its lines calling at every station, BART into the airport and
-// Millbrae, Caltrain through Millbrae and San Bruno, and no two trains on one line run into each
-// other. Bound: one simulated hour.
+// Millbrae, Caltrain through Millbrae and San Bruno, no two trains run into each other, and those
+// aboard a train that leaves the map get off beyond it. Bound: two simulated hours, three for the riders.
 
 import { describe, expect, it } from 'vitest';
 import { CONFIG } from '../src/sim/config.ts';
@@ -36,44 +36,68 @@ describe('train routes', () => {
   });
 });
 
+/** A car seen from above, where and which way it is drawn: a box its route's car length, coupling gap included, and its full body width. */
+interface CarBox {
+  train: number;
+  x: number;
+  y: number;
+  z: number;
+  ux: number;
+  uy: number;
+  halfLength: number;
+  halfWidth: number;
+}
+
+/** How far two boxes are inside each other: the least they overlap along any of the four ways their sides face, above zero only if they overlap. */
+function depthInside(a: CarBox, b: CarBox): number {
+  const extent = (c: CarBox, nx: number, ny: number): number => c.halfLength * Math.abs(c.ux * nx + c.uy * ny) + c.halfWidth * Math.abs(c.ux * ny - c.uy * nx);
+  let least = Infinity;
+  for (const [nx, ny] of [[a.ux, a.uy], [-a.uy, a.ux], [b.ux, b.uy], [-b.uy, b.ux]]) least = Math.min(least, extent(a, nx, ny) + extent(b, nx, ny) - Math.abs((b.x - a.x) * nx + (b.y - a.y) * ny));
+  return least;
+}
+
 /**
- * Pairs of trains whose bodies are inside each other, wherever they are: points every few metres
- * along every visible car, compared with every other train's within a body's width and height.
+ * Pairs of trains whose bodies are inside each other, wherever they are: every visible car as a
+ * box at its full size, compared with every other train's level with it. Also how deep the
+ * deepest pair is in, metres.
  */
-function trainsInsideEachOther(transit: Transit): number {
+function trainsInsideEachOther(transit: Transit): { pairs: number; deepest: number } {
   const pose = { x: 0, y: 0, z: 0, heading: 0, visible: false };
-  const CELL = 6;
-  const grid = new Map<string, { train: number; x: number; y: number; z: number }[]>();
-  const points: { train: number; x: number; y: number; z: number }[] = [];
+  // Wider than any two cars can reach from their middles, so that only neighbouring cells need looking at.
+  const CELL = 30;
+  const grid = new Map<string, CarBox[]>();
+  const boxes: CarBox[] = [];
   for (const train of transit.trains) {
     const route = transit.routes[train.route];
     for (let car = 0; car < route.cars; car += 1) {
       transit.carPose(train, car, pose);
       if (!pose.visible) continue;
-      for (let along = -route.carLength / 2; along <= route.carLength / 2; along += 3) {
-        const p = { train: train.id, x: pose.x + Math.cos(pose.heading) * along, y: pose.y + Math.sin(pose.heading) * along, z: pose.z };
-        points.push(p);
-        const key = `${Math.floor(p.x / CELL)},${Math.floor(p.y / CELL)}`;
-        let list = grid.get(key);
-        if (!list) grid.set(key, (list = []));
-        list.push(p);
-      }
+      const box = { train: train.id, x: pose.x, y: pose.y, z: pose.z, ux: Math.cos(pose.heading), uy: Math.sin(pose.heading), halfLength: route.carLength / 2, halfWidth: route.width / 2 };
+      boxes.push(box);
+      const key = `${Math.floor(box.x / CELL)},${Math.floor(box.y / CELL)}`;
+      let list = grid.get(key);
+      if (!list) grid.set(key, (list = []));
+      list.push(box);
     }
   }
   const pairs = new Set<string>();
-  for (const p of points) {
-    const cx = Math.floor(p.x / CELL);
-    const cy = Math.floor(p.y / CELL);
+  let deepest = 0;
+  for (const a of boxes) {
+    const cx = Math.floor(a.x / CELL);
+    const cy = Math.floor(a.y / CELL);
     for (let dx = -1; dx <= 1; dx += 1) {
       for (let dy = -1; dy <= 1; dy += 1) {
-        for (const q of grid.get(`${cx + dx},${cy + dy}`) ?? []) {
-          if (q.train <= p.train) continue;
-          if (Math.hypot(p.x - q.x, p.y - q.y) < 2.4 && Math.abs(p.z - q.z) < 3) pairs.add(`${p.train}-${q.train}`);
+        for (const b of grid.get(`${cx + dx},${cy + dy}`) ?? []) {
+          if (b.train <= a.train || Math.abs(a.z - b.z) >= 3) continue;
+          const depth = depthInside(a, b);
+          if (depth <= 0) continue;
+          pairs.add(`${a.train}-${b.train}`);
+          deepest = Math.max(deepest, depth);
         }
       }
     }
   }
-  return pairs.size;
+  return { pairs: pairs.size, deepest };
 }
 
 describe('an hour of trains', () => {
@@ -85,6 +109,7 @@ describe('an hour of trains', () => {
   };
   let closest = Infinity;
   let collisions = 0;
+  let deepest = 0;
   let vanished = 0;
   /** Trains whose own cars lie on top of each other: a train folding back over itself. */
   let folded = 0;
@@ -118,7 +143,10 @@ describe('an hour of trains', () => {
     transit.step(CONFIG.dt, now);
     // A train that has just closed its doors, turning round or not, is still all there.
     for (const { train, cars } of standing) if (train.doorsUntil < 0 && seen(train) < cars) vanished += 1;
-    if (i % 4 === 0) collisions += trainsInsideEachOther(transit);
+    // Every step: two trains passing on close tracks can be inside each other for only a second or two.
+    const inside = trainsInsideEachOther(transit);
+    collisions += inside.pairs;
+    deepest = Math.max(deepest, inside.deepest);
     folded += folds();
     // On a loop, the gap from each train to the next one round the line, front to front.
     for (let r = 0; r < transit.routes.length; r += 1) {
@@ -149,7 +177,9 @@ describe('an hour of trains', () => {
 
   it('works shared track as blocks, and never has two trains inside each other on any line', () => {
     expect(transit.blockCount).toBeGreaterThanOrEqual(2);
-    expect(collisions).toBe(0);
+    // The bodies are judged at their full size, so every route must say what that is.
+    for (const route of transit.routes) expect(route.carLength > 0 && route.width > 0, `${route.id} has a car size`).toBe(true);
+    expect(collisions, `the deepest pair was ${deepest.toFixed(2)} m inside each other`).toBe(0);
   });
 
   it('keeps a train in view as it turns round at the end of its line', () => {
@@ -177,5 +207,41 @@ describe('an hour of trains', () => {
         previous = heading;
       }
     }
+  });
+});
+
+describe('riders on a train that leaves the map', () => {
+  // A party boards at every call and nobody gets off at any, as at the airport's BART station,
+  // which leads into the terminals: those aboard a train that runs off the map get off beyond it.
+  const transit = buildTransit(layout.rail);
+  const PARTY = 20;
+  transit.onDoorsOpen = (train, route) => {
+    if (!route.loop) train.load += PARTY;
+  };
+  /** Times a train left the map with people aboard, and steps it spent away with people still aboard. */
+  let leftLoaded = 0;
+  let awayLoaded = 0;
+  const most = new Map<number, number>();
+  const before = new Map<number, { load: number; away: boolean }>();
+  let now = 8 * 3600;
+  for (let i = 0; i < (3 * 3600) / CONFIG.dt; i += 1) {
+    now += CONFIG.dt;
+    transit.step(CONFIG.dt, now);
+    for (const train of transit.trains) {
+      if (transit.routes[train.route].loop) continue;
+      const away = train.awayUntil >= 0;
+      const was = before.get(train.id);
+      if (away && was && !was.away && was.load > 0) leftLoaded += 1;
+      if (away && train.load > 0) awayLoaded += 1;
+      most.set(train.route, Math.max(most.get(train.route) ?? 0, train.load));
+      before.set(train.id, { load: train.load, away });
+    }
+  }
+
+  it('sets down everyone aboard once the train has gone, so its load comes back down', () => {
+    expect(leftLoaded).toBeGreaterThan(0);
+    expect(awayLoaded).toBe(0);
+    // Each run along the line starts empty: never more aboard than one run's calls bring.
+    for (const [r, load] of most) expect(load, transit.routes[r].id).toBeLessThanOrEqual(PARTY * transit.routes[r].stops.length);
   });
 });

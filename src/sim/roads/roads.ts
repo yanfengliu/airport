@@ -26,7 +26,10 @@ export class RoadSim {
     this.through = new ThroughTraffic(this.net, rng.fork('through'), atEdge);
     this.airport = new AirportTraffic(this.net, rng.fork('airport'), atEdge, centre);
     this.traffic.onArrive = (vehicle) => this.airport.arrived(vehicle);
-    this.traffic.onLeave = (vehicle) => this.airport.left(vehicle);
+    this.traffic.onLeave = (vehicle) => {
+      this.through.left(vehicle);
+      this.airport.left(vehicle);
+    };
   }
 
   step(dt: number, now: number, secondsOfDay: number): void {

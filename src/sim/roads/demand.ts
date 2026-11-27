@@ -3,7 +3,7 @@
 
 import type { Rng } from '../rng.ts';
 import type { Link, RoadNet } from './net.ts';
-import type { RoadTraffic, VehicleKind } from './traffic.ts';
+import type { RoadTraffic, Vehicle, VehicleKind } from './traffic.ts';
 
 /** Share of the daily peak flowing in each hour of the day. */
 const HOURLY = [0.12, 0.08, 0.07, 0.08, 0.15, 0.36, 0.7, 0.95, 1, 0.86, 0.76, 0.75, 0.78, 0.8, 0.86, 0.95, 1, 1, 0.9, 0.7, 0.55, 0.45, 0.32, 0.2];
@@ -45,13 +45,20 @@ export class ThroughTraffic {
   /** Multiplies every volume; 1 is a normal weekday. */
   scale = 1;
   backlog = 0;
-  /** Per road entering the map, by name: vehicles that wanted to come in, and that did. */
-  readonly roads = new Map<string, { requested: number; admitted: number }>();
+  /**
+   * Per road entering the map, by name: vehicles that wanted to come in, that did, and that got
+   * through, driving off the map at its edge.
+   */
+  readonly roads = new Map<string, RoadCount>();
+  /** Vehicles that came in here and have not left yet, by id, with the count of the road they came in on. */
+  private readonly onMap = new Map<number, RoadCount>();
+  /** Links that end where the map does. */
+  private readonly offMap: Set<number>;
 
-  private byRoad(name: string): { requested: number; admitted: number } {
+  private byRoad(name: string): RoadCount {
     let road = this.roads.get(name);
     if (!road) {
-      road = { requested: 0, admitted: 0 };
+      road = { requested: 0, admitted: 0, completed: 0 };
       this.roads.set(name, road);
     }
     return road;
@@ -62,6 +69,7 @@ export class ThroughTraffic {
     this.rng = rng;
     const entering = net.links.filter((l) => l.enters && LANE_FLOW[l.cls] !== undefined && atEdge(l.pts[0], l.pts[1]));
     const leaving = net.links.filter((l) => l.exits && LANE_FLOW[l.cls] !== undefined && atEdge(l.pts[l.pts.length - 3], l.pts[l.pts.length - 2]));
+    this.offMap = new Set(net.links.filter((l) => l.exits && atEdge(l.pts[l.pts.length - 3], l.pts[l.pts.length - 2])).map((l) => l.id));
     for (const link of entering) {
       const options: { link: number; weight: number; route: number[] }[] = [];
       for (const exit of leaving) {
@@ -123,6 +131,7 @@ export class ThroughTraffic {
         if (!vehicle) break;
         entry.owed -= 1;
         road.admitted += 1;
+        this.onMap.set(vehicle.id, road);
       }
       // What cannot get in is the tail of a queue beyond the map; do not let it grow without end.
       if (entry.owed > 40) {
@@ -131,4 +140,19 @@ export class ThroughTraffic {
       }
     }
   }
+
+  /** A vehicle has driven off the end of a road: one that came in here got through if that is the edge of the map. */
+  left(vehicle: Vehicle): void {
+    const road = this.onMap.get(vehicle.id);
+    if (!road) return;
+    this.onMap.delete(vehicle.id);
+    if (this.offMap.has(vehicle.link)) road.completed += 1;
+  }
+}
+
+/** For one road entering the map: vehicles that wanted to come in (fractions build up), that did, and that got through. */
+interface RoadCount {
+  requested: number;
+  admitted: number;
+  completed: number;
 }

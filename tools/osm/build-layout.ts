@@ -10,11 +10,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ORIGIN_LAT, ORIGIN_LON } from '../../src/shared/geo.ts';
-import { LAYOUT_FILES, type LayoutSection, type Provenance } from '../../src/shared/layout.ts';
+import type { LayoutSection, Provenance } from '../../src/shared/layout.ts';
 import { buildAirfield } from './airfield.ts';
 import { buildBuildings } from './buildings.ts';
 import { buildLand } from './land.ts';
 import { OsmData } from './lib/osm.ts';
+import { partialBuildProblem, sectionsToBuild } from './lib/provenance.ts';
 import { buildRail } from './rail.ts';
 import { buildRoads } from './roads.ts';
 import { buildTerminals } from './terminals.ts';
@@ -24,7 +25,7 @@ const rawDir = join(root, 'artifacts', 'osm-raw');
 const outDir = join(root, 'public', 'data');
 
 const argv = process.argv.slice(2);
-const only = argv.includes('--only') ? (argv[argv.indexOf('--only') + 1].split(',') as LayoutSection[]) : [...LAYOUT_FILES];
+const only = sectionsToBuild(argv.includes('--only') ? argv[argv.indexOf('--only') + 1] : undefined);
 
 const manifestPath = join(rawDir, 'manifest.json');
 if (!existsSync(manifestPath)) throw new Error('artifacts/osm-raw/manifest.json is missing: run `node tools/osm/fetch.mjs` first');
@@ -34,11 +35,8 @@ const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { bbox: [numb
 // is the one the others were built from; otherwise the provenance would claim the new sources for
 // files built from the old.
 const provenancePath = join(outDir, 'provenance.json');
-if (only.length < LAYOUT_FILES.length && existsSync(provenancePath)) {
-  const before = JSON.parse(readFileSync(provenancePath, 'utf8')) as Provenance;
-  const changed = Object.entries(manifest.themes).filter(([name, t]) => before.themes[name]?.sha256 !== t.sha256).map(([name]) => name);
-  if (changed.length) throw new Error(`the raw extract has changed since public/data was built (${changed.join(', ')}): build every section, not only ${only.join(', ')}`);
-}
+const problem = partialBuildProblem(only, manifest.themes, () => (existsSync(provenancePath) ? (JSON.parse(readFileSync(provenancePath, 'utf8')) as Provenance) : null));
+if (problem) throw new Error(problem);
 
 const osm = new OsmData();
 for (const theme of Object.keys(manifest.themes)) osm.load(join(rawDir, `${theme}.json`));

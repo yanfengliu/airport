@@ -39,7 +39,7 @@ export interface Vehicle {
   stopLink: number;
   stopS: number;
   stopFor: number;
-  /** Times it has gone round again after driving past its stop. */
+  /** Times it has gone round again for its stop, after driving past it or missing a turn on the way. */
   stopTries: number;
   /** While stopped: when the stop ends. Negative when not stopped. */
   stoppedUntil: number;
@@ -78,7 +78,7 @@ const LANE_CHANGE_SECONDS = 2.4;
  * lane it is leaving: two vehicles side by side closer than this would be inside each other.
  */
 const CLEAR_OF_LANE = 0.6;
-/** Times a driver who passed the curb goes round the loop to try again. */
+/** Times a driver who passed the curb, or missed a turn on the way to it, goes round to try again. */
 const STOP_TRIES = 2;
 /** How many junctions ahead the choice of lane looks, and how far. */
 const LOOK_AHEAD = 4;
@@ -93,7 +93,11 @@ export interface TrafficStats {
   finished: number;
   /** Times a driver missed a turn and went another way. */
   missedTurns: number;
-  /** Planned curb stops made, and given up after going round again without making them. */
+  /**
+   * Planned curb stops made, and given up: by a driver who has driven past the curb or missed a
+   * turn on the way once too often, or who leaves the map with the stop still to make. Every stop
+   * planned is one or the other once it is over.
+   */
   stopsMade: number;
   stopsMissed: number;
   /** The longest any vehicle has stood still, seconds, signals included, planned curb stops not. */
@@ -635,7 +639,9 @@ export class RoadTraffic {
     const wanted = vehicle.route[vehicle.routeAt];
     const c = this.leadsTo(link, vehicle.lane, wanted);
     if (!c) {
-      // The end of the road: off the map, or into a car park the map does not show.
+      // The end of the road: off the map, or into a car park the map does not show. A stop it has
+      // not made by now it never will.
+      this.giveUpStop(vehicle);
       this.removeFromLane(vehicle);
       vehicle.gone = true;
       this.stats.finished += 1;
@@ -663,31 +669,61 @@ export class RoadTraffic {
     vehicle.letIn = null;
     target.unshift(vehicle);
     // Driven past the curb without stopping: round the loop for another go, as drivers do, a
-    // couple of times at most; then on its way.
+    // couple of times at most; then on its way. The way on from the curb is the rest of its route.
     if (vehicle.stopLink === link.id && vehicle.stoppedUntil < 0) {
-      const stopAt = vehicle.route.indexOf(link.id, Math.max(0, vehicle.routeAt - 1));
-      const back = vehicle.stopTries < STOP_TRIES ? this.net.route(c.link, (l) => l.id === link.id) : null;
-      if (back && stopAt >= 0) {
-        vehicle.stopTries += 1;
-        vehicle.route = [...back, ...vehicle.route.slice(stopAt + 1)];
+      const back = this.roundToStop(vehicle, c.link, vehicle.route.slice(vehicle.routeAt));
+      if (back) {
+        vehicle.route = back;
         vehicle.routeAt = 0;
         this.setLaneRange(vehicle);
         return;
       }
-      this.stats.stopsMissed += 1;
-      vehicle.stopLink = -1;
+      this.giveUpStop(vehicle);
     }
     if (c.link === wanted) vehicle.routeAt += 1;
     else {
-      // Missed the turn: find another way from where the lane has led.
+      // Missed the turn: find another way from where the lane has led, by the curb if it has yet
+      // to stop there.
       this.stats.missedTurns += 1;
       const goal = vehicle.goal;
-      const route = goal >= 0 ? this.net.route(c.link, (l) => l.id === goal) : this.net.route(c.link, (l) => l.exits);
+      let route: number[] | null = null;
+      if (vehicle.stopLink >= 0) {
+        const at = vehicle.route.indexOf(vehicle.stopLink, vehicle.routeAt);
+        const onward = at >= 0 ? vehicle.route.slice(at + 1) : this.routeOn(vehicle.stopLink, goal);
+        route = c.link === vehicle.stopLink ? onward : onward && this.roundToStop(vehicle, c.link, onward);
+        if (!route) this.giveUpStop(vehicle);
+      }
+      route ??= this.routeOn(c.link, goal);
       vehicle.route = route ?? [];
       vehicle.routeAt = 0;
       if (!route) vehicle.goal = -1;
     }
     this.setLaneRange(vehicle);
+  }
+
+  /** The way from the end of a link to the goal, or off the map anywhere without one. */
+  private routeOn(from: number, goal: number): number[] | null {
+    return goal >= 0 ? this.net.route(from, (l) => l.id === goal) : this.net.route(from, (l) => l.exits);
+  }
+
+  /**
+   * The way from the end of link `from` round to a vehicle's stop and then `onward` from it, if it
+   * has not been round for its stop too often already; null if not.
+   */
+  private roundToStop(vehicle: Vehicle, from: number, onward: number[]): number[] | null {
+    if (vehicle.stopTries >= STOP_TRIES) return null;
+    const stop = vehicle.stopLink;
+    const back = this.net.route(from, (l) => l.id === stop);
+    if (!back) return null;
+    vehicle.stopTries += 1;
+    return [...back, ...onward];
+  }
+
+  /** A stop the vehicle will not make now: counted as missed, so that every stop planned is counted once. */
+  private giveUpStop(vehicle: Vehicle): void {
+    if (vehicle.stopLink < 0) return;
+    this.stats.stopsMissed += 1;
+    vehicle.stopLink = -1;
   }
 
   /**

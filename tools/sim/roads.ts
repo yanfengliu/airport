@@ -65,10 +65,11 @@ const failures: string[] = [];
 const s = roads.traffic.stats;
 if (s.longestStuck >= 600) failures.push(`a vehicle stood still ${Math.round(s.longestStuck)} s`);
 for (const name of ['US 101', 'I 380']) {
+  // Carried means driven through and off the map at its edge, not just let in.
   const road = roads.through.roads.get(name);
-  const served = road ? road.admitted / Math.max(1, road.requested) : 0;
-  console.log(`${name}: ${Math.round(road?.requested ?? 0)} vehicles wanted to come in, ${road?.admitted ?? 0} did (${(served * 100).toFixed(1)}%)`);
-  if (served < 0.8) failures.push(`${name} carried ${(served * 100).toFixed(1)}% of its demand`);
+  const served = road ? road.completed / Math.max(1, road.requested) : 0;
+  console.log(`${name}: ${Math.round(road?.requested ?? 0)} vehicles wanted to come in, ${road?.admitted ?? 0} did, ${road?.completed ?? 0} got through (${(served * 100).toFixed(1)}%)`);
+  if (served < 0.8) failures.push(`${name} carried ${(served * 100).toFixed(1)}% of its demand through`);
 }
 const stops = s.stopsMade + s.stopsMissed;
 if (stops && s.stopsMissed > 0.05 * stops) failures.push(`${s.stopsMissed} of ${stops} curb stops given up`);

@@ -2,6 +2,8 @@
 // through. A route is a line with stops along it; a train runs along the line, slows for each
 // stop, opens its doors for a while and moves on.
 
+import { CONFIG } from '../config.ts';
+
 export interface Stop {
   name: string;
   /** Distance along the route. */
@@ -25,7 +27,9 @@ export interface TransitRoute {
   /** Top speed, m/s. */
   speed: number;
   cars: number;
+  /** A car's length, coupled to the next, and the width of its body, metres. */
   carLength: number;
+  width: number;
 }
 
 export interface Train {
@@ -56,17 +60,26 @@ const BRAKE = 0.9;
 /**
  * Track shared by two routes, or by one route twice (out and back along one line), is worked as
  * a block: one train in it at a time, others waiting short of it. Routes are compared every
- * SAMPLE metres; they share track where they run within SAME_TRACK metres of each other, level:
- * closer than a train is wide, so that two trains side by side there would be inside each other,
- * as on the stretch out to Long Term Parking, mapped as two tracks about two metres apart.
+ * SAMPLE metres by the body of a car standing there as it is drawn, a box its length and width
+ * pointing along the track; they share track wherever such a body on one comes within the passing
+ * clearance of one on the other, level. Two trains passing there would be inside each other: on
+ * the stretch out to Long Term Parking, mapped as two tracks about two metres apart, and where
+ * Caltrain's two tracks are mapped little more than a car's width apart, so that the ends of a
+ * car on a bend reach across.
  */
 const SAMPLE = 4;
-const SAME_TRACK = 2.6;
+/** Tracks closer than this in height are level with each other. */
+const LEVEL = 3;
 /** Points of one route this far apart along it are different places on it, not the same one. */
 const SELF_APART = 60;
-/** A block reaches this far past where the lines meet and part, for the width of the trains. */
+/** A block reaches this far past where the bodies first and last touch, for the gaps between the samples. */
 const BLOCK_PAD = 8;
-/** Two stretches of one block on one route closer than this are one: a train cannot wait between. */
+/**
+ * Two stretches of blocks on one route closer than this, or than the train's own length with the
+ * room it stands short of a block and a pad, are one block. A train cannot wait between them: it
+ * would still be in the one behind it, and with a train the other way waiting in the one ahead,
+ * each would wait for the other for ever.
+ */
 const BLOCK_JOIN = 100;
 /** Where a train waits for a block, short of it. */
 const BLOCK_STAND = 10;
@@ -78,12 +91,39 @@ interface BlockSpan {
   block: number;
 }
 
-export function makeRoute(id: string, kind: TransitRoute['kind'], pts: number[], loop: boolean, stops: Stop[], speed: number, cars: number, carLength: number): TransitRoute {
+/** A car's body seen from above: its middle, the way it points, and half its length and width. */
+interface Body {
+  x: number;
+  y: number;
+  z: number;
+  cos: number;
+  sin: number;
+  halfLength: number;
+  halfWidth: number;
+}
+
+/** How far two bodies seen from above are inside each other, metres: above zero where they overlap. */
+function overlap(a: Body, b: Body): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  let least = Infinity;
+  // Two boxes are clear of each other exactly when, measured along one of the four ways their
+  // sides face, they do not meet; the least they meet by along those four is how far in they are.
+  for (const [ux, uy] of [[a.cos, a.sin], [-a.sin, a.cos], [b.cos, b.sin], [-b.sin, b.cos]]) {
+    const ra = a.halfLength * Math.abs(a.cos * ux + a.sin * uy) + a.halfWidth * Math.abs(a.cos * uy - a.sin * ux);
+    const rb = b.halfLength * Math.abs(b.cos * ux + b.sin * uy) + b.halfWidth * Math.abs(b.cos * uy - b.sin * ux);
+    least = Math.min(least, ra + rb - Math.abs(dx * ux + dy * uy));
+  }
+  return least;
+}
+
+export function makeRoute(id: string, kind: TransitRoute['kind'], pts: number[], loop: boolean, stops: Stop[], speed: number, cars: number): TransitRoute {
   const cum = [0];
   for (let i = 3; i < pts.length; i += 3) cum.push(cum[cum.length - 1] + Math.hypot(pts[i] - pts[i - 3], pts[i + 1] - pts[i - 2]));
-  const route: TransitRoute = { id, kind, pts, cum, total: cum[cum.length - 1], loop, stops: [...stops].sort((a, b) => a.s - b.s), speed, cars, carLength };
+  const { length: carLength, width } = CONFIG.transit.cars[kind];
+  const route: TransitRoute = { id, kind, pts, cum, total: cum[cum.length - 1], loop, stops: [...stops].sort((a, b) => a.s - b.s), speed, cars, carLength, width };
   // Where the line turns right round at a stop, the train goes back out along the track it came in on.
-  const where = { x: 0, y: 0, z: 0 };
+  const where = { x: 0, y: 0, z: 0, heading: 0 };
   const at = (s: number): [number, number] => {
     pointOn(route, s, where);
     return [where.x, where.y];
@@ -102,8 +142,11 @@ export function makeRoute(id: string, kind: TransitRoute['kind'], pts: number[],
 /** How far either side of a stop the line is looked at to see whether it doubles back there, metres. */
 const REVERSE_LOOK = 8;
 
-/** A point `s` along a route, which on a loop may be past its length or short of its start. */
-function pointOn(route: TransitRoute, s: number, out: { x: number; y: number; z: number }): void {
+/**
+ * A point `s` along a route, which on a loop may be past its length or short of its start, and
+ * the heading of the track there: a car whose middle is there is drawn pointing that way.
+ */
+function pointOn(route: TransitRoute, s: number, out: { x: number; y: number; z: number; heading: number }): void {
   const d = route.loop ? ((s % route.total) + route.total) % route.total : Math.max(0, Math.min(route.total, s));
   const cum = route.cum;
   let lo = 0;
@@ -118,6 +161,7 @@ function pointOn(route: TransitRoute, s: number, out: { x: number; y: number; z:
   out.x = route.pts[i] + (route.pts[i + 3] - route.pts[i]) * t;
   out.y = route.pts[i + 1] + (route.pts[i + 4] - route.pts[i + 1]) * t;
   out.z = route.pts[i + 2] + (route.pts[i + 5] - route.pts[i + 2]) * t;
+  out.heading = Math.atan2(route.pts[i + 4] - route.pts[i + 1], route.pts[i + 3] - route.pts[i]);
 }
 
 /** Distance along a route (x, y, z triples) of the point nearest to (x, y). */
@@ -177,14 +221,21 @@ export class Transit {
    * a block. Called once every route is on.
    */
   findSharedTrack(): void {
-    const samples: { r: number; s: number; x: number; y: number; z: number }[] = [];
-    const point = { x: 0, y: 0, z: 0 };
+    const samples: { r: number; s: number; body: Body; reach: number }[] = [];
+    const point = { x: 0, y: 0, z: 0, heading: 0 };
     const firstOf: number[] = [];
+    // Each body is grown by half the clearance, so two that overlap come closer than the clearance.
+    const grow = CONFIG.transit.passingClearance / 2;
+    let widest = 0;
     this.routes.forEach((route, r) => {
       firstOf.push(samples.length);
+      const halfLength = route.carLength / 2 + grow;
+      const halfWidth = route.width / 2 + grow;
+      const reach = Math.hypot(halfLength, halfWidth);
+      widest = Math.max(widest, reach);
       for (let s = 0; s <= route.total; s += SAMPLE) {
         pointOn(route, s, point);
-        samples.push({ r, s, x: point.x, y: point.y, z: point.z });
+        samples.push({ r, s, reach, body: { x: point.x, y: point.y, z: point.z, cos: Math.cos(point.heading), sin: Math.sin(point.heading), halfLength, halfWidth } });
       }
     });
     firstOf.push(samples.length);
@@ -202,23 +253,26 @@ export class Transit {
       if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb);
     };
     const shared = new Uint8Array(samples.length);
-    const CELL = 4;
+    // Cells as wide as the middles of two bodies can be apart and the bodies still touch, so that
+    // only the neighbouring cells need looking at.
+    const CELL = 2 * widest;
     const grid = new Map<string, number[]>();
-    samples.forEach((p, i) => {
-      const key = `${Math.floor(p.x / CELL)},${Math.floor(p.y / CELL)}`;
+    samples.forEach(({ body }, i) => {
+      const key = `${Math.floor(body.x / CELL)},${Math.floor(body.y / CELL)}`;
       let list = grid.get(key);
       if (!list) grid.set(key, (list = []));
       list.push(i);
     });
     samples.forEach((p, i) => {
-      const cx = Math.floor(p.x / CELL);
-      const cy = Math.floor(p.y / CELL);
+      const cx = Math.floor(p.body.x / CELL);
+      const cy = Math.floor(p.body.y / CELL);
       for (let dx = -1; dx <= 1; dx += 1) {
         for (let dy = -1; dy <= 1; dy += 1) {
           for (const j of grid.get(`${cx + dx},${cy + dy}`) ?? []) {
             if (j <= i) continue;
             const q = samples[j];
-            if (Math.hypot(p.x - q.x, p.y - q.y) > SAME_TRACK || Math.abs(p.z - q.z) > SAME_TRACK) continue;
+            if (Math.abs(p.body.z - q.body.z) > LEVEL || Math.hypot(p.body.x - q.body.x, p.body.y - q.body.y) > p.reach + q.reach) continue;
+            if (overlap(p.body, q.body) <= 0) continue;
             if (p.r === q.r) {
               const route = this.routes[p.r];
               let apart = Math.abs(p.s - q.s);
@@ -278,18 +332,47 @@ export class Transit {
         spans.push({ from, to: route.total, block }, { from: 0, to: to - route.total, block });
       } else spans.push({ from, to, block });
     }
-    // Stretches of one block close together on one route are one: there is no room to wait between.
+    // Stretches close together on one route are one block, whichever blocks they were: there is no
+    // room to wait between them.
+    const into = [...blockOf.values()];
+    const top = (b: number): number => {
+      while (into[b] !== b) b = into[b] = into[into[b]];
+      return b;
+    };
+    const unite = (a: number, b: number): void => {
+      const ra = top(a);
+      const rb = top(b);
+      if (ra !== rb) into[Math.max(ra, rb)] = Math.min(ra, rb);
+    };
+    const join = this.routes.map((route) => Math.max(BLOCK_JOIN, route.cars * route.carLength + BLOCK_STAND + BLOCK_PAD));
     for (let r = 0; r < this.spans.length; r += 1) {
       const spans = this.spans[r].sort((a, b) => a.from - b.from);
-      const joined: BlockSpan[] = [];
+      let end = -Infinity;
+      for (let k = 0; k < spans.length; k += 1) {
+        if (k > 0 && spans[k].from - end < join[r]) unite(spans[k - 1].block, spans[k].block);
+        end = Math.max(end, spans[k].to);
+      }
+      // Round the join of a loop, the last stretch is followed by the first.
+      if (this.routes[r].loop && spans.length > 1 && spans[0].from + this.routes[r].total - end < join[r]) unite(spans[0].block, spans[spans.length - 1].block);
+    }
+    const numbered = new Map<number, number>();
+    for (const spans of this.spans) {
       for (const span of spans) {
+        const root = top(span.block);
+        if (!numbered.has(root)) numbered.set(root, numbered.size);
+        span.block = numbered.get(root)!;
+      }
+    }
+    for (let r = 0; r < this.spans.length; r += 1) {
+      const joined: BlockSpan[] = [];
+      for (const span of this.spans[r]) {
         const last = joined[joined.length - 1];
-        if (last && last.block === span.block && span.from - last.to < BLOCK_JOIN) last.to = Math.max(last.to, span.to);
+        if (last && last.block === span.block && span.from - last.to < join[r]) last.to = Math.max(last.to, span.to);
         else joined.push({ ...span });
       }
       this.spans[r] = joined;
     }
-    this.holders = [...blockOf.values()].map(() => new Set<number>());
+    this.holders = [...numbered.keys()].map(() => new Set<number>());
   }
 
   /** Whether any of a train's body lies in a stretch of a block. */
@@ -446,8 +529,10 @@ export class Transit {
           this.onDoorsOpen?.(train, route, stop);
         }
       } else if (!route.loop && (train.s > route.total + 300 || train.s < -300)) {
-        // Off the edge of the map: gone for a while, then back the other way.
+        // Off the edge of the map: gone for a while, then back the other way. Those aboard get off
+        // somewhere beyond the map, so it comes back empty.
         this.releaseBlocks(train);
+        train.load = 0;
         train.direction = train.direction === 1 ? -1 : 1;
         train.s = train.direction === 1 ? -280 : route.total + 280;
         train.v = route.speed * 0.8;
@@ -469,22 +554,9 @@ export class Transit {
     let s = train.ps + moved * alpha - train.direction * (index + 0.5) * route.carLength;
     if (route.loop) s = ((s % route.total) + route.total) % route.total;
     out.visible = train.awayUntil < 0 && s >= 0 && s <= route.total;
-    const d = Math.max(0, Math.min(route.total, s));
-    const cum = route.cum;
-    let lo = 0;
-    let hi = cum.length - 2;
-    while (lo < hi) {
-      const mid = (lo + hi + 1) >> 1;
-      if (cum[mid] <= d) lo = mid;
-      else hi = mid - 1;
-    }
-    const span = cum[lo + 1] - cum[lo] || 1;
-    const t = (d - cum[lo]) / span;
-    const i = lo * 3;
-    out.x = route.pts[i] + (route.pts[i + 3] - route.pts[i]) * t;
-    out.y = route.pts[i + 1] + (route.pts[i + 4] - route.pts[i + 1]) * t;
-    out.z = route.pts[i + 2] + (route.pts[i + 5] - route.pts[i + 2]) * t;
-    out.heading = Math.atan2(route.pts[i + 4] - route.pts[i + 1], route.pts[i + 3] - route.pts[i]) + (train.direction === -1 ? Math.PI : 0);
+    // The same pose the shared track was worked out for, so that what is drawn is what was kept apart.
+    pointOn(route, s, out);
+    if (train.direction === -1) out.heading += Math.PI;
     if (out.z < -1) out.visible = false;
   }
 }

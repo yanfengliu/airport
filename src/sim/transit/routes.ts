@@ -220,7 +220,7 @@ const anchorKey = (a: Anchor): string => `${a.piece}:${Math.round(a.s)}`;
  * never using a stopping point in `taken` (another line's), and never the same one twice when a
  * station is called at both on the way out and on the way back.
  */
-function loopRoute(track: Track, id: string, calls: RailStation[], taken: Set<string>, dwell: number, speed: number, cars: number, carLength: number): { route: ReturnType<typeof makeRoute>; used: Set<string> } | null {
+function loopRoute(track: Track, id: string, calls: RailStation[], taken: Set<string>, dwell: number, speed: number, cars: number): { route: ReturnType<typeof makeRoute>; used: Set<string> } | null {
   const options: Anchor[][] = [];
   const kept: RailStation[] = [];
   for (const station of calls) {
@@ -274,7 +274,7 @@ function loopRoute(track: Track, id: string, calls: RailStation[], taken: Set<st
     for (let k = i === 0 ? 0 : 3; k < leg.pts.length; k += 3) pts.push(leg.pts[k], leg.pts[k + 1], leg.pts[k + 2]);
     total += leg.len;
   }
-  return { route: makeRoute(id, 'airtrain', pts, true, stops, speed, cars, carLength), used: new Set(best.map(anchorKey)) };
+  return { route: makeRoute(id, 'airtrain', pts, true, stops, speed, cars), used: new Set(best.map(anchorKey)) };
 }
 
 /** Every train service on the map, with its trains on the line. */
@@ -294,7 +294,7 @@ export function buildTransit(rail: Rail): Transit {
     const out = outlying.map((name) => stations.find((s) => s.name === name)).filter((s): s is RailStation => Boolean(s));
     /** The two lines with the Red Line going round one way and the Blue Line the other, on the track the Red leaves free. */
     const lines = (redWay: RailStation[], blueWay: RailStation[]) => {
-      const red = loopRoute(airtrain, 'AirTrain Red Line', redWay, new Set(), 26, 12.5, 2, 11.8);
+      const red = loopRoute(airtrain, 'AirTrain Red Line', redWay, new Set(), 26, 12.5, 2);
       if (!out.length) return { red, blue: null, length: red?.route.total ?? Infinity };
       // Leave the ring at the station nearest the first outlying one, and come back to it.
       let nearest = 0;
@@ -302,7 +302,7 @@ export function buildTransit(rail: Rail): Transit {
         if (Math.hypot(s.x - out[0].x, s.y - out[0].y) < Math.hypot(blueWay[nearest].x - out[0].x, blueWay[nearest].y - out[0].y)) nearest = i;
       });
       const order = [...blueWay.slice(nearest + 1), ...blueWay.slice(0, nearest + 1), ...out, ...out.slice(0, -1).reverse()];
-      const blue = loopRoute(airtrain, 'AirTrain Blue Line', order, red ? red.used : new Set(), 26, 12.5, 3, 11.8);
+      const blue = loopRoute(airtrain, 'AirTrain Blue Line', order, red ? red.used : new Set(), 26, 12.5, 3);
       return { red, blue, length: (red?.route.total ?? Infinity) + (blue?.route.total ?? Infinity) };
     };
     // Which way round each goes is settled by the junctions: where the line to the car parks meets
@@ -327,7 +327,7 @@ export function buildTransit(rail: Rail): Transit {
       }
     }
     if (!best) continue;
-    const route = makeRoute(`BART to ${station.name}`, 'bart', best.pts, false, [{ name: station.name, s: best.len - 1, dwell: 150 }], 24, 9, 21.3);
+    const route = makeRoute(`BART to ${station.name}`, 'bart', best.pts, false, [{ name: station.name, s: best.len - 1, dwell: 150 }], 24, 9);
     transit.addTrains(transit.addRoute(route), 1);
   }
 
@@ -355,7 +355,7 @@ export function buildTransit(rail: Rail): Transit {
       }
       if (nearest) stops.push({ name: station.name, s: nearest.s, dwell: 50 });
     }
-    const route = makeRoute(`Caltrain ${transit.routes.length}`, 'caltrain', far.path.pts, false, stops, 27, 6, 26);
+    const route = makeRoute(`Caltrain ${transit.routes.length}`, 'caltrain', far.path.pts, false, stops, 27, 6);
     transit.addTrains(transit.addRoute(route), 1);
   }
   transit.findSharedTrack();

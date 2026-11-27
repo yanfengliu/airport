@@ -12,7 +12,8 @@ import { repoRoot } from './helpers/layout.ts';
 const tracked = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], { cwd: repoRoot, encoding: 'utf8' })
   .split('\0')
   .filter(Boolean)
-  .filter((file) => existsSync(join(repoRoot, file)));
+  // A nested repository (a worktree an agent left inside the checkout) is listed as a directory: it is not this repository's file.
+  .filter((file) => existsSync(join(repoRoot, file)) && !statSync(join(repoRoot, file)).isDirectory());
 const BINARY = /\.(png|jpe?g|gif|webp|avif|ico|pdf|zip|gz|woff2?|ttf|otf|mp4|webm|wasm|glb|bin|ktx2|hdr|exr|mp3|wav|ogg)$/i;
 
 /** A binary by its name or, whatever its name, by a NUL byte in its first 8 KiB, as git judges. */

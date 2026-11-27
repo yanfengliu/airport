@@ -125,6 +125,21 @@ export const CONFIG = {
     bridgeOn: [70, 130] as [number, number],
   },
 
+  transit: {
+    /**
+     * Each kind of train's cars, metres: the length of a car coupled to the next, and the width of
+     * its body. These are the bodies the shared track is worked for: wherever two of them could
+     * touch, one train at a time.
+     */
+    cars: {
+      airtrain: { length: 11.8, width: 2.8 },
+      bart: { length: 21.3, width: 3.2 },
+      caltrain: { length: 26, width: 3.2 },
+    },
+    /** Room kept between the bodies of two trains on tracks side by side; any closer, and the track there is one block. */
+    passingClearance: 0.3,
+  },
+
   staff: {
     /** Shifts start at this hour of the day and last this many hours: at each start the posts change hands. */
     shiftsFrom: 6,

@@ -1,11 +1,15 @@
 // Road traffic moves: freeways near their limits at the morning peak, nobody stuck, nobody inside
-// anybody else, cars at the curbs, and the same seed giving the same day.
+// anybody else, cars at the curbs and every curb stop accounted for, three streams merging in
+// turn, and the same seed giving the same day.
 // Bound: forty simulated minutes of one morning, not a whole day; the soak test covers a day.
 
 import { describe, expect, it } from 'vitest';
+import type { Roads } from '../src/shared/layout.ts';
 import { CONFIG } from '../src/sim/config.ts';
 import { PURPOSE } from '../src/sim/roads/airport.ts';
+import { RoadNet } from '../src/sim/roads/net.ts';
 import { RoadSim } from '../src/sim/roads/roads.ts';
+import { RoadTraffic } from '../src/sim/roads/traffic.ts';
 import { Rng } from '../src/sim/rng.ts';
 import { loadLayoutFromDisk } from './helpers/layout.ts';
 
@@ -58,7 +62,15 @@ describe('road network', () => {
 describe('road traffic at the morning peak', () => {
   let overlaps = 0;
   let curbStops = 0;
+  /** Every vehicle out to set down or pick up, each with a stop planned; and those that were going a way that missed it. */
+  const errands = new Set<number>();
+  const astray = new Set<number>();
   const roads = run(7, 40, (r, time) => {
+    for (const v of r.traffic.vehicles) {
+      if (v.purpose !== PURPOSE.dropOff && v.purpose !== PURPOSE.pickUp) continue;
+      errands.add(v.id);
+      if (v.stopLink >= 0 && v.stoppedUntil < 0 && v.link !== v.stopLink && v.route.indexOf(v.stopLink, v.routeAt) < 0) astray.add(v.id);
+    }
     if (Math.round(time / CONFIG.dt) % 20) return;
     overlaps += r.traffic.overlaps();
     curbStops = Math.max(curbStops, r.traffic.vehicles.filter((v) => v.stoppedUntil >= 0 && (v.purpose === PURPOSE.dropOff || v.purpose === PURPOSE.pickUp)).length);
@@ -88,6 +100,78 @@ describe('road traffic at the morning peak', () => {
     const t = roads.traffic.stats;
     expect(t.stopsMade).toBe(s.dropOffs + s.pickUps);
     expect(t.stopsMissed).toBeLessThan(0.05 * (t.stopsMade + t.stopsMissed));
+  });
+
+  it('accounts for every curb stop: made, given up, or still to come, and none lost with a vehicle that leaves', () => {
+    const t = roads.traffic.stats;
+    const toCome = roads.traffic.vehicles.filter((v) => v.stopLink >= 0 && v.stoppedUntil < 0).length;
+    expect(t.stopsMade + t.stopsMissed + toCome).toBe(errands.size);
+    // A driver who misses a turn on the way to the curb finds another way to it, not straight off the map.
+    expect([...astray], 'vehicles going a way that does not pass their stop').toEqual([]);
+  });
+});
+
+describe('a curb stop that cannot be made', () => {
+  // Nothing leads onto a road where it comes onto the map: a stop there is on nobody's way.
+  const roads = new RoadSim(layout.roads, layout.land.bounds, centre, new Rng(3).fork('roads'));
+  roads.airport.scale = 0;
+  const nowhere = roads.net.links.find((l) => l.enters)!;
+  let time = 7.5 * 3600;
+  const step = (): void => {
+    time += CONFIG.dt;
+    roads.step(CONFIG.dt, time, time);
+  };
+  for (let i = 0; i < 120; i += 1) step();
+  const vehicle = roads.traffic.vehicles.find((v) => v.link !== nowhere.id)!;
+  roads.traffic.planStop(vehicle, nowhere.id, 10, 30);
+  while (!vehicle.gone && time < 9 * 3600) step();
+
+  it('is counted as given up once the vehicle leaves the map with it still to make', () => {
+    expect(vehicle.gone).toBe(true);
+    const t = roads.traffic.stats;
+    expect({ made: t.stopsMade, missed: t.stopsMissed }).toEqual({ made: 0, missed: 1 });
+  });
+});
+
+describe('three streams merging into one lane at once', () => {
+  // Three one-lane roads, alike but for their direction, run into one. A car waits at the end of
+  // each, 10.0, 10.4 and 10.8 metres short of the join, and the further car has the lower number:
+  // close enough that a merge judged with a margin, not to the metre, has each wait for another.
+  const ends: [number, number][] = [
+    [-100, 0],
+    [-70.7, -70.7],
+    [-70.7, 70.7],
+  ];
+  const roads: Roads = {
+    nodes: [{ x: 0, y: 0, z: 0 }, ...ends.map(([x, y]) => ({ x, y, z: 0 })), { x: 100, y: 0, z: 0 }],
+    edges: [
+      ...ends.map(([x, y], k) => ({ a: k + 1, b: 0, pts: [x, y, 0, 0, 0, 0], len: 100, cls: 'primary' as const, lanes: 1, back: 0, speed: 15 })),
+      { a: 0, b: 4, pts: [0, 0, 0, 100, 0, 0], len: 100, cls: 'primary', lanes: 1, back: 0, speed: 15 },
+    ],
+  };
+  const net = new RoadNet(roads);
+  const traffic = new RoadTraffic(net);
+  const out = net.links.find((l) => l.from === 0)!.id;
+  const rng = new Rng(1);
+  // Spawned furthest first, so that the further a car stands, the lower its number.
+  const cars = [10.8, 10.4, 10.0].map((short, k) => {
+    const approach = net.links.find((l) => l.from === 3 - k)!;
+    const car = traffic.spawn(rng, 'car', 0xffffff, approach.id, [out], 0)!;
+    car.s = approach.len - short;
+    return car;
+  });
+  const order: number[] = [];
+  let now = 0;
+  for (let i = 0; i < 60 / CONFIG.dt; i += 1) {
+    now += CONFIG.dt;
+    traffic.step(CONFIG.dt, now);
+    for (const car of cars) if ((car.link === out || car.gone) && !order.includes(car.id)) order.push(car.id);
+  }
+
+  it('lets them through one at a time, in a strict order, rather than have each wait for another', () => {
+    const [further, middle, nearest] = cars.map((c) => c.id);
+    // To the metre the two nearest are level, and the lower number goes first; the furthest goes last.
+    expect(order).toEqual([middle, nearest, further]);
   });
 });
 

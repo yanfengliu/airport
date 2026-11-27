@@ -37,6 +37,14 @@ describe('determinism', () => {
     expect(run()).toBe(run());
   });
 
+  it('counts the trains in the checksum: moving one changes it', () => {
+    const sim = new Sim(layout, { seed: 5, startTime: 7 * 3600, roads: true });
+    sim.run(60);
+    const before = sim.checksum();
+    sim.transit!.trains[0].s += 5;
+    expect(sim.checksum()).not.toBe(before);
+  });
+
   it('gives the same airport, roads and trains included, after an hour', () => {
     const run = (): number => {
       const sim = new Sim(layout, { seed: 5, startTime: 7 * 3600, roads: true });
