@@ -12,6 +12,11 @@
 //     departure time reached): waiting to be let push back is waiting for a taxi clearance too.
 //     Added 2026-11-26, after runs that passed every other limit held departures at their stands
 //     for up to 6,890 s; the measures above are unchanged.
+//   - no runway conflicts: an aircraft rolling fast on a runway (landing or taking off, over
+//     30 m/s, under 30 m up) never has another on the same runway's strip ahead of it within
+//     1,500 m, unless that one is already airborne or taking off the same way at over 50 m/s.
+//     Measured from positions alone, not from the tower's books. Added 2026-11-26: the acceptance
+//     criterion asks for zero runway-separation violations, and nothing here measured them.
 //   - go-arounds are at most 3% of landings;
 //   - no two parked aircraft overlap, wings included;
 //   - no two aircraft on the ground ever have their fuselages within four metres of each other;
@@ -50,9 +55,65 @@ const LIMITS = {
   touching: 1,
   /** Fuselage centrelines closer than this, metres, are one aircraft inside another. */
   bodies: 4,
+  runwayConflicts: 0,
 } as const;
 
+/** Half the width of a runway's strip, metres, and the conflict rule's numbers (see the header). */
+const STRIP = 45;
+const FAST = 30;
+const AHEAD = 1500;
+const AWAY = 50;
+
+interface Strip {
+  id: string;
+  x: number;
+  y: number;
+  ux: number;
+  uy: number;
+  length: number;
+}
+const strips: Strip[] = [];
+
+/**
+ * Pairs of aircraft in conflict on a runway now: `a` rolling fast with `b` on the strip ahead of
+ * it within reach, neither airborne, `b` not taking off away from it fast. Keys `a:b`.
+ */
+function runwayConflicts(list: readonly Aircraft[], found: Set<string>, describe: (a: Aircraft, b: Aircraft) => string, first: string[]): void {
+  for (const s of strips) {
+    const on: { a: Aircraft; along: number; v: number }[] = [];
+    for (const a of list) {
+      if (a.alt > 30 || a.phase === 'gone') continue;
+      const dx = a.x - s.x;
+      const dy = a.y - s.y;
+      const along = dx * s.ux + dy * s.uy;
+      const lateral = Math.abs(-dx * s.uy + dy * s.ux);
+      if (lateral > STRIP || along < -60 || along > s.length + 60) continue;
+      on.push({ a, along, v: a.speed * (Math.cos(a.heading) * s.ux + Math.sin(a.heading) * s.uy) });
+    }
+    for (const p of on) {
+      // Landing in the flare or just off the ground counts: the runway ahead must be clear.
+      if (Math.abs(p.v) < FAST) continue;
+      const sign = Math.sign(p.v);
+      for (const q of on) {
+        if (q === p || q.a.alt > 3) continue;
+        const gap = (q.along - p.along) * sign;
+        if (gap <= 0 || gap > AHEAD) continue;
+        // Taking off the same way and faster than this one can close: no conflict.
+        if (q.v * sign > AWAY) continue;
+        const key = `${p.a.id}:${q.a.id}`;
+        if (!found.has(key) && !first.length) first.push(`runway ${s.id}: ${describe(p.a, q.a)}`);
+        found.add(key);
+      }
+    }
+  }
+}
+
 const layout = Object.fromEntries(LAYOUT_FILES.map((name) => [name, JSON.parse(readFileSync(join(root, 'public', 'data', `${name}.json`), 'utf8'))])) as unknown as Layout;
+for (const r of layout.airfield.runways) {
+  const [a, b] = r.ends;
+  const length = Math.hypot(b.x - a.x, b.y - a.y);
+  strips.push({ id: r.id, x: a.x, y: a.y, ux: (b.x - a.x) / length, uy: (b.y - a.y) / length, length });
+}
 
 /** An aircraft where it is, as the outline the stands are sized with. */
 function outline(a: Aircraft): Parked {
@@ -73,6 +134,8 @@ interface Result {
   standOverlaps: number;
   bodyHits: number;
   wingBrushes: number;
+  runwayConflicts: number;
+  firstConflict: string;
   firstHit: string;
   outOfOrder: number;
   stuckAtEnd: number;
@@ -86,8 +149,10 @@ function run(seed: number): Result {
   const started = performance.now();
   const sim = new Sim(layout, { seed, startTime: hh * 3600 + mm * 60 });
   const end = sim.time + hours * 3600;
-  const pairs = { stand: new Set<string>(), body: new Set<string>(), wing: new Set<string>() };
+  const pairs = { stand: new Set<string>(), body: new Set<string>(), wing: new Set<string>(), runway: new Set<string>() };
   let firstHit = '';
+  const firstConflict: string[] = [];
+  const name = (a: Aircraft): string => `${a.visit.rotation.arrFlight} ${a.type.id} (${a.phase})`;
   /** Fuselage meetings by what the two aircraft were doing. */
   const kinds: Record<string, number> = {};
   /** When each departure still at its stand was ready to go, by visit. */
@@ -97,6 +162,7 @@ function run(seed: number): Result {
     sim.step();
     if (sim.steps % 4) continue;
     const list = sim.airside.aircraft;
+    runwayConflicts(list, pairs.runway, (a, b) => `${name(a)} at ${Math.round(a.speed)} m/s towards ${name(b)}, ${Math.round(sim.time)} s`, firstConflict);
     for (const a of list) {
       const v = a.visit;
       if (a.phase === 'parked' && v.doorsClosed && sim.time >= v.etd) {
@@ -151,6 +217,8 @@ function run(seed: number): Result {
     standOverlaps: pairs.stand.size,
     bodyHits: pairs.body.size,
     wingBrushes: pairs.wing.size,
+    runwayConflicts: pairs.runway.size,
+    firstConflict: firstConflict[0] ?? '',
     firstHit,
     outOfOrder: sim.airside.traffic.outOfOrder,
     stuckAtEnd,
@@ -166,6 +234,7 @@ function run(seed: number): Result {
   if (result.goArounds > LIMITS.goAroundShare * Math.max(1, result.landings)) result.failures.push(`${result.goArounds} go-arounds`);
   if (result.standOverlaps > 0) result.failures.push(`${result.standOverlaps} pairs of parked aircraft overlapped`);
   if (result.bodyHits > 0) result.failures.push(`${result.bodyHits} pairs of fuselages met ${JSON.stringify(kinds)}`);
+  if (result.runwayConflicts > LIMITS.runwayConflicts) result.failures.push(`${result.runwayConflicts} runway conflicts, first ${result.firstConflict}`);
   if (result.firstHit) result.failures.push(`first ${result.firstHit}`);
   if (result.outOfOrder > 0) result.failures.push(`${result.outOfOrder} claims released out of order`);
   if (result.stuckAtEnd > 0) result.failures.push(`${result.stuckAtEnd} aircraft stuck at the end`);
@@ -181,7 +250,7 @@ if (asJson) {
   for (const r of results) {
     console.log(
       `seed ${String(r.seed).padEnd(4)} ${r.failures.length ? 'FAIL' : 'pass'}  landed ${r.landings}/${r.flights}  took off ${r.takeoffs}/${r.flights}  go-arounds ${r.goArounds}  longest wait ${r.longestWait} s  gate hold ${r.longestGateHold} s  ` +
-        `stands ${r.standOverlaps} bodies ${r.bodyHits} (wings ${r.wingBrushes})  gates ${r.usableGates}  ${r.wallSeconds} s  checksum ${r.checksum}` +
+        `stands ${r.standOverlaps} bodies ${r.bodyHits} (wings ${r.wingBrushes})  runway conflicts ${r.runwayConflicts}  gates ${r.usableGates}  ${r.wallSeconds} s  checksum ${r.checksum}` +
         (r.failures.length ? `\n          ${r.failures.join('; ')}` : ''),
     );
   }
