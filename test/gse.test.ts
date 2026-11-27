@@ -109,7 +109,8 @@ describe('ground equipment round a parked aircraft', () => {
     const index = JSON.parse(readFileSync(join(repoRoot, 'public', 'models', 'index.json'), 'utf8')) as { id: string; box: number[] }[];
     const list = Array.isArray(index) ? index : (index as unknown as { models: { id: string; box: number[] }[] }).models;
     for (const [kind, m] of Object.entries(GSE_MODELS) as [GseKind, (typeof GSE_MODELS)[GseKind]][]) {
-      if (!m.id) continue;
+      // A person's model is made arms out; the box is where they stand.
+      if (!m.id || m.person) continue;
       const model = list.find((e) => e.id === m.id);
       expect(model, `${kind}: ${m.id} converted`).toBeDefined();
       const [x0, , z0, sx, sy, sz] = model!.box;
@@ -130,7 +131,11 @@ describe('ground equipment round a parked aircraft', () => {
       const gate = gseAround(busy(type), 1_000, false);
       expect(count(gate, wide ? 'kloader' : 'loader'), type.id).toBe(wide ? 2 : 1);
       expect(count(gate, wide ? 'dolly' : 'cart'), type.id).toBe(wide ? 6 : 3);
-      for (const kind of ['power', 'catering', 'hydrant', 'lavatory'] as GseKind[]) expect(count(gate, kind), `${type.id} ${kind}`).toBe(1);
+      for (const kind of ['power', 'catering', 'hydrant', 'lavatory', 'fueller', 'engineer'] as GseKind[]) expect(count(gate, kind), `${type.id} ${kind}`).toBe(1);
+      // A handler at each loader; the marshaller only as the aircraft comes onto the stand.
+      expect(count(gate, 'handler'), type.id).toBe(wide ? 2 : 1);
+      expect(count(gate, 'marshaller'), type.id).toBe(0);
+      expect(count(gseAround({ ...busy(type), visit: { ...busy(type).visit, onBlockAt: 980 } }, 1_000, false), 'marshaller'), type.id).toBe(1);
       expect(count(gate, 'stairs') + count(gate, 'stairsLow') + count(gate, 'bus') + count(gate, 'tanker'), type.id).toBe(0);
       const remote = gseAround(busy(type), 1_000, true);
       expect(count(remote, wide ? 'stairs' : 'stairsLow'), type.id).toBe(wide ? 1 : 2);

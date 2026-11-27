@@ -29,7 +29,11 @@ export type GseKind =
   | 'stairs'
   | 'stairsLow'
   | 'bus'
-  | 'lavatory';
+  | 'lavatory'
+  | 'handler'
+  | 'fueller'
+  | 'engineer'
+  | 'marshaller';
 
 /**
  * A kind's model, and the box it is drawn in, metres, from its origin: from `back` to `front`
@@ -39,6 +43,8 @@ export type GseKind =
  */
 export interface GseModel {
   id: string | null;
+  /** A person (one of Polyfork's characters): the box is where they stand, not their model's, which is made arms out. */
+  person?: true;
   back: number;
   front: number;
   right: number;
@@ -65,6 +71,11 @@ export const GSE_MODELS: Record<GseKind, GseModel> = {
   stairsLow: { id: 'airstairs-truck-de0f4b', back: -4.07, front: 4.15, right: -1.34, left: 1.34, top: 4.79 },
   bus: { id: 'apron-passenger-bus-c46aef', back: -7.1, front: 7.31, right: -1.66, left: 1.66, top: 3.4 },
   lavatory: { id: 'lavatory-service-truck-023f33', back: -2.81, front: 2.8, right: -1.28, left: 1.34, top: 3.25 },
+  // The ramp staff.
+  handler: { id: 'baggage-handler-0823f5', person: true, back: -0.3, front: 0.3, right: -0.35, left: 0.35, top: 1.8 },
+  fueller: { id: 'fuel-technician-df4ce0', person: true, back: -0.3, front: 0.3, right: -0.35, left: 0.35, top: 1.8 },
+  engineer: { id: 'aircraft-maintenance-engineer-8bd28d', person: true, back: -0.3, front: 0.3, right: -0.35, left: 0.35, top: 1.8 },
+  marshaller: { id: 'ground-marshaller-8e8631', person: true, back: -0.3, front: 0.3, right: -0.35, left: 0.35, top: 1.8 },
 };
 
 /**
@@ -75,7 +86,7 @@ export const GSE_MODELS: Record<GseKind, GseModel> = {
 export const LOW_STAIRS = { from: 1.2, platform: 4.8, to: 3.45 };
 
 /** What a piece is out for: it shows while that goes on. */
-export type GseTask = 'push' | 'power' | 'bags' | 'catering' | 'fuel' | 'lavatory' | 'stairs' | 'bus';
+export type GseTask = 'push' | 'power' | 'bags' | 'catering' | 'fuel' | 'lavatory' | 'stairs' | 'bus' | 'arrival';
 
 /**
  * One piece of equipment: `along` metres from the middle of the aircraft towards its nose, `side`
@@ -101,6 +112,10 @@ export interface Served {
 /** Seconds after reaching the stand that the fuel truck arrives, and before departure that it leaves. */
 const FUEL_FROM = 600;
 const FUEL_UNTIL = 900;
+/** Seconds after reaching the stand that the marshaller still stands before it. */
+const MARSHALLING = 90;
+/** Metres ahead of the nose the marshaller stands. */
+const MARSHAL_AHEAD = 9;
 /** Seconds after reaching the stand that the lavatory truck is there. */
 const LAVATORY = [240, 1500];
 /** Room left between a piece and the fuselage it serves, and between pieces, metres. */
@@ -180,6 +195,10 @@ export function turnaroundLayout(type: Aircraft['type'], remote: boolean): reado
 
   // Ground power ahead of the nose gear, on the right.
   put('power', 'power', f.noseGearX + 1.5, -(ry + 1.4 + GSE_MODELS.power.left), 0);
+  // An engineer between the power unit and the fuselage, facing the aircraft; the marshaller ahead
+  // of the nose, facing it, while the aircraft comes onto the stand.
+  put('power', 'engineer', f.noseGearX + 1.5, -(ry + 0.7), Math.PI / 2);
+  put('arrival', 'marshaller', f.half + MARSHAL_AHEAD, 0, Math.PI);
 
   // Catering at the right rear door: behind the wing, whose trailing edge sweeps back further the
   // further out it is, and ahead of the tail.
@@ -211,6 +230,8 @@ export function turnaroundLayout(type: Aircraft['type'], remote: boolean): reado
     const length = trainLength(car, cars);
     const head = ahead ? hold - 1.2 + length : hold + 1.2 - length;
     train(out, 'bags', car, cars, head, line, ahead ? 0 : Math.PI);
+    // A baggage handler beside the loader's outer end, facing it.
+    put('bags', 'handler', hold + loaderHalf + 0.6, -(ry + GAP + (GSE_MODELS[loader].front - GSE_MODELS[loader].back) - 1.2), Math.PI);
   }
 
   // The lavatory truck backs up to the tail cone, behind the catering truck.
@@ -231,6 +252,9 @@ export function turnaroundLayout(type: Aircraft['type'], remote: boolean): reado
   const under = Math.min(near?.under ?? Infinity, far?.under ?? Infinity);
   if (under > truck.top + 0.3) put('fuel', fuel, Math.min(near?.lead ?? 0, far?.lead ?? 0) - 1 - truck.front, side, 0);
   else put('fuel', fuel, Math.max(near?.lead ?? -Infinity, far?.lead ?? -Infinity) + CLEAR - truck.back, side, 0);
+  // The fuel technician at the back of the truck, where its hose is, facing it.
+  const placed = out[out.length - 1];
+  put('fuel', 'fueller', placed.along + truck.back - 0.7, side + (truck.left + truck.right) / 2, 0);
 
   if (remote) {
     // Stairs at the front left door, and for a narrow-body at the rear left door too; a bus out beyond them.
@@ -290,6 +314,8 @@ function busy(task: GseTask, a: Served, now: number, remote: boolean): boolean {
       return onStand > FUEL_FROM && v.etd - now > FUEL_UNTIL;
     case 'lavatory':
       return onStand > LAVATORY[0] && onStand < LAVATORY[1];
+    case 'arrival':
+      return onStand >= 0 && onStand < MARSHALLING;
     case 'bus':
       // Bringing the passengers off, and taking them out to board.
       return remote && (v.deplaned < v.rotation.paxIn || (v.boardingOpen && !v.doorsClosed));

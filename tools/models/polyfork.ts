@@ -44,6 +44,14 @@ interface Wanted {
   /** Names of parts left out, and why, for the credits. */
   drop?: RegExp;
   dropped?: string;
+  /**
+   * For a part cut from a model: its own id, the nodes kept (by their names or a parent's), and
+   * the stretch along the model's x that its triangles lie within; and what was cut, for the credits.
+   */
+  as?: string;
+  keep?: RegExp;
+  x?: [number, number];
+  cut?: string;
 }
 
 /** What a character holds in one hand: the app gives people their own luggage. */
@@ -98,6 +106,10 @@ const MODELS: Wanted[] = [
   { id: 'spectator-d086fe', role: 'character', drop: HELD, dropped: 'what it held in its hand removed' },
   { id: 'barista-505240', role: 'character', drop: HELD, dropped: 'what it held in its hand removed' },
   { id: 'shopkeeper-be5547', role: 'character', drop: HELD, dropped: 'what it held in its hand removed' },
+  // Outside: the ramp staff who work round a parked aircraft, each with the tools in their hands.
+  { id: 'ground-marshaller-8e8631', role: 'character' },
+  { id: 'fuel-technician-df4ce0', role: 'character' },
+  { id: 'aircraft-maintenance-engineer-8bd28d', role: 'character' },
   // Outside: the ground equipment that works round a parked aircraft.
   { id: 'pushback-tug-8eab46', role: 'prop' },
   { id: 'towbarless-pushback-tug-989602', role: 'prop' },
@@ -546,6 +558,10 @@ function convert(m: Wanted, glb: Buffer, meta: Meta, borrowed: Clip[]): Entry {
   // A node is left out when its own name, or a parent's, says it is a part dropped.
   const dropped = (i: number): boolean => {
     for (let n = i; n >= 0; n = parent[n]) if (m.drop && m.drop.test(g.nodes[n].name ?? '')) return true;
+    if (m.keep) {
+      for (let n = i; n >= 0; n = parent[n]) if (m.keep.test(g.nodes[n].name ?? '')) return false;
+      return true;
+    }
     return false;
   };
   let skipped = 0;
@@ -600,7 +616,17 @@ function convert(m: Wanted, glb: Buffer, meta: Meta, borrowed: Clip[]): Entry {
         colours.push(c[0] * base[0], c[1] * base[1], c[2] * base[2]);
       }
       const idx = prim.indices !== undefined ? read(g, bin, prim.indices).values : Float64Array.from({ length: count }, (_, i) => i);
-      for (let i = 0; i < idx.length; i += 1) triangles.push(first + idx[i]);
+      for (let i = 0; i + 2 < idx.length; i += 3) {
+        // A part cut from the model keeps only the triangles within its stretch.
+        if (m.x) {
+          const inside = [0, 1, 2].every((k) => {
+            const x = positions[(first + idx[i + k]) * 3];
+            return x >= m.x![0] && x <= m.x![1];
+          });
+          if (!inside) continue;
+        }
+        triangles.push(first + idx[i], first + idx[i + 1], first + idx[i + 2]);
+      }
     }
   });
   if (m.drop && !skipped && m.role === 'prop') console.warn(`${m.id}: no part named like ${m.drop}; kept whole (${g.nodes.map((n) => n.name).filter(Boolean).slice(0, 12).join(', ')})`);
@@ -723,7 +749,8 @@ function convert(m: Wanted, glb: Buffer, meta: Meta, borrowed: Clip[]): Entry {
     }
   }
 
-  const written = writeModel(out, m.id, {
+  const id = m.as ?? m.id;
+  const written = writeModel(out, id, {
     positions: kept.flatMap((i) => [positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]]),
     slots: kept.map((i) => slots[i]),
     bones: m.role === 'character' ? kept.map((i) => bones[i] ?? 0) : undefined,
@@ -733,10 +760,11 @@ function convert(m: Wanted, glb: Buffer, meta: Meta, borrowed: Clip[]): Entry {
   const { file, vertices: vertexCount, box } = written;
   const changes = ['converted to a compact form for this app (vertices welded and quantized, colours as slots)'];
   if (m.dropped && skipped) changes.push(m.dropped);
+  if (m.cut) changes.push(m.cut);
   if (m.role === 'character') changes.push(`its built-in Walk, Idle and Run clips sampled as ${WALK_FRAMES}, ${IDLE_FRAMES} and ${RUN_FRAMES} frames, and a sitting pose made here from its standing one`);
-  console.log(`${m.id}: ${vertexCount} vertices, ${tris.length / 3} triangles, ${palette.length / 3} colours${m.role === 'character' ? `, ${joints.length} bones, ${matrices.length / 12 / joints.length} poses` : ''}${skipped ? `, ${skipped} parts left out` : ''}; ${(written.bytes / 1024).toFixed(0)} KiB`);
+  console.log(`${id}: ${vertexCount} vertices, ${tris.length / 3} triangles, ${palette.length / 3} colours${m.role === 'character' ? `, ${joints.length} bones, ${matrices.length / 12 / joints.length} poses` : ''}${skipped ? `, ${skipped} parts left out` : ''}; ${(written.bytes / 1024).toFixed(0)} KiB`);
   return {
-    id: m.id,
+    id,
     name: meta.name,
     role: m.role,
     source: 'polyfork',
