@@ -70,7 +70,7 @@ async function start(): Promise<void> {
   const models = await modelsLoading;
   progress(0.7, 'Building the scene…');
   await nextFrame();
-  const world = buildStaticWorld(layout);
+  const world = buildStaticWorld(layout, models);
   stage.scene.add(world.group);
   const [west, south, east, north] = layout.land.bounds;
   // The camera looks at mapped ground, short of its edges, never past them at nothing.
@@ -107,7 +107,7 @@ async function start(): Promise<void> {
   let owed = 0;
   const aircraftLayer = new AircraftLayer(models);
   const gseLayer = new GseLayer(new Set(layout.airfield.stands.filter((s) => !s.contact).map((s) => s.id)), models);
-  const bridgeLayer = new BridgeLayer(world.bridgeEnds);
+  const bridgeLayer = new BridgeLayer(world.bridgeEnds, models);
   const vehicleLayer = new VehicleLayer(models);
   const trainLayer = new TrainLayer(models);
   const peopleLayer = new PeopleLayer(60_000, models);

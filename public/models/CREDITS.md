@@ -83,6 +83,16 @@ Most of the 3D models in this folder are from [Polyfork](https://polyfork.dev), 
 - Semi Tractor by Polyfork (https://polyfork.dev/asset/semi-tractor-e9455c), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
 - Box Trailer by Polyfork (https://polyfork.dev/asset/box-trailer-2743e6), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
 - Guideway Rail Shuttle by Polyfork (https://polyfork.dev/asset/guideway-rail-shuttle-3d67d7), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
+- Windsock by Polyfork (https://polyfork.dev/asset/windsock-d5df79), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
+- PAPI Unit by Polyfork (https://polyfork.dev/asset/papi-unit-adc7c4), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
+- Jet Bridge by Polyfork (https://polyfork.dev/asset/jet-bridge-4f39c0), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots); its fixed link from the terminal only, without the canopy at the terminal, cut from the whole bridge.
+- Jet Bridge by Polyfork (https://polyfork.dev/asset/jet-bridge-4f39c0), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots); the post under its fixed link only, cut from the whole bridge.
+- Jet Bridge by Polyfork (https://polyfork.dev/asset/jet-bridge-4f39c0), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots); its rotunda and pedestal only, without the cables hung from it, cut from the whole bridge.
+- Jet Bridge by Polyfork (https://polyfork.dev/asset/jet-bridge-4f39c0), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots); its telescoping tunnel only, cut from the whole bridge.
+- Jet Bridge by Polyfork (https://polyfork.dev/asset/jet-bridge-4f39c0), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots); its cab and the drum it turns on only, cut from the whole bridge.
+- Jet Bridge by Polyfork (https://polyfork.dev/asset/jet-bridge-4f39c0), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots); the wheels of its lift only, cut from the whole bridge.
+- Jet Bridge by Polyfork (https://polyfork.dev/asset/jet-bridge-4f39c0), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots); the legs of its lift only, cut from the whole bridge.
+- Jet Bridge by Polyfork (https://polyfork.dev/asset/jet-bridge-4f39c0), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots); the columns of its lift only, cut from the whole bridge.
 
 ## Our own models
 
@@ -93,3 +103,4 @@ Made for this project, in Polyfork's manner, for what Polyfork has no model of (
 - Rapid Transit Cab Car (vehicle).
 - Bilevel Commuter Car (vehicle).
 - Bilevel Commuter Cab Car (vehicle).
+- SFO Control Tower (building).

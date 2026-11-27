@@ -134,7 +134,7 @@ function insidePolygon(x: number, y: number, poly: readonly number[]): boolean {
 }
 
 /** The gap between two polygons, metres; 0 when they overlap. */
-function polygonGap(a: readonly number[], b: readonly number[]): number {
+export function polygonGap(a: readonly number[], b: readonly number[]): number {
   if (insidePolygon(a[0], a[1], b) || insidePolygon(b[0], b[1], a)) return 0;
   let least = Infinity;
   for (let i = 0; i < a.length; i += 2) {

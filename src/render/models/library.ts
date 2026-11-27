@@ -69,7 +69,8 @@ export function credits(models: Models): string[] {
   return [...models.values()].map((m) => m.info.credit);
 }
 
-function decode(info: ModelInfo, data: ArrayBuffer): Model {
+/** A model from its entry in index.json and the contents of its file. */
+export function decode(info: ModelInfo, data: ArrayBuffer): Model {
   const n = info.vertices;
   const q = new Int16Array(data, 0, n * 3);
   const position = new Float32Array(n * 3);
@@ -132,6 +133,26 @@ export function paintedMaterial(slots: readonly number[]): THREE.MeshLambertMate
       );
   };
   material.customProgramCacheKey = () => `painted-${slots.join(',')}`;
+  return material;
+}
+
+/**
+ * The flat look with some colour slots glowing: the vertices of `slots` give off `emissive`, as
+ * strongly as the material's emissiveIntensity, which starts at nothing. A control tower's cab
+ * lit at night.
+ */
+export function glowingMaterial(slots: readonly number[], emissive: number): THREE.MeshLambertMaterial {
+  const material = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true, emissive, emissiveIntensity: 0 });
+  const test = slots.length ? slots.map((s) => `abs(slot - ${s.toFixed(1)}) < 0.5`).join(' || ') : 'false';
+  material.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float slot;\nvarying float vGlow;')
+      .replace('#include <begin_vertex>', `#include <begin_vertex>\nvGlow = (${test}) ? 1.0 : 0.0;`);
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying float vGlow;')
+      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance *= vGlow;');
+  };
+  material.customProgramCacheKey = () => `glowing-${slots.join(',')}`;
   return material;
 }
 

@@ -3,14 +3,17 @@
 import * as THREE from 'three';
 import type { Layout } from '../shared/layout.ts';
 import { Lights } from './lights.ts';
+import type { Models } from './models/library.ts';
+import { buildAirfieldProps } from './static/airfield-props.ts';
 import { buildAirfieldGround } from './static/airfield.ts';
+import { buildBridges, type BridgeEnd } from './static/bridges.ts';
 import { buildBuildings, type NightGlow } from './static/buildings.ts';
 import { buildGroundGlow } from './static/glow.ts';
 import { buildGround } from './static/ground.ts';
 import { buildTower } from './static/landmarks.ts';
 import { buildRail } from './static/rail.ts';
 import { buildRoads } from './static/roads.ts';
-import { buildTerminalShells, type BridgeEnd } from './static/terminals.ts';
+import { buildTerminalShells } from './static/terminals.ts';
 import { facadeTextures } from './textures.ts';
 
 export interface FrameView {
@@ -35,7 +38,8 @@ export interface StaticWorld {
   stats: { meshes: number; triangles: number };
 }
 
-export function buildStaticWorld(layout: Layout): StaticWorld {
+/** `models`: the library's models, for what is drawn with them; without them it is drawn plainly. */
+export function buildStaticWorld(layout: Layout, models: Models = new Map()): StaticWorld {
   const group = new THREE.Group();
   group.name = 'static-world';
   const facades = facadeTextures();
@@ -46,6 +50,7 @@ export function buildStaticWorld(layout: Layout): StaticWorld {
   group.add(buildAirfieldGround(layout.airfield));
   group.add(buildRoads(layout.roads));
   group.add(buildRail(layout.rail));
+  group.add(buildAirfieldProps(layout.airfield, layout.roads, models));
 
   const [towerX, towerY] = layout.airfield.tower;
   // The mapped shaft and cab of the tower are replaced by the modelled one.
@@ -63,28 +68,33 @@ export function buildStaticWorld(layout: Layout): StaticWorld {
     return null;
   };
   const partOf = new Map(layout.buildings.buildings.map((b) => [b, terminalOf(b.poly.outer)]));
-  const buildings = buildBuildings(layout.buildings, facades, (b) => partOf.get(b) !== null || (b.height > 40 && nearTower(b.poly.outer)));
+  // The tower's mapped shaft and cab, which stand on a terminal's roof: never drawn, as a building
+  // or as part of the terminal.
+  const mappedTower = (b: { height: number; poly: { outer: number[] } }): boolean => b.height > 40 && nearTower(b.poly.outer);
+  const buildings = buildBuildings(layout.buildings, facades, (b) => partOf.get(b) !== null || mappedTower(b));
   group.add(buildings.group);
   glows.push(...buildings.glows);
 
-  const terminals = buildTerminalShells(layout.terminals, layout.airfield, facades);
+  const terminals = buildTerminalShells(layout.terminals, facades);
   // The parts of the terminals above their roofs only: the houses are in the buildings above already.
   const above = {
     buildings: layout.buildings.buildings.flatMap((b) => {
       const terminal = partOf.get(b);
-      if (!terminal || b.height <= terminal.height + 0.3) return [];
+      if (!terminal || b.height <= terminal.height + 0.3 || mappedTower(b)) return [];
       return [{ ...b, minHeight: Math.max(b.minHeight ?? 0, terminal.height) }];
     }),
     boxes: [],
   };
   const roofParts = buildBuildings(above, facades, () => false, false);
   terminals.shell.add(roofParts.group);
-  group.add(terminals.shell, terminals.fixtures);
+  // The bridges stay when the roofs come off for the cut-away view.
+  const bridges = buildBridges(layout.airfield, models);
+  group.add(terminals.shell, bridges.group);
   glows.push(...terminals.glows, ...roofParts.glows);
 
-  const tower = buildTower(towerX, towerY);
-  group.add(tower);
-  glows.push({ material: tower.userData.cabGlass as THREE.MeshStandardMaterial, strength: 0.5 });
+  const tower = buildTower(towerX, towerY, models);
+  group.add(tower.group);
+  glows.push({ material: tower.glass, strength: 0.5 });
 
   const lights = new Lights(layout.airfield, layout.roads, layout.land);
   group.add(lights.group);
@@ -105,7 +115,7 @@ export function buildStaticWorld(layout: Layout): StaticWorld {
   return {
     group,
     terminalShell: terminals.shell,
-    bridgeEnds: terminals.bridgeEnds,
+    bridgeEnds: bridges.ends,
     lights,
     update(seconds: number, day: number, view: FrameView): void {
       ground.animate(seconds);

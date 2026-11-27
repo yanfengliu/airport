@@ -46,16 +46,57 @@ interface Wanted {
   dropped?: string;
   /**
    * For a part cut from a model: its own id, the nodes kept (by their names or a parent's), and
-   * the stretch along the model's x that its triangles lie within; and what was cut, for the credits.
+   * the triangles kept of those (by where they are, and where the piece they belong to is); and
+   * what was cut, for the credits.
    */
   as?: string;
   keep?: RegExp;
-  x?: [number, number];
+  take?: (t: Triangle) => boolean;
   cut?: string;
+}
+
+/**
+ * A triangle of a model, for choosing the ones a part cut from it keeps: the name of its node, its
+ * middle, and the box round the piece it is part of (the triangles joined to it through shared
+ * corners), all in the model's own space.
+ */
+interface Triangle {
+  name: string;
+  centre: [number, number, number];
+  lo: [number, number, number];
+  hi: [number, number, number];
 }
 
 /** What a character holds in one hand: the app gives people their own luggage. */
 const HELD = /^attach-(left|right)hand$/i;
+
+/**
+ * Polyfork's jet bridge (its length along x, the terminal's end at -16 and the cab's door at +16)
+ * in the parts the app draws apart: the fixed link from the terminal, tiled along each bridge's
+ * fixed walkway; the post under it; the rotunda the moving tunnel turns on, on its pedestal; the
+ * telescoping tunnel, stretched to reach each aircraft; the cab with the drum it turns on; and the
+ * lift under the tunnel's end in three, the wheels on the ground, the legs that stretch and the
+ * columns that rise with the tunnel. The tunnel is one long tube through all of them, cut across
+ * where the parts meet; its other pieces go with the part they stand in.
+ */
+const JET_BRIDGE: [string, (t: Triangle) => boolean, string][] = (() => {
+  const bridge = (t: Triangle): boolean => /^bridge/.test(t.name);
+  const tube = (t: Triangle): boolean => t.hi[0] - t.lo[0] > 25;
+  const mid = (t: Triangle): number => (t.lo[0] + t.hi[0]) / 2;
+  const lift = (t: Triangle): boolean => bridge(t) && !tube(t) && t.lo[0] > 9.8 && t.hi[0] < 10.6;
+  const across = (t: Triangle, from: number, to: number): boolean => t.centre[0] >= from && t.centre[0] < to;
+  return [
+    ['jet-bridge-link', (t) => bridge(t) && (tube(t) ? across(t, -15.1, -10) : mid(t) >= -15.1 && mid(t) < -10.9 && t.lo[1] > 3.5), 'its fixed link from the terminal only, without the canopy at the terminal'],
+    ['jet-bridge-post', (t) => bridge(t) && !tube(t) && mid(t) > -14.8 && mid(t) < -13.6 && t.hi[1] < 3.8, 'the post under its fixed link only'],
+    // Without the cables hung under it, which would point wherever the rotunda faces, not the tunnel.
+    ['jet-bridge-rotunda', (t) => bridge(t) && (tube(t) ? across(t, -10, -6.5) : mid(t) >= -10.9 && mid(t) < -5.95 && !(t.lo[1] > 2 && t.hi[1] < 3.85)), 'its rotunda and pedestal only, without the cables hung from it'],
+    ['jet-bridge-tunnel', (t) => bridge(t) && (tube(t) ? across(t, -6.5, 11.9) : mid(t) >= -5.95 && mid(t) < 11.9 && !lift(t)), 'its telescoping tunnel only'],
+    ['jet-bridge-cab', (t) => /^cab/.test(t.name) || (bridge(t) && !tube(t) && mid(t) >= 11.9), 'its cab and the drum it turns on only'],
+    ['jet-bridge-wheels', (t) => /^(bogie|wheel)/.test(t.name) || (lift(t) && t.hi[1] < 1.35), 'the wheels of its lift only'],
+    ['jet-bridge-legs', (t) => lift(t) && t.lo[1] > 1.25 && t.hi[1] < 2.3, 'the legs of its lift only'],
+    ['jet-bridge-lift', (t) => lift(t) && t.lo[1] > 2, 'the columns of its lift only'],
+  ];
+})();
 
 /** The models the app draws: the terminal's furniture and equipment, luggage, and people. */
 const MODELS: Wanted[] = [
@@ -144,6 +185,12 @@ const MODELS: Wanted[] = [
   { id: 'semi-tractor-e9455c', role: 'prop' },
   { id: 'box-trailer-2743e6', role: 'prop' },
   { id: 'guideway-rail-shuttle-3d67d7', role: 'prop' },
+  // Outside: the airfield's furniture at the runways (src/render/static/airfield-props.ts).
+  { id: 'windsock-d5df79', role: 'prop' },
+  { id: 'papi-unit-adc7c4', role: 'prop' },
+  // Outside: Polyfork's jet bridge, cut into the parts that are placed or moved apart (see
+  // JET_BRIDGE below).
+  ...JET_BRIDGE.map(([as, take, cut]): Wanted => ({ id: 'jet-bridge-4f39c0', as, role: 'prop', take, cut: `${cut}, cut from the whole bridge` })),
 ];
 
 /** Frames sampled from each character's built-in clips, and the seat height the sitting pose is made for, metres. */
@@ -541,6 +588,45 @@ export interface Entry {
   runStride?: number;
 }
 
+/**
+ * The pieces of one primitive: its triangles joined through corners at the same place (to 5 mm),
+ * each vertex (by its index in the primitive) given the box round its piece. `positions` holds the
+ * primitive's vertices from `first` on, in model space.
+ */
+function piecesOf(positions: readonly number[], first: number, count: number, idx: ArrayLike<number>): { lo: [number, number, number]; hi: [number, number, number] }[] {
+  const place = new Map<string, number>();
+  const rep = Array.from({ length: count }, (_, i) => {
+    const key = [0, 1, 2].map((k) => Math.round(positions[(first + i) * 3 + k] * 200)).join(',');
+    if (!place.has(key)) place.set(key, place.size);
+    return place.get(key)!;
+  });
+  const parent = Array.from({ length: place.size }, (_, i) => i);
+  const find = (a: number): number => {
+    while (parent[a] !== a) {
+      parent[a] = parent[parent[a]];
+      a = parent[a];
+    }
+    return a;
+  };
+  for (let i = 0; i + 2 < idx.length; i += 3) {
+    const a = find(rep[idx[i]]);
+    parent[find(rep[idx[i + 1]])] = a;
+    parent[find(rep[idx[i + 2]])] = a;
+  }
+  const boxes = new Map<number, { lo: [number, number, number]; hi: [number, number, number] }>();
+  for (let i = 0; i < count; i += 1) {
+    const root = find(rep[i]);
+    let box = boxes.get(root);
+    if (!box) boxes.set(root, (box = { lo: [Infinity, Infinity, Infinity], hi: [-Infinity, -Infinity, -Infinity] }));
+    for (let k = 0; k < 3; k += 1) {
+      const v = positions[(first + i) * 3 + k];
+      box.lo[k] = Math.min(box.lo[k], v);
+      box.hi[k] = Math.max(box.hi[k], v);
+    }
+  }
+  return rep.map((r) => boxes.get(find(r))!);
+}
+
 function convert(m: Wanted, glb: Buffer, meta: Meta, borrowed: Clip[]): Entry {
   const { json: g, bin } = parseGlb(glb);
   const parent = parents(g);
@@ -616,14 +702,14 @@ function convert(m: Wanted, glb: Buffer, meta: Meta, borrowed: Clip[]): Entry {
         colours.push(c[0] * base[0], c[1] * base[1], c[2] * base[2]);
       }
       const idx = prim.indices !== undefined ? read(g, bin, prim.indices).values : Float64Array.from({ length: count }, (_, i) => i);
+      const pieces = m.take ? piecesOf(positions, first, count, idx) : null;
+      const at = (v: number, k: number): number => positions[(first + v) * 3 + k];
       for (let i = 0; i + 2 < idx.length; i += 3) {
-        // A part cut from the model keeps only the triangles within its stretch.
-        if (m.x) {
-          const inside = [0, 1, 2].every((k) => {
-            const x = positions[(first + idx[i + k]) * 3];
-            return x >= m.x![0] && x <= m.x![1];
-          });
-          if (!inside) continue;
+        // A part cut from the model keeps only the triangles it takes.
+        if (m.take && pieces) {
+          const box = pieces[idx[i]];
+          const centre = [0, 1, 2].map((k) => (at(idx[i], k) + at(idx[i + 1], k) + at(idx[i + 2], k)) / 3) as [number, number, number];
+          if (!m.take({ name: node.name ?? '', centre, lo: box.lo, hi: box.hi })) continue;
         }
         triangles.push(first + idx[i], first + idx[i + 1], first + idx[i + 2]);
       }
@@ -651,10 +737,17 @@ function convert(m: Wanted, glb: Buffer, meta: Meta, borrowed: Clip[]): Entry {
   if (palette.length / 3 > 255) throw new Error(`${m.id}: more than 255 colours`);
 
   // Weld: faces are shaded flat, so a corner shared by faces of one colour and bone is one vertex.
+  // A corner on no triangle kept (one of a part cut away) is left out.
+  const used = new Uint8Array(positions.length / 3);
+  for (const v of triangles) used[v] = 1;
   const weld = new Map<string, number>();
   const remap: number[] = [];
   const kept: number[] = [];
   for (let i = 0; i < positions.length / 3; i += 1) {
+    if (!used[i]) {
+      remap.push(-1);
+      continue;
+    }
     const key = `${positions[i * 3].toFixed(5)},${positions[i * 3 + 1].toFixed(5)},${positions[i * 3 + 2].toFixed(5)},${slots[i]},${bones[i] ?? 0}`;
     let w = weld.get(key);
     if (w === undefined) {
@@ -772,7 +865,8 @@ function convert(m: Wanted, glb: Buffer, meta: Meta, borrowed: Clip[]): Entry {
     credit: meta.credit,
     page: meta.page,
     changed: changes.join('; '),
-    size: meta.size,
+    // A part cut from a model is its own size; a whole one, the size Polyfork gives it.
+    size: m.take || m.keep ? [0, 1, 2].map((k) => Math.round(box[3 + k] * 100) / 100) as [number, number, number] : meta.size,
     file,
     vertices: vertexCount,
     triangles: tris.length / 3,

@@ -2,8 +2,9 @@
 // thing the app draws that Polyfork has no model of.
 
 import { AIRLINER_MODELS } from './airliner.ts';
+import { LANDMARK_MODELS } from './landmarks.ts';
 import { TRAIN_MODELS, type OriginalSpec } from './trains.ts';
 
 export type { OriginalSpec } from './trains.ts';
 
-export const ORIGINALS: OriginalSpec[] = [...AIRLINER_MODELS, ...TRAIN_MODELS];
+export const ORIGINALS: OriginalSpec[] = [...AIRLINER_MODELS, ...TRAIN_MODELS, ...LANDMARK_MODELS];

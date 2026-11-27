@@ -9,7 +9,8 @@ import { solidMesh } from './common.ts';
 
 /** A material whose emissive channel is switched on at night, and how bright it gets. */
 export interface NightGlow {
-  material: THREE.MeshStandardMaterial;
+  /** A material whose emissive glow is turned up at night. */
+  material: THREE.MeshStandardMaterial | THREE.MeshLambertMaterial;
   strength: number;
 }
 
