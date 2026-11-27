@@ -25,12 +25,19 @@
 //     2026-11-26: the acceptance criterion asks for zero runway-separation violations, and nothing
 //     here measured them. Changed the same day after review: it looked only above 30 m/s, so not
 //     at a landing's roll-out, let a departure ahead go at any distance over 50 m/s, and sampled
-//     every 2 s, while a fast crossing is on a strip for about one.
+//     every 2 s, while a fast crossing is on a strip for about one. Changed again after review 1:
+//     an arrival keeps its approach phase until its wheels touch, so one in the flare was not
+//     judged at all; an arrival over the runway below the height at which it crosses the
+//     threshold (17 m) now counts as landing. The rule is in tools/sim/conflicts.ts, and
+//     test/conflicts.test.ts puts the cases it must and must not call conflicts to it;
 //   - no departure stands lined up on the runway more than 20 minutes: added after review, since
 //     the wait above is not counted there;
 //   - go-arounds are at most 3% of landings;
 //   - no two parked aircraft touch, drawn at their true size: the fuselage at its width, the wings
-//     with their chord, the tailplane;
+//     with their chord, the tailplane. Since review 1 (2026-11-26) the outline is the model's own
+//     shape for each type (src/shared/airframe.ts), the one the stands are judged by and the one
+//     drawn: before, a shape with every type's proportions the same passed wings 0.1 m apart as
+//     1.3 m;
 //   - no two fuselages on the ground touch, at their width. Changed after review from fuselage
 //     centrelines four metres apart, which passed two wide bodies side by side overlapping; that
 //     measure is still printed;
@@ -49,8 +56,8 @@ import { bodyClearance, fuselageClearance, shapeClearance, shapeOf, type Parked,
 import { LAYOUT_FILES, type Layout } from '../../src/shared/layout.ts';
 import type { Aircraft } from '../../src/sim/airside/aircraft.ts';
 import { NOT_YET } from '../../src/sim/airside/flights.ts';
-import { CONFIG } from '../../src/sim/config.ts';
 import { Sim } from '../../src/sim/sim.ts';
+import { headOnInAir, runwayConflicts, stripsOf } from './conflicts.ts';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const argv = process.argv.slice(2);
@@ -87,98 +94,15 @@ const LIMITS = {
 /** Seconds before the end of the run by which a visit must be due to leave to count in the cycle cohort. */
 const CYCLE_SLACK = 2 * 3600;
 
-/** Half the width of a runway's strip, metres, and the conflict rule's numbers (see the header). */
-const STRIP = 45;
-const FAST = 10;
-const AHEAD = 1500;
-const REACH_SECONDS = 20;
-const REACH_LEAST = 300;
-/** A departure ahead is out of the way once it is this far down the runway and this fast: the tower's own rule. */
-const AWAY_ALONG = CONFIG.runway.departedAlongForLanding;
-const AWAY = CONFIG.runway.departedSpeedForLanding;
-
-interface Strip {
-  id: string;
-  x: number;
-  y: number;
-  ux: number;
-  uy: number;
-  length: number;
-}
-const strips: Strip[] = [];
-
-/**
- * Pairs of aircraft in conflict on a runway now: `a` rolling fast with `b` on the strip ahead of
- * it within reach, neither airborne, `b` not taking off away from it fast. Keys `a:b`.
- */
-function runwayConflicts(list: readonly Aircraft[], found: Set<string>, describe: (a: Aircraft, b: Aircraft) => string, first: string[]): void {
-  for (const s of strips) {
-    const on: { a: Aircraft; along: number; v: number }[] = [];
-    for (const a of list) {
-      if (a.alt > 30 || a.phase === 'gone') continue;
-      const dx = a.x - s.x;
-      const dy = a.y - s.y;
-      const along = dx * s.ux + dy * s.uy;
-      const lateral = Math.abs(-dx * s.uy + dy * s.ux);
-      if (lateral > STRIP || along < -60 || along > s.length + 60) continue;
-      on.push({ a, along, v: a.speed * (Math.cos(a.heading) * s.ux + Math.sin(a.heading) * s.uy) });
-    }
-    for (const p of on) {
-      // Landing in the flare or just off the ground counts: the runway ahead must be clear. Rolling
-      // means landing or taking off, down to the end of the roll-out: a taxiway inside the strip
-      // carries taxiing aircraft, which are not rolling.
-      if (Math.abs(p.v) < FAST || (p.a.phase !== 'landing' && p.a.phase !== 'takeoff' && p.a.phase !== 'climb')) continue;
-      const sign = Math.sign(p.v);
-      for (const q of on) {
-        if (q === p || q.a.alt > 3) continue;
-        const gap = (q.along - p.along) * sign;
-        // Ahead within what it would cover in the next REACH_SECONDS, at least REACH_LEAST and at
-        // most AHEAD: a roll just starting is half a minute from an intersection a kilometre off.
-        if (gap <= 0 || gap > Math.min(AHEAD, Math.max(REACH_LEAST, Math.abs(p.v) * REACH_SECONDS))) continue;
-        // A departure taking off the same way, far enough down the runway and fast: out of the way,
-        // as the tower judges it. Only a departure: a landing ahead is in the way whatever its speed.
-        const down = sign > 0 ? q.along : s.length - q.along;
-        if ((q.a.phase === 'takeoff' || q.a.phase === 'climb') && q.v * sign > AWAY && down > AWAY_ALONG) continue;
-        const key = `${p.a.id}:${q.a.id}`;
-        if (!found.has(key) && !first.length) first.push(`runway ${s.id}: ${describe(p.a, q.a)}`);
-        found.add(key);
-      }
-    }
-  }
-}
-
-/** Pairs of aircraft in the air near the field flying at each other along one line, as in tools/sim/scenario.ts. */
-function headOnInAir(list: readonly Aircraft[], found: Set<string>): void {
-  for (let i = 0; i < list.length; i += 1) {
-    const a = list[i];
-    if (a.alt <= 3 || a.phase === 'gone') continue;
-    for (let j = i + 1; j < list.length; j += 1) {
-      const b = list[j];
-      if (b.alt <= 3 || b.phase === 'gone') continue;
-      if (Math.hypot(a.x - b.x, a.y - b.y) > 6000 || Math.abs(a.alt - b.alt) > 450) continue;
-      const turn = Math.abs(Math.atan2(Math.sin(a.heading - b.heading), Math.cos(a.heading - b.heading)));
-      const ux = Math.cos(a.heading);
-      const uy = Math.sin(a.heading);
-      const across = Math.abs(-(b.x - a.x) * uy + (b.y - a.y) * ux);
-      const ahead = (b.x - a.x) * ux + (b.y - a.y) * uy;
-      if (turn > 2.6 && across < 400 && ahead > 0) found.add(`${a.id}:${b.id}`);
-    }
-  }
-}
-
 const layout = Object.fromEntries(LAYOUT_FILES.map((name) => [name, JSON.parse(readFileSync(join(root, 'public', 'data', `${name}.json`), 'utf8'))])) as unknown as Layout;
-for (const r of layout.airfield.runways) {
-  const [a, b] = r.ends;
-  const length = Math.hypot(b.x - a.x, b.y - a.y);
-  strips.push({ id: r.id, x: a.x, y: a.y, ux: (b.x - a.x) / length, uy: (b.y - a.y) / length, length });
-}
+const strips = stripsOf(layout);
 
-/** An aircraft where it is, as the outline the stands are sized with. */
+/** An aircraft where it is, as the lines the map's stand rule draws: for the old centreline measure. */
 function outline(a: Aircraft): Parked {
-  // The simulation places an aircraft by a point half its length behind the nose; the outline is
+  // The simulation places an aircraft by a point half its length behind the nose; the lines are
   // placed by the nose wheel, four metres behind the nose.
   const ahead = a.type.length / 2 - 4;
-  return { x: a.x + Math.cos(a.heading) * ahead, y: a.y + Math.sin(a.heading) * ahead, heading: a.heading, span: a.type.span, length: a.type.length, fuselage: a.type.fuselage };
+  return { x: a.x + Math.cos(a.heading) * ahead, y: a.y + Math.sin(a.heading) * ahead, heading: a.heading, span: a.type.span, length: a.type.length };
 }
 
 interface Result {
@@ -233,11 +157,14 @@ function run(seed: number): Result {
   const noteVisits = (): void => {
     for (const v of sim.airside.book.visits.values()) visits.set(v.id, { sta: v.sta, std: v.std, landed: v.landedAt !== NOT_YET, airborne: v.airborneAt !== NOT_YET });
   };
+  /** Each aircraft's outline where it last was, by id. */
+  const shapes = new Map<number, { x: number; y: number; heading: number; shape: Shape }>();
   while (sim.time < end) {
+    if (sim.steps % 7200 === 0) for (const id of shapes.keys()) if (!sim.airside.byIdMap.has(id)) shapes.delete(id);
     sim.step();
     if (sim.steps % 600 === 0) noteVisits();
     const list = sim.airside.aircraft;
-    runwayConflicts(list, pairs.runway, (a, b) => `${name(a)} at ${Math.round(a.speed)} m/s towards ${name(b)}, ${Math.round(sim.time)} s`, firstConflict);
+    runwayConflicts(strips, list, pairs.runway, (a, b) => `${name(a)} at ${Math.round(a.speed)} m/s towards ${name(b)}, ${Math.round(sim.time)} s`, firstConflict);
     for (const a of list) {
       // Lined up on the runway, and from there into the air.
       if (a.phase === 'lineUp' && !linedUpSince.has(a.id)) linedUpSince.set(a.id, sim.time);
@@ -257,12 +184,14 @@ function run(seed: number): Result {
         readyAt.delete(v.id);
       }
     }
-    // Each aircraft's outline is worked out once a check, the first time a pair needs it.
-    const shapes = new Map<number, Shape>();
-    const shape = (x: Aircraft, p: Parked): Shape => {
-      let known = shapes.get(x.id);
-      if (!known) shapes.set(x.id, (known = shapeOf(p)));
-      return known;
+    // Each aircraft's outline, as the model draws it where it is, is worked out the first time a
+    // pair needs it, and again only once it has moved: most of those on the ground are parked.
+    const shape = (x: Aircraft): Shape => {
+      const known = shapes.get(x.id);
+      if (known && known.x === x.x && known.y === x.y && known.heading === x.heading) return known.shape;
+      const fresh = shapeOf(x.type, x.x, x.y, x.heading);
+      shapes.set(x.id, { x: x.x, y: x.y, heading: x.heading, shape: fresh });
+      return fresh;
     };
     for (let i = 0; i < list.length; i += 1) {
       const a = list[i];
@@ -274,14 +203,12 @@ function run(seed: number): Result {
         const dy = a.y - b.y;
         const reach = (a.type.length + b.type.length + a.type.span + b.type.span) / 2;
         if (dx * dx + dy * dy >= reach * reach) continue;
-        const pa = outline(a);
-        const pb = outline(b);
-        const sa = shape(a, pa);
-        const sb = shape(b, pb);
+        const sa = shape(a);
+        const sb = shape(b);
         const key = `${a.id}:${b.id}`;
         const describe = (): string => `${a.visit.rotation.arrFlight} ${a.type.id} (${a.phase} ${a.visit.stand}) and ${b.visit.rotation.arrFlight} ${b.type.id} (${b.phase} ${b.visit.stand}) at ${Math.round(a.x)},${Math.round(a.y)}, ${Math.round(sim.time)} s`;
-        if (bodyClearance(pa, pb) < LIMITS.bodies) pairs.centrelines.add(key);
-        if (fuselageClearance(sa, sb) < LIMITS.fuselageGap) {
+        if (bodyClearance(outline(a), outline(b)) < LIMITS.bodies) pairs.centrelines.add(key);
+        if (fuselageClearance(sa, sb, LIMITS.fuselageGap) < LIMITS.fuselageGap) {
           if (!pairs.body.has(key) && !firstHit) firstHit = `fuselages: ${describe()}`;
           if (!pairs.body.has(key)) kinds[[a.phase, b.phase].sort().join('+')] = (kinds[[a.phase, b.phase].sort().join('+')] ?? 0) + 1;
           pairs.body.add(key);

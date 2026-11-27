@@ -62,10 +62,35 @@ try {
   await page.waitForFunction(() => window.__sfo.settled(), null, { timeout: 30_000 });
   const gpu = await sfo('window.__sfo.gpu');
   await check('opens on the GPU with the operations panel', /apple|metal|angle/i.test(gpu) && !/swiftshader|llvmpipe|software/i.test(gpu) && (await page.isVisible('.ops')), gpu);
-  // The first frame is a running airport: aircraft taxiing and in the air, traffic on the roads.
+  // The first frame is a running airport: aircraft taxiing and in the air, traffic on the roads,
+  // and, with nothing pressed, the clock running and aircraft and vehicles moving from one frame
+  // to the next. A count of aircraft in moving phases passes a paused start as well.
   const first = await sfo('JSON.parse(window.render_game_to_text())');
   const moving = ['taxiIn', 'taxiOut', 'approach', 'landing', 'takeoff', 'climb', 'pushback'].reduce((n, phase) => n + (first.aircraft[phase] ?? 0), 0);
-  await check('opens with the airport already running', moving >= 3 && (first.aircraft.parked ?? 0) >= 20 && first.vehicles > 300, `${moving} aircraft moving, ${first.aircraft.parked} parked, ${first.vehicles} vehicles`);
+  const motion = await page.evaluate(
+    () =>
+      new Promise((done) => {
+        const sim = window.__sfo.sim();
+        const where = (list) => new Map(list.map((a) => [a.id, [a.x, a.y]]));
+        const moved = (before, list) => list.filter((a) => before.has(a.id) && Math.hypot(a.x - before.get(a.id)[0], a.y - before.get(a.id)[1]) > 0.5).length;
+        const clock = window.__sfo.time();
+        const steps = sim.steps;
+        const aircraft = where(sim.airside.aircraft);
+        const vehicles = where(sim.roads.traffic.vehicles);
+        let frames = 0;
+        const frame = () => {
+          frames += 1;
+          if (frames < 90) return void requestAnimationFrame(frame);
+          done({ frames, clock: window.__sfo.time() - clock, steps: sim.steps - steps, aircraft: moved(aircraft, sim.airside.aircraft), vehicles: moved(vehicles, sim.roads.traffic.vehicles) });
+        };
+        requestAnimationFrame(frame);
+      }),
+  );
+  await check(
+    'opens with the airport already running',
+    moving >= 3 && (first.aircraft.parked ?? 0) >= 20 && first.vehicles > 300 && motion.clock > 0.5 && motion.steps > 0 && motion.aircraft + motion.vehicles > 0,
+    `${moving} aircraft moving, ${first.aircraft.parked} parked, ${first.vehicles} vehicles; over ${motion.frames} frames the clock ran ${motion.clock.toFixed(2)} s in ${motion.steps} steps and ${motion.aircraft} aircraft and ${motion.vehicles} vehicles moved`,
+  );
 
   // Speed: buttons and the keyboard.
   await page.click('[data-speed="60"]');
@@ -203,11 +228,27 @@ try {
   await run(2000);
   await check('clear weather clears it again', (await sfo('window.__sfo.layers()')).haze < 0.05);
 
-  // Runways and checkpoints.
+  // Runways and checkpoints. A closed runway takes no new departures; those already on their way
+  // to it still use it, by design. So the clock runs on twenty minutes and every departure sent
+  // on its way after the closure is looked at, not just the list the tower would choose from.
   await page.click('[data-runway="01R/19L"]');
   await run(300);
   const closedRunway = await sfo('window.__sfo.ops()');
-  await check('closing 01R sends no new departures to it', closedRunway.runways.find((r) => r.id === '01R/19L').closed && !closedRunway.departing.includes('01R'), closedRunway.departing.join(' '));
+  const closedAt = await page.evaluate(() => [...window.__sfo.sim().airside.events].reverse().find((e) => e.kind === 'runways' && e.text.startsWith('Runway 01R/19L closed'))?.time ?? null);
+  await page.click('[data-speed="60"]');
+  await run(20_000);
+  await page.click('[data-speed="1"]');
+  const sentOff = await page.evaluate((at) => {
+    const sim = window.__sfo.sim();
+    const since = at ?? Infinity;
+    const sent = [...sim.airside.book.visits.values()].filter((v) => v.offBlockAt > since);
+    return { minutes: (sim.time - since) / 60, sent: sent.length, toClosed: sent.filter((v) => v.departureRunway === '01R').map((v) => v.rotation.depFlight) };
+  }, closedAt);
+  await check(
+    'closing 01R sends no new departures to it',
+    closedRunway.runways.find((r) => r.id === '01R/19L').closed && !closedRunway.departing.includes('01R') && closedAt !== null && sentOff.sent >= 3 && sentOff.toClosed.length === 0,
+    `taking off from ${closedRunway.departing.join(' ')}; ${sentOff.sent} departures pushed back in the ${Math.round(sentOff.minutes)} minutes after the closure, ${sentOff.toClosed.length} of them for 01R${sentOff.toClosed.length ? `: ${sentOff.toClosed.join(' ')}` : ''}`,
+  );
   await page.click('[data-runway="01R/19L"]');
   const c = await sfo(`window.__sfo.ops().checkpoints.find((cp) => cp.name === 'C').id`);
   await page.click(`[data-checkpoint="${c}"]`);

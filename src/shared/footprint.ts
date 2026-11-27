@@ -1,5 +1,8 @@
 // How much room a parked aircraft takes, for deciding which stands can be used side by side.
-// An aircraft is drawn as three lines on the ground: the fuselage and the two swept wings.
+// The stand rule of the map draws an aircraft as three lines on the ground, the fuselage and the
+// two swept wings; the outline below draws it at its true size, as the model does.
+
+import { planOf, type AirframeType } from './airframe.ts';
 
 export interface Parked {
   /** Where the nose wheel stops, and the direction the aircraft faces, radians from east. */
@@ -8,8 +11,6 @@ export interface Parked {
   heading: number;
   span: number;
   length: number;
-  /** Width of the fuselage, metres, when known. */
-  fuselage?: number;
 }
 
 /** Room kept between two aircraft on neighbouring stands, wingtip to wingtip, metres. */
@@ -91,37 +92,37 @@ export function fitTogether(a: Parked, b: Parked): boolean {
   return parkedClearance(a, b) >= STAND_CLEARANCE;
 }
 
-/**
- * An aircraft seen from above, as the model draws one: the fuselage as wide as it is, the two
- * swept wings with their chord, broad at the root and narrow at the tip, and the tailplane. Each
- * is a polygon of x, y pairs.
- */
-export function outline(p: Parked): number[][] {
-  const ux = Math.cos(p.heading);
-  const uy = Math.sin(p.heading);
-  const nx = -uy;
-  const ny = ux;
-  const width = p.fuselage ?? Math.max(3.3, 0.09 * p.length);
-  const noseX = p.x + ux * 4;
-  const noseY = p.y + uy * 4;
-  /** A point `back` metres behind the nose and `side` metres to the left of the centreline. */
-  const at = (back: number, side: number): [number, number] => [noseX - ux * back + nx * side, noseY - uy * back + ny * side];
-  const L = p.length;
-  const semi = p.span / 2;
-  const root = width * 0.3;
-  const rootChord = p.span * 0.19;
-  const tipChord = rootChord * 0.22;
-  const rootLead = L * 0.36;
-  const tipLead = rootLead + Math.tan(0.5) * (semi - root);
-  const tailSemi = p.span * 0.18;
-  const tailChord = L * 0.1;
-  const tailLead = L * 0.84;
-  const polygons: number[][] = [[...at(0, width / 2), ...at(L, width / 2), ...at(L, -width / 2), ...at(0, -width / 2)]];
-  for (const side of [1, -1]) {
-    polygons.push([...at(rootLead, side * root), ...at(tipLead, side * semi), ...at(tipLead + tipChord, side * semi), ...at(rootLead + rootChord, side * root)]);
-    polygons.push([...at(tailLead, 0), ...at(tailLead + tailSemi * 0.6, side * tailSemi), ...at(tailLead + tailSemi * 0.6 + tailChord * 0.4, side * tailSemi), ...at(Math.min(L, tailLead + tailChord), 0)]);
+/** Each type's outline in its own frame, and how far from its middle any part of it reaches. */
+const plans = new WeakMap<AirframeType, { polygons: number[][]; reach: number }>();
+
+function planFor(type: AirframeType): { polygons: number[][]; reach: number } {
+  let plan = plans.get(type);
+  if (!plan) {
+    const polygons = planOf(type);
+    let reach = 0;
+    for (const poly of polygons) for (let i = 0; i < poly.length; i += 2) reach = Math.max(reach, Math.hypot(poly[i], poly[i + 1]));
+    plans.set(type, (plan = { polygons, reach }));
   }
-  return polygons;
+  return plan;
+}
+
+/**
+ * An aircraft of a type seen from above, as the model draws it (src/shared/airframe.ts): the
+ * fuselage first, then the wings with their tip devices, the tailplane, the engines, the main
+ * wheels and the fin, each a polygon of x, y pairs. Placed with the middle of the fuselage at
+ * (x, y), facing `heading`, radians from east.
+ */
+export function outline(type: AirframeType, x: number, y: number, heading: number): number[][] {
+  const c = Math.cos(heading);
+  const s = Math.sin(heading);
+  return planFor(type).polygons.map((poly) => {
+    const placed = new Array<number>(poly.length);
+    for (let i = 0; i < poly.length; i += 2) {
+      placed[i] = x + poly[i] * c - poly[i + 1] * s;
+      placed[i + 1] = y + poly[i] * s + poly[i + 1] * c;
+    }
+    return placed;
+  });
 }
 
 function insidePolygon(x: number, y: number, poly: readonly number[]): boolean {
@@ -147,20 +148,26 @@ function polygonGap(a: readonly number[], b: readonly number[]): number {
   return least;
 }
 
+type Box = [number, number, number, number];
+
 /** An aircraft's outline made ready for many comparisons: its polygons, each with its bounding box. */
 export interface Shape {
+  /** The middle of the fuselage. */
   x: number;
   y: number;
   /** How far from (x, y) any part of it reaches. */
   reach: number;
   polygons: number[][];
-  /** Per polygon: least x, least y, greatest x, greatest y. */
-  boxes: [number, number, number, number][];
+  /** Per polygon, and round them all: least x, least y, greatest x, greatest y. */
+  boxes: Box[];
+  box: Box;
 }
 
-export function shapeOf(p: Parked): Shape {
-  const polygons = outline(p);
-  const boxes = polygons.map((poly): [number, number, number, number] => {
+/** The outline of an aircraft of a type placed as for `outline`, ready to compare. */
+export function shapeOf(type: AirframeType, x: number, y: number, heading: number): Shape {
+  const polygons = outline(type, x, y, heading);
+  const box: Box = [Infinity, Infinity, -Infinity, -Infinity];
+  const boxes = polygons.map((poly): Box => {
     let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
     for (let i = 0; i < poly.length; i += 2) {
       x0 = Math.min(x0, poly[i]);
@@ -168,25 +175,34 @@ export function shapeOf(p: Parked): Shape {
       x1 = Math.max(x1, poly[i]);
       y1 = Math.max(y1, poly[i + 1]);
     }
+    box[0] = Math.min(box[0], x0);
+    box[1] = Math.min(box[1], y0);
+    box[2] = Math.max(box[2], x1);
+    box[3] = Math.max(box[3], y1);
     return [x0, y0, x1, y1];
   });
-  return { x: p.x, y: p.y, reach: (p.length + p.span) / 2 + 8, polygons, boxes };
+  return { x, y, reach: planFor(type).reach, polygons, boxes, box };
+}
+
+/** How far apart two boxes are; 0 when they overlap. */
+function boxGap(a: Box, b: Box): number {
+  return Math.hypot(Math.max(0, a[0] - b[2], b[0] - a[2]), Math.max(0, a[1] - b[3], b[1] - a[3]));
 }
 
 /**
- * The smallest gap between two aircraft drawn as they are, wings and fuselage at their width; 0
- * when they touch. Only gaps under `limit` are worked out exactly: parts further apart than that
- * are passed over, and the answer is then `limit` or more.
+ * The smallest gap between two aircraft drawn as they are, every part at its true size; 0 when
+ * they touch. Only gaps under `limit` are worked out exactly: parts further apart than that are
+ * passed over, and the answer is then `limit` or more.
  */
 export function shapeClearance(a: Shape, b: Shape, limit = Infinity): number {
   if (Math.hypot(a.x - b.x, a.y - b.y) > a.reach + b.reach + limit) return Infinity;
   let least = Infinity;
   for (let i = 0; i < a.polygons.length; i += 1) {
     const ba = a.boxes[i];
+    // A part far from the whole of the other aircraft is far from each of its parts.
+    if (boxGap(ba, b.box) >= Math.min(limit, least)) continue;
     for (let j = 0; j < b.polygons.length; j += 1) {
-      const bb = b.boxes[j];
-      const apart = Math.hypot(Math.max(0, ba[0] - bb[2], bb[0] - ba[2]), Math.max(0, ba[1] - bb[3], bb[1] - ba[3]));
-      if (apart >= Math.min(limit, least)) continue;
+      if (boxGap(ba, b.boxes[j]) >= Math.min(limit, least)) continue;
       least = Math.min(least, polygonGap(a.polygons[i], b.polygons[j]));
       if (least === 0) return 0;
     }
@@ -194,15 +210,12 @@ export function shapeClearance(a: Shape, b: Shape, limit = Infinity): number {
   return least;
 }
 
-/** The smallest gap between two aircraft drawn as they are; see shapeClearance. */
-export function outlineClearance(a: Parked, b: Parked, limit = Infinity): number {
-  return shapeClearance(shapeOf(a), shapeOf(b), limit);
-}
-
-/** The smallest gap between two fuselages, side to side at their width; 0 when they touch. */
-export function fuselageClearance(a: Parked | Shape, b: Parked | Shape): number {
-  const sa = 'polygons' in a ? a : shapeOf(a);
-  const sb = 'polygons' in b ? b : shapeOf(b);
-  if (Math.hypot(sa.x - sb.x, sa.y - sb.y) > sa.reach + sb.reach) return Infinity;
-  return polygonGap(sa.polygons[0], sb.polygons[0]);
+/**
+ * The smallest gap between two fuselages, side to side at their width; 0 when they touch. As for
+ * `shapeClearance`, a gap of `limit` or more is not worked out exactly.
+ */
+export function fuselageClearance(a: Shape, b: Shape, limit = Infinity): number {
+  const apart = boxGap(a.boxes[0], b.boxes[0]);
+  if (apart >= limit) return apart;
+  return polygonGap(a.polygons[0], b.polygons[0]);
 }

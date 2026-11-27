@@ -63,6 +63,22 @@ interface Inbound {
   wake: WakeClass;
 }
 
+/**
+ * A landing slot given out, or one left empty, on a runway end: the stretch of time it holds,
+ * from `at` for `length` seconds, the beat it was given out in.
+ */
+interface Held {
+  at: number;
+  length: number;
+}
+
+/** Does any of `list` hold time between `from` and `to`? Stretches that only meet do not. */
+function overlaps(list: readonly Held[] | undefined, from: number, to: number): boolean {
+  if (!list) return false;
+  for (const h of list) if (h.at < to - 0.5 && from < h.at + h.length - 0.5) return true;
+  return false;
+}
+
 interface RunwayState {
   id: string;
   /** Aircraft on the pavement, with where they are heading along it. */
@@ -97,9 +113,14 @@ export class Tower {
   readonly runways = new Map<string, RunwayState>();
   private readonly crossings: Crossing[] = [];
   private windows: Window[] = [];
-  /** Landing slots taken, by slot number and runway end. */
-  private readonly slots = new Map<string, number>();
-  private readonly holes = new Set<string>();
+  /**
+   * Landing slots given out, and slots to be left empty, by runway end. Each keeps the stretch of
+   * time it was given in its own beat, so that after a change of beat (paired approaches or not)
+   * a new slot neither reads an old one as one at another time nor lands inside part of it: the
+   * empty slots behind a super-heavy keep the next arrival back whatever the beat.
+   */
+  private readonly slots = new Map<string, Held[]>();
+  private readonly holes = new Map<string, Held[]>();
   /** The latest landing slot given out, and the latest on each runway end. */
   private lastSlot = 0;
   private readonly lastSlotOn = new Map<string, number>();
@@ -218,7 +239,11 @@ export class Tower {
     return true;
   }
 
-  /** Pair approaches or not. New slots keep to the new beat and start after every slot already given out. */
+  /**
+   * Pair approaches or not. New slots keep to the new beat and start after every slot already
+   * given out, and none is given inside the time an old one holds, a super-heavy's empty slots
+   * behind it included.
+   */
   setPaired(paired: boolean): boolean {
     if (paired === this.visual) return false;
     this.notBefore = Math.max(this.notBefore, this.lastSlot + this.slotLength);
@@ -228,7 +253,9 @@ export class Tower {
 
   /** Give back a landing slot an arrival not yet on its approach no longer needs. */
   releaseSlot(end: string, threshold: number): void {
-    this.slots.delete(this.slotKey(end, threshold));
+    const list = this.slots.get(end);
+    const at = list ? list.findIndex((h) => Math.abs(h.at - threshold) < 0.5) : -1;
+    if (at >= 0) list!.splice(at, 1);
   }
 
   /**
@@ -249,10 +276,11 @@ export class Tower {
       const at = k * length;
       if (at > latest) return null;
       for (const end of usable) {
+        // Free of every slot given out and every gap kept, in whatever beat they were.
         if (this.slotTaken(end, at) || this.isHole(end, at)) continue;
         // A super-heavy needs the slots behind it empty, and one of them may already be given out.
-        if (wake === 'J' && Array.from({ length: CONFIG.runway.slotsBehindSuper }, (_, n) => at + (n + 1) * length).some((t) => this.slotTaken(end, t))) continue;
-        this.slots.set(this.slotKey(end, at), 1);
+        if (wake === 'J' && overlaps(this.slots.get(end), at + length, at + (1 + CONFIG.runway.slotsBehindSuper) * length)) continue;
+        this.held(this.slots, end).push({ at, length });
         if (wake === 'J') for (let n = 1; n <= CONFIG.runway.slotsBehindSuper; n += 1) this.addHole(end, at + n * length);
         this.lastSlot = Math.max(this.lastSlot, at);
         this.lastSlotOn.set(end, Math.max(this.lastSlotOn.get(end) ?? -Infinity, at));
@@ -261,27 +289,25 @@ export class Tower {
     }
   }
 
-  /**
-   * Slots and gaps are kept by their time, not their number, so that a change of beat (paired
-   * approaches or not) cannot read an old reservation as one at another time.
-   */
-  private slotKey(end: string, at: number): string {
-    return `${Math.round(at)}:${end}`;
+  private held(map: Map<string, Held[]>, end: string): Held[] {
+    let list = map.get(end);
+    if (!list) map.set(end, (list = []));
+    return list;
   }
 
-  /** Is the landing slot at time `at` on `end` given to an arrival? */
+  /** Is any of the landing slot at time `at` on `end`, in the beat now in use, given to an arrival? */
   slotTaken(end: string, at: number): boolean {
-    return this.slots.has(this.slotKey(end, at));
+    return overlaps(this.slots.get(end), at, at + this.slotLength);
   }
 
-  /** Is the landing slot at time `at` on `end` to be left empty? */
+  /** Is any of the landing slot at time `at` on `end`, in the beat now in use, to be left empty? */
   isHole(end: string, at: number): boolean {
-    return this.holes.has(this.slotKey(end, at));
+    return overlaps(this.holes.get(end), at, at + this.slotLength);
   }
 
   /** Leave the landing slot at time `at` on `end` empty; it must not be given to an arrival. */
   addHole(end: string, at: number): void {
-    this.holes.add(this.slotKey(end, at));
+    this.held(this.holes, end).push({ at, length: this.slotLength });
   }
 
   /** An arrival is established on final. Its threshold time is kept up to date with `updateInbound`. */
@@ -541,9 +567,12 @@ export class Tower {
     return false;
   }
 
-  /** Drop windows that have passed. */
+  /** Drop windows that have passed, and slots and gaps an hour gone: no slot is asked for in the past. */
   tidy(now: number): void {
     if (this.windows.length > 64) this.windows = this.windows.filter((w) => w.to > now - 5);
+    for (const map of [this.slots, this.holes]) {
+      for (const [end, list] of map) if (list.length > 16) map.set(end, list.filter((h) => h.at + h.length > now - 3600));
+    }
   }
 }
 

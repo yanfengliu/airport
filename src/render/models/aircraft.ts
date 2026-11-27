@@ -1,72 +1,17 @@
 // Procedural airliners, one geometry pair per type at true size. The "body" mesh carries its own
 // colours (white fuselage, grey wings, dark glass); the "livery" mesh is white and takes the
-// airline's colour per aircraft: the fin, the rear fuselage and the engine cowls.
+// airline's colour per aircraft: the fin, the rear fuselage and the engine cowls. Every size and
+// place comes from the type's airframe (src/shared/airframe.ts), which the stands are judged by too.
 //
 // Body frame: x forward, y to the left wing, z up, origin on the ground under the middle of the
 // fuselage. The builder turns that into three.js axes (forward +X, up +Y, right wing +Z).
 
 import * as THREE from 'three';
+import { airframe, section, type Surface } from '../../shared/airframe.ts';
 import type { AircraftType } from '../../sim/fleet.ts';
 import { MeshBuilder, rgb, type RGB } from '../builder.ts';
 
-interface Shape {
-  /** Where the wing's leading edge meets the fuselage, as a fraction of length behind the nose. */
-  wingAt: number;
-  /** Leading-edge sweep, radians; root chord as a fraction of span; tip chord as a fraction of root. */
-  sweep: number;
-  rootChord: number;
-  taper: number;
-  /** Engine nacelle radius and length, metres; where along the half-span each engine hangs. */
-  engineRadius: number;
-  engineLength: number;
-  engineAt: number[];
-  /** Height of the wing-tip device, metres; 0 for a raked tip. */
-  winglet: number;
-  /** Fuselage height over width, for a double deck. */
-  tall: number;
-}
-
-const NARROW: Shape = { wingAt: 0.37, sweep: 0.47, rootChord: 0.185, taper: 0.24, engineRadius: 1.15, engineLength: 4.4, engineAt: [0.33], winglet: 2.4, tall: 1 };
-const WIDE: Shape = { wingAt: 0.34, sweep: 0.58, rootChord: 0.2, taper: 0.16, engineRadius: 1.75, engineLength: 6.6, engineAt: [0.32], winglet: 0, tall: 1 };
-
-const SHAPES: Record<string, Shape> = {
-  E75L: { ...NARROW, wingAt: 0.39, engineRadius: 0.88, engineLength: 3.4, winglet: 1.9, rootChord: 0.17 },
-  BCS3: { ...NARROW, engineRadius: 1.08, engineLength: 4, winglet: 2 },
-  A320: NARROW,
-  A21N: { ...NARROW, wingAt: 0.39, engineRadius: 1.2, engineLength: 4.7 },
-  B738: { ...NARROW, wingAt: 0.38, engineRadius: 1.05, winglet: 2.5 },
-  B39M: { ...NARROW, wingAt: 0.39, engineRadius: 1.15, winglet: 2.6 },
-  B752: { ...NARROW, wingAt: 0.4, engineRadius: 1.25, engineLength: 4.8, winglet: 2.2, sweep: 0.46 },
-  B789: { ...WIDE, engineRadius: 1.72, winglet: 0, sweep: 0.6 },
-  A359: { ...WIDE, engineRadius: 1.8, winglet: 2.2 },
-  B77W: { ...WIDE, wingAt: 0.36, engineRadius: 1.95, engineLength: 7.3 },
-  A388: { ...WIDE, wingAt: 0.33, rootChord: 0.21, engineRadius: 1.6, engineLength: 6, engineAt: [0.3, 0.56], winglet: 2.2, tall: 1.19, sweep: 0.6 },
-};
-
-/**
- * The wing above a point `side` metres out from the centreline, as the model draws it: where its
- * leading and trailing edges are, in metres forward of the middle of the aircraft, and how high
- * its underside is. Null beyond the wingtip.
- */
-export function wingOver(type: AircraftType, side: number): { lead: number; trail: number; under: number } | null {
-  const shape = SHAPES[type.id] ?? (type.body === 'wide' || type.body === 'super' ? WIDE : NARROW);
-  const L = type.length;
-  const ry = type.fuselage / 2;
-  const rz = ry * shape.tall;
-  const zc = rz + Math.max(1.35, ry * 0.92);
-  const semi = type.span / 2;
-  const root = ry * 0.6;
-  const y = Math.abs(side);
-  if (y > semi) return null;
-  const t = Math.max(0, (y - root) / (semi - root));
-  const rootChord = type.span * shape.rootChord;
-  const chord = rootChord + (rootChord * shape.taper - rootChord) * t;
-  const lead = L / 2 - L * shape.wingAt - Math.tan(shape.sweep) * (semi - root) * t;
-  const z = zc - rz * 0.62 + Math.tan(0.1) * (semi - root) * t;
-  // The section is a flat diamond, thickest a third of the way back: 13% of the chord at the root, 10% at the tip.
-  const thick = chord * (0.13 - 0.03 * t);
-  return { lead, trail: lead - chord, under: z - thick / 2 };
-}
+export { wingOver } from '../../shared/airframe.ts';
 
 const WHITE: RGB = [1, 1, 1];
 const FUSELAGE = rgb(0xf3f4f6);
@@ -101,23 +46,10 @@ function face(b: MeshBuilder, p0: V3, p1: V3, p2: V3, p3: V3, c: RGB): void {
   b.quad(a, bb, cc, d);
 }
 
-/**
- * A lifting surface: a tapered slab from a root section to a tip section. Each section is given
- * by its leading-edge point, chord (running back along -x) and thickness.
- */
-function surface(b: MeshBuilder, rootLE: V3, rootChord: number, rootThick: number, tipLE: V3, tipChord: number, tipThick: number, c: RGB, vertical = false): void {
-  const section = (le: V3, chord: number, thick: number): V3[] => {
-    const up: V3 = vertical ? [0, thick / 2, 0] : [0, 0, thick / 2];
-    const mid = chord * 0.32;
-    return [
-      [le[0], le[1], le[2]],
-      [le[0] - mid + up[0], le[1] + up[1], le[2] + up[2]],
-      [le[0] - chord, le[1], le[2]],
-      [le[0] - mid - up[0], le[1] - up[1], le[2] - up[2]],
-    ];
-  };
-  const r = section(rootLE, rootChord, rootThick);
-  const t = section(tipLE, tipChord, tipThick);
+/** A lifting surface: a tapered slab from its root section to its tip section. */
+function surface(b: MeshBuilder, s: Surface, c: RGB): void {
+  const r = section(s.root, s.rootChord, s.rootThick, s.upright);
+  const t = section(s.tip, s.tipChord, s.tipThick, s.upright);
   // Four skins round the diamond section, then the tip cap. Winding is fixed up by `skin`.
   for (let i = 0; i < 4; i += 1) {
     const j = (i + 1) % 4;
@@ -209,123 +141,59 @@ export interface AircraftGeometry {
 }
 
 export function buildAircraftGeometry(type: AircraftType): AircraftGeometry {
-  const shape = SHAPES[type.id] ?? (type.body === 'wide' || type.body === 'super' ? WIDE : NARROW);
+  const f = airframe(type);
   const body = new MeshBuilder();
   const livery = new MeshBuilder();
-  const L = type.length;
-  const half = L / 2;
-  const ry = type.fuselage / 2;
-  const rz = ry * shape.tall;
-  // The fuselage rides on its gear: belly clear of the ground by roughly half its width.
-  const zc = rz + Math.max(1.35, ry * 0.92);
-  const noseLength = type.fuselage * 1.55;
-  const tailLength = type.fuselage * 2.9;
+  const { half, ry, rz, zc, stations } = f;
 
   // ---- fuselage: stations from the tail cone to the nose ----------------------------------
-  const stations: [number, number, number, number][] = [];
-  const tailSteps = 6;
-  for (let i = 0; i <= tailSteps; i += 1) {
-    const t = i / tailSteps;
-    const fat = Math.pow(t, 0.72);
-    // The tail cone tapers and sweeps up so the aircraft can rotate without scraping.
-    stations.push([-half + tailLength * t, zc + rz * 0.62 * (1 - fat), Math.max(0.18, ry * fat), Math.max(0.24, rz * (0.3 + 0.7 * fat))]);
-  }
-  const noseSteps = 6;
-  const noseStart = half - noseLength;
-  stations.push([(-half + tailLength + noseStart) / 2, zc, ry, rz]);
-  for (let i = 0; i <= noseSteps; i += 1) {
-    const t = i / noseSteps;
-    const r = Math.sqrt(Math.max(0, 1 - t * t));
-    stations.push([noseStart + noseLength * t, zc - rz * 0.16 * t * t, Math.max(0.12, ry * r), Math.max(0.12, rz * r)]);
-  }
   const liveryFrom = 2;
   const fuselageColour = (station: number, angle: number): RGB => (Math.sin(angle) < -0.45 ? BELLY : FUSELAGE);
   tube(body, stations.slice(liveryFrom), 14, (station, angle) => fuselageColour(station, angle));
   tube(livery, stations.slice(0, liveryFrom + 1), 14, () => WHITE);
 
   // Cabin windows as a dark stripe each side, and the flight deck glazing.
-  const stripeZ = zc + rz * 0.22;
-  const stripeFrom = -half + tailLength * 0.95;
-  const stripeTo = noseStart + noseLength * 0.18;
+  const { z: stripeZ, from: stripeFrom, to: stripeTo } = f.windows;
   for (const side of [1, -1]) {
-    const y = side * (ry * 0.985 + 0.02);
+    const y = side * f.windows.y;
     const p0: V3 = [stripeFrom, y, stripeZ - 0.2];
     const p1: V3 = [stripeTo, y, stripeZ - 0.2];
     const p2: V3 = [stripeTo, y, stripeZ + 0.2];
     const p3: V3 = [stripeFrom, y, stripeZ + 0.2];
     skin(body, p0, p1, p2, p3, GLASS, [0, 0, zc]);
-    if (shape.tall > 1.05) {
+    if (f.tall > 1.05) {
       const up = rz * 0.62;
       skin(body, [stripeFrom + 4, side * (ry * 0.86), zc + up - 0.2], [stripeTo - 6, side * (ry * 0.86), zc + up - 0.2], [stripeTo - 6, side * (ry * 0.86), zc + up + 0.2], [stripeFrom + 4, side * (ry * 0.86), zc + up + 0.2], GLASS, [0, 0, zc]);
     }
   }
-  const deckX = noseStart + noseLength * 0.52;
+  const deckX = f.deckX;
   skin(body, [deckX - 0.9, -ry * 0.62, zc + rz * 0.5], [deckX + 0.7, -ry * 0.42, zc + rz * 0.34], [deckX + 0.7, ry * 0.42, zc + rz * 0.34], [deckX - 0.9, ry * 0.62, zc + rz * 0.5], GLASS, [deckX - 2, 0, zc - rz]);
 
   // ---- wings ----------------------------------------------------------------------------
-  const semi = type.span / 2;
-  const rootChord = type.span * shape.rootChord;
-  const tipChord = rootChord * shape.taper;
-  const wingX = half - L * shape.wingAt;
-  const wingZ = zc - rz * 0.62;
-  const dihedral = 0.1;
-  const tipX = wingX - Math.tan(shape.sweep) * (semi - ry * 0.6);
-  const tipZ = wingZ + Math.tan(dihedral) * (semi - ry * 0.6);
-  for (const side of [1, -1]) {
-    const root: V3 = [wingX, side * ry * 0.6, wingZ];
-    const tip: V3 = [tipX, side * semi, tipZ];
-    surface(body, root, rootChord, rootChord * 0.13, tip, tipChord, tipChord * 0.1, WING);
-    if (shape.winglet > 0) {
-      surface(livery, [tipX, side * semi, tipZ], tipChord, 0.14, [tipX - shape.winglet * 0.7, side * (semi + shape.winglet * 0.18), tipZ + shape.winglet], tipChord * 0.45, 0.08, WHITE, true);
-    }
+  const { semi, rootChord, wingZ, tipX, tipZ } = f;
+  for (const s of f.sides) {
+    surface(body, s.wing, WING);
+    if (s.winglet) surface(livery, s.winglet, WHITE);
     // Engines hang ahead of and below the wing.
-    for (const at of shape.engineAt) {
-      const y = side * semi * at;
-      const along = (Math.abs(y) - ry * 0.6) / (semi - ry * 0.6);
-      const leX = wingX + (tipX - wingX) * along;
-      const leZ = wingZ + (tipZ - wingZ) * along;
-      const r = shape.engineRadius;
-      const front = leX + shape.engineLength * 0.62;
-      const back = front - shape.engineLength;
-      const ez = Math.max(r + 0.55, leZ - r * 0.95);
-      const nacelle: [number, number, number, number][] = [
-        [back, ez, r * 0.5, r * 0.5],
-        [back + shape.engineLength * 0.35, ez, r * 0.86, r * 0.86],
-        [front - shape.engineLength * 0.18, ez, r, r],
-        [front, ez, r * 0.92, r * 0.92],
-      ];
-      const shifted = nacelle.map(([x, z, a, c]): [number, number, number, number] => [x, z, a, c]);
-      const engine = new MeshBuilder();
-      void engine;
-      tubeAt(livery, shifted, y, 10, () => WHITE);
+    for (const e of s.engines) {
+      const { y, front, radius: r, z: ez, leX, leZ } = e;
+      tubeAt(livery, e.stations, y, 10, () => WHITE);
       // The intake: a dark disc just inside the lip.
       disc(body, front - 0.05, y, ez, r * 0.8, METAL);
       // Pylon.
-      skin(body, [front - shape.engineLength * 0.5, y - 0.12, ez + r * 0.8], [leX - rootChord * 0.2, y - 0.12, leZ], [leX - rootChord * 0.2, y + 0.12, leZ], [front - shape.engineLength * 0.5, y + 0.12, ez + r * 0.8], WING, [leX, y, ez - 3]);
+      skin(body, [front - e.length * 0.5, y - 0.12, ez + r * 0.8], [leX - rootChord * 0.2, y - 0.12, leZ], [leX - rootChord * 0.2, y + 0.12, leZ], [front - e.length * 0.5, y + 0.12, ez + r * 0.8], WING, [leX, y, ez - 3]);
     }
   }
 
   // ---- tail -----------------------------------------------------------------------------
-  const finHeight = Math.max(3, type.height - (zc + rz * 0.75));
-  const finRoot = L * 0.155;
-  const finX = -half + finRoot * 1.18;
-  surface(livery, [finX, 0, zc + rz * 0.72], finRoot, finRoot * 0.11, [finX - Math.tan(0.72) * finHeight, 0, zc + rz * 0.72 + finHeight], finRoot * 0.36, finRoot * 0.04, WHITE, true);
-  const stabSpan = type.span * 0.19;
-  const stabRoot = rootChord * 0.56;
-  const stabX = -half + stabRoot * 1.32;
-  for (const side of [1, -1]) {
-    surface(body, [stabX, side * ry * 0.35, zc + rz * 0.3], stabRoot, stabRoot * 0.1, [stabX - Math.tan(0.6) * stabSpan, side * stabSpan, zc + rz * 0.3 + stabSpan * 0.12], stabRoot * 0.38, stabRoot * 0.05, WING);
-  }
+  surface(livery, f.fin, WHITE);
+  for (const s of f.sides) surface(body, s.stabiliser, WING);
 
   // ---- landing gear ---------------------------------------------------------------------
-  const wheelR = Math.max(0.42, type.fuselage * 0.14);
-  const noseGearX = half - L * 0.12;
-  const mainGearX = half - L * 0.55;
-  const track = Math.min(semi * 0.36, Math.max(2.6, type.fuselage * 0.95));
+  const { wheelR, noseGearX, mainGearX, track, bogies } = f;
   strut(body, noseGearX, 0, wheelR, zc - rz * 0.9, 0.14);
   wheel(body, noseGearX, -0.3, wheelR * 0.85, 0.3);
   wheel(body, noseGearX, 0.3, wheelR * 0.85, 0.3);
-  const bogies = type.body === 'wide' || type.body === 'super' ? [-wheelR * 1.25, wheelR * 1.25] : [0];
   for (const side of [1, -1]) {
     strut(body, mainGearX, side * track, wheelR, wingZ, 0.18);
     for (const dx of bogies) {
