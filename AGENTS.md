@@ -54,7 +54,7 @@ The designated coordinator reads `../fleet/docs/skills/coordinator.md` before pl
 
 ## Gates
 
-`npm run typecheck` · `npm test` · `npm run build` · `npm run audit` before every code commit; `npm test` includes the day-long soak tests and the tracked-file size limits. After a change to anything drawn or clicked, `npm run visual` writes full-resolution captures under `artifacts/visual/`: look at them. After a change to `docs/work/`, `node ../fleet/scripts/work-docs.mjs check --repo .`.
+`npm run typecheck` · `npm test` · `npm run build` · `npm run audit` before every code commit; `npm test` includes the day-long soak tests and the tracked-file size limits, and runs the airside day alone after the other tests, since it judges its own time. After a change to anything drawn or clicked, `npm run visual` writes full-resolution captures under `artifacts/visual/` (look at them) and then drives every control through real input (`tools/visual/controls.mjs`). After a change to `docs/work/`, `node ../fleet/scripts/work-docs.mjs check --repo .`.
 
 ## Invariants & boundaries
 

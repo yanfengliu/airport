@@ -15,7 +15,7 @@
     "audit": "npm audit --audit-level=high",
     "data:fetch": "node tools/osm/fetch.mjs",
     "data:build": "node tools/osm/build-layout.ts",
-    "visual": "node tools/visual/sweep.mjs"
+    "visual": "node tools/visual/sweep.mjs && node tools/visual/controls.mjs"
   },
   "dependencies": {
     "three": "0.187.0"

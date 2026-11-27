@@ -39,7 +39,7 @@ The page takes a few parameters: `t=14:30` starts at that time of day, `seed=7` 
 - `node tools/sim/soak.ts` is the airside benchmark: a full day for each of several seeds, judged against fixed limits (whole cycles completed, waits on the ground, at the gate and lined up, go-arounds, no runway conflicts, no aircraft touching, drawn at their true size).
 - `node tools/sim/scenario.ts --weather storm@11:00 --close 28L@13:00` tells what the airport does through a change of weather or a closure, hour by hour, and fails if aircraft meet or fly at each other.
 - `node tools/sim/roads.ts --hours 24 --start 04:00` and `node tools/sim/people.ts --start 04:00 --hours 24` run and judge a day of roads and of people.
-- `npm run visual` drives the built app on the GPU through its real controls, writes full-resolution captures, and measures the frame rate at the morning peak with the clock running; `node tools/visual/controls.mjs` checks every control does what it says.
+- `npm run visual` drives the built app on the GPU through its real controls, writes full-resolution captures, measures the frame rate at the morning peak with the clock running, and then checks every control does what it says (`tools/visual/controls.mjs`, which can also be run alone).
 
 The plan, its acceptance criteria and the record of the work are in [docs/work/0_sfo-simulation/plan.md](docs/work/0_sfo-simulation/plan.md).
 

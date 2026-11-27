@@ -1,7 +1,7 @@
 // The static world: everything that does not move, built once from the layout.
 
 import * as THREE from 'three';
-import type { Layout } from '../shared/layout.ts';
+import type { Building, Layout } from '../shared/layout.ts';
 import { Lights } from './lights.ts';
 import type { Models } from './models/library.ts';
 import { buildAirfieldProps } from './static/airfield-props.ts';
@@ -38,6 +38,36 @@ export interface StaticWorld {
   stats: { meshes: number; triangles: number };
 }
 
+/**
+ * Which mapped buildings are drawn: those that stand on their own, and the parts of a terminal
+ * mapped as buildings of their own, from the terminal's roof up. Those parts come off with its roof
+ * in the cut-away view; below the roof they are inside its walls, where their own walls would lie
+ * on the glass and flicker against it. The tower's mapped shaft and cab, which stand on a terminal's
+ * roof, are neither: the tower is our model of it (src/render/static/landmarks.ts).
+ */
+export function mappedBuildings(layout: Layout): { own: Building[]; aboveRoofs: Building[] } {
+  const [towerX, towerY] = layout.airfield.tower;
+  const mappedTower = (b: Building): boolean => b.height > 40 && Math.hypot(b.poly.outer[0] - towerX, b.poly.outer[1] - towerY) < 40;
+  const terminalOf = (outer: number[]): { height: number } | null => {
+    for (const t of layout.terminals.buildings) {
+      const ring = t.poly.outer;
+      let within = 0;
+      for (let i = 0; i < outer.length; i += 2) if (insideOrOn(ring, outer[i], outer[i + 1], 1)) within += 1;
+      if (within >= 0.8 * (outer.length / 2)) return t;
+    }
+    return null;
+  };
+  const own: Building[] = [];
+  const aboveRoofs: Building[] = [];
+  for (const b of layout.buildings.buildings) {
+    if (mappedTower(b)) continue;
+    const terminal = terminalOf(b.poly.outer);
+    if (!terminal) own.push(b);
+    else if (b.height > terminal.height + 0.3) aboveRoofs.push({ ...b, minHeight: Math.max(b.minHeight ?? 0, terminal.height) });
+  }
+  return { own, aboveRoofs };
+}
+
 /** `models`: the library's models, for what is drawn with them; without them it is drawn plainly. */
 export function buildStaticWorld(layout: Layout, models: Models = new Map()): StaticWorld {
   const group = new THREE.Group();
@@ -53,39 +83,14 @@ export function buildStaticWorld(layout: Layout, models: Models = new Map()): St
   group.add(buildAirfieldProps(layout.airfield, layout.roads, models));
 
   const [towerX, towerY] = layout.airfield.tower;
-  // The mapped shaft and cab of the tower are replaced by the modelled one.
-  const nearTower = (flat: number[]): boolean => Math.hypot(flat[0] - towerX, flat[1] - towerY) < 40;
-  // Parts of a terminal mapped as buildings of their own belong to the terminal, and come off with
-  // its roof in the cut-away view. Below the terminal's roof they are inside its walls, where their
-  // own walls would lie on the glass and flicker against it: only what stands above is drawn.
-  const terminalOf = (outer: number[]): { height: number } | null => {
-    for (const t of layout.terminals.buildings) {
-      const ring = t.poly.outer;
-      let within = 0;
-      for (let i = 0; i < outer.length; i += 2) if (insideOrOn(ring, outer[i], outer[i + 1], 1)) within += 1;
-      if (within >= 0.8 * (outer.length / 2)) return t;
-    }
-    return null;
-  };
-  const partOf = new Map(layout.buildings.buildings.map((b) => [b, terminalOf(b.poly.outer)]));
-  // The tower's mapped shaft and cab, which stand on a terminal's roof: never drawn, as a building
-  // or as part of the terminal.
-  const mappedTower = (b: { height: number; poly: { outer: number[] } }): boolean => b.height > 40 && nearTower(b.poly.outer);
-  const buildings = buildBuildings(layout.buildings, facades, (b) => partOf.get(b) !== null || mappedTower(b));
+  const drawn = mappedBuildings(layout);
+  const buildings = buildBuildings({ ...layout.buildings, buildings: drawn.own }, facades);
   group.add(buildings.group);
   glows.push(...buildings.glows);
 
   const terminals = buildTerminalShells(layout.terminals, facades);
   // The parts of the terminals above their roofs only: the houses are in the buildings above already.
-  const above = {
-    buildings: layout.buildings.buildings.flatMap((b) => {
-      const terminal = partOf.get(b);
-      if (!terminal || b.height <= terminal.height + 0.3 || mappedTower(b)) return [];
-      return [{ ...b, minHeight: Math.max(b.minHeight ?? 0, terminal.height) }];
-    }),
-    boxes: [],
-  };
-  const roofParts = buildBuildings(above, facades, () => false, false);
+  const roofParts = buildBuildings({ buildings: drawn.aboveRoofs, boxes: [] }, facades, () => false, false);
   terminals.shell.add(roofParts.group);
   // The bridges stay when the roofs come off for the cut-away view.
   const bridges = buildBridges(layout.airfield, models);
