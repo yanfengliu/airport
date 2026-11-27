@@ -7,6 +7,10 @@
 //
 // A seed passes when, over the run:
 //   - at least 99% of the day's flights land and at least 99% take off;
+//   - at least 95% of the visits due in after the start and out two hours before the end have
+//     landed and taken off: whole cycles, counted visit by visit, as the acceptance criterion
+//     asks. Added 2026-11-26 after independent review: the totals above can pass on overnight
+//     and next-day movements while visits of the day are still incomplete.
 //   - no aircraft waits more than 20 minutes on the ground for the way ahead;
 //   - no departure is held at its stand more than 20 minutes once it is ready to go (doors closed,
 //     departure time reached): waiting to be let push back is waiting for a taxi clearance too.
@@ -46,6 +50,8 @@ const asJson = argv.includes('--json');
 
 const LIMITS = {
   completed: 0.99,
+  /** Share of the cohort that must complete a whole cycle: the acceptance criterion's 95%. */
+  cycles: 0.95,
   longestWait: 20 * 60,
   longestGateHold: 20 * 60,
   goAroundShare: 0.03,
@@ -57,6 +63,9 @@ const LIMITS = {
   bodies: 4,
   runwayConflicts: 0,
 } as const;
+
+/** Seconds before the end of the run by which a visit must be due to leave to count in the cycle cohort. */
+const CYCLE_SLACK = 2 * 3600;
 
 /** Half the width of a runway's strip, metres, and the conflict rule's numbers (see the header). */
 const STRIP = 45;
@@ -98,8 +107,9 @@ function runwayConflicts(list: readonly Aircraft[], found: Set<string>, describe
         if (q === p || q.a.alt > 3) continue;
         const gap = (q.along - p.along) * sign;
         if (gap <= 0 || gap > AHEAD) continue;
-        // Taking off the same way and faster than this one can close: no conflict.
-        if (q.v * sign > AWAY) continue;
+        // A departure taking off the same way and faster than this one can close: no conflict.
+        // Only a departure: a landing ahead is in the way whatever its speed.
+        if ((q.a.phase === 'takeoff' || q.a.phase === 'climb') && q.v * sign > AWAY) continue;
         const key = `${p.a.id}:${q.a.id}`;
         if (!found.has(key) && !first.length) first.push(`runway ${s.id}: ${describe(p.a, q.a)}`);
         found.add(key);
@@ -128,6 +138,9 @@ interface Result {
   flights: number;
   landings: number;
   takeoffs: number;
+  /** Visits due in after the start and out two hours before the end, and how many did both. */
+  cohort: number;
+  cycles: number;
   goArounds: number;
   longestWait: number;
   longestGateHold: number;
@@ -158,8 +171,16 @@ function run(seed: number): Result {
   /** When each departure still at its stand was ready to go, by visit. */
   const readyAt = new Map<number, number>();
   let longestGateHold = 0;
+  // Every visit's times and progress, noted as the run goes: the flight book forgets a visit two
+  // hours after it leaves.
+  const runStart = sim.time;
+  const visits = new Map<number, { sta: number; std: number; landed: boolean; airborne: boolean }>();
+  const noteVisits = (): void => {
+    for (const v of sim.airside.book.visits.values()) visits.set(v.id, { sta: v.sta, std: v.std, landed: v.landedAt >= 0, airborne: v.airborneAt >= 0 });
+  };
   while (sim.time < end) {
     sim.step();
+    if (sim.steps % 600 === 0) noteVisits();
     if (sim.steps % 4) continue;
     const list = sim.airside.aircraft;
     runwayConflicts(list, pairs.runway, (a, b) => `${name(a)} at ${Math.round(a.speed)} m/s towards ${name(b)}, ${Math.round(sim.time)} s`, firstConflict);
@@ -204,12 +225,20 @@ function run(seed: number): Result {
   for (const at of readyAt.values()) longestGateHold = Math.max(longestGateHold, sim.time - at);
   const stats = sim.airside.tower.stats;
   const flights = sim.rotations.length;
+  // Whole cycles: of the visits due to arrive after the start and leave two hours before the end,
+  // how many have landed, turned round and taken off. Overnight stays leaving after the end are
+  // not counted, and an arrival not yet in by then is not complete.
+  noteVisits();
+  const cohort = [...visits.values()].filter((v) => v.sta >= runStart && v.std <= sim.time - CYCLE_SLACK);
+  const cycles = cohort.filter((v) => v.landed && v.airborne).length;
   const stuckAtEnd = sim.airside.aircraft.filter((a) => a.waitingSince >= 0 && sim.time - a.waitingSince > LIMITS.longestWait).length;
   const usableGates = layout.airfield.stands.filter((s) => s.contact && sim.usableStands.has(s.id)).length;
   const result: Result = {
     seed,
     flights,
     landings: stats.landings,
+    cycles,
+    cohort: cohort.length,
     takeoffs: stats.takeoffs,
     goArounds: stats.goArounds,
     longestWait: Math.round(sim.airside.totals.longestWait),
@@ -229,6 +258,7 @@ function run(seed: number): Result {
   };
   if (result.landings < LIMITS.completed * flights) result.failures.push(`only ${result.landings} of ${flights} landed`);
   if (result.takeoffs < LIMITS.completed * flights) result.failures.push(`only ${result.takeoffs} of ${flights} took off`);
+  if (result.cycles < LIMITS.cycles * result.cohort) result.failures.push(`only ${result.cycles} of ${result.cohort} visits completed their cycle`);
   if (result.longestWait > LIMITS.longestWait) result.failures.push(`an aircraft waited ${result.longestWait} s`);
   if (result.longestGateHold > LIMITS.longestGateHold) result.failures.push(`a departure was held at its stand ${result.longestGateHold} s`);
   if (result.goArounds > LIMITS.goAroundShare * Math.max(1, result.landings)) result.failures.push(`${result.goArounds} go-arounds`);
@@ -249,7 +279,7 @@ if (asJson) {
 } else {
   for (const r of results) {
     console.log(
-      `seed ${String(r.seed).padEnd(4)} ${r.failures.length ? 'FAIL' : 'pass'}  landed ${r.landings}/${r.flights}  took off ${r.takeoffs}/${r.flights}  go-arounds ${r.goArounds}  longest wait ${r.longestWait} s  gate hold ${r.longestGateHold} s  ` +
+      `seed ${String(r.seed).padEnd(4)} ${r.failures.length ? 'FAIL' : 'pass'}  landed ${r.landings}/${r.flights}  took off ${r.takeoffs}/${r.flights}  cycles ${r.cycles}/${r.cohort}  go-arounds ${r.goArounds}  longest wait ${r.longestWait} s  gate hold ${r.longestGateHold} s  ` +
         `stands ${r.standOverlaps} bodies ${r.bodyHits} (wings ${r.wingBrushes})  runway conflicts ${r.runwayConflicts}  gates ${r.usableGates}  ${r.wallSeconds} s  checksum ${r.checksum}` +
         (r.failures.length ? `\n          ${r.failures.join('; ')}` : ''),
     );

@@ -14,18 +14,11 @@ export interface RunwayPlan {
   longDepartures: string[];
 }
 
-/**
- * Seconds a departure cleared onto a runway that takes no landings may be held, beyond when it
- * could otherwise roll, by traffic crossing in front of it. Without such a turn, a runway with a
- * queue of departures is never crossed: the next lines up before the last is past the crossing.
- */
-const CROSS_HOLDS_DEPARTURE = 30;
-/** Seconds taken to be lined up once cleared onto the runway, as far as crossing traffic is concerned. */
-const CROSS_LINING_UP = 15;
-/** Seconds longer at the hold line that give a departure the first turn to line up. */
-const FIRST_COME = 30;
-/** A departure that has not asked to line up for this long has gone elsewhere. */
-const ASK_LAPSES = 8;
+// A departure cleared onto a runway that takes no landings may be held a little
+// (CONFIG.runway.crossHoldsDeparture) by traffic crossing in front of it. Without such a turn, a
+// runway with a queue of departures is never crossed: the next lines up before the last is past
+// the crossing.
+const { crossHoldsDeparture: CROSS_HOLDS_DEPARTURE, crossLiningUp: CROSS_LINING_UP, firstCome: FIRST_COME, askLapses: ASK_LAPSES } = CONFIG.runway;
 
 export const WEST_PLAN: RunwayPlan ={ name: 'West', arrivals: ['28L', '28R'], departures: ['01L', '01R'], longDepartures: ['28L', '28R'] };
 export const SOUTHEAST_PLAN: RunwayPlan = { name: 'Southeast', arrivals: ['19L', '19R'], departures: ['10L', '10R'], longDepartures: ['10L', '10R'] };
@@ -197,7 +190,7 @@ export class Tower {
 
   /** Give back a landing slot an arrival not yet on its approach no longer needs. */
   releaseSlot(end: string, threshold: number): void {
-    this.slots.delete(`${Math.round(threshold / this.slotLength)}:${end}`);
+    this.slots.delete(this.slotKey(end, threshold));
   }
 
   /**
@@ -212,20 +205,26 @@ export class Tower {
     if (!ends.length) return null;
     const order = prefer && ends.includes(prefer) ? [prefer, ...ends.filter((e) => e !== prefer)] : ends;
     for (let k = Math.ceil(Math.max(earliest, this.notBefore) / length); ; k += 1) {
-      if (k * length > latest) return null;
+      const at = k * length;
+      if (at > latest) return null;
       for (const end of order) {
-        const key = `${k}:${end}`;
-        if (this.slots.has(key) || this.holes.has(key)) continue;
-        this.slots.set(key, 1);
-        if (wake === 'J') for (let n = 1; n <= CONFIG.runway.slotsBehindSuper; n += 1) this.holes.add(`${k + n}:${end}`);
-        this.lastSlot = Math.max(this.lastSlot, k * length);
-        return { end, threshold: k * length };
+        if (this.slotTaken(end, at) || this.isHole(end, at)) continue;
+        // A super-heavy needs the slots behind it empty, and one of them may already be given out.
+        if (wake === 'J' && Array.from({ length: CONFIG.runway.slotsBehindSuper }, (_, n) => at + (n + 1) * length).some((t) => this.slotTaken(end, t))) continue;
+        this.slots.set(this.slotKey(end, at), 1);
+        if (wake === 'J') for (let n = 1; n <= CONFIG.runway.slotsBehindSuper; n += 1) this.addHole(end, at + n * length);
+        this.lastSlot = Math.max(this.lastSlot, at);
+        return { end, threshold: at };
       }
     }
   }
 
+  /**
+   * Slots and gaps are kept by their time, not their number, so that a change of beat (paired
+   * approaches or not) cannot read an old reservation as one at another time.
+   */
   private slotKey(end: string, at: number): string {
-    return `${Math.round(at / this.slotLength)}:${end}`;
+    return `${Math.round(at)}:${end}`;
   }
 
   /** Is the landing slot at time `at` on `end` given to an arrival? */

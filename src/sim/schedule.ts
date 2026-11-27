@@ -3,6 +3,7 @@
 // long-haul flights, overnight parking and a first wave of departures in the morning.
 
 import type { Stand } from '../shared/layout.ts';
+import { CONFIG } from './config.ts';
 import { AIRCRAFT, AIRLINES, BANKS, DESTINATIONS, LONG_HAUL_KM, type Airline, type Destination } from './fleet.ts';
 import type { Rng } from './rng.ts';
 
@@ -160,10 +161,9 @@ function registration(airline: string, index: number): string {
   return kind === 'letters' ? `${prefix}${letter(index)}${letter(index * 7 + 3)}${prefix.length < 4 ? letter(index * 11 + 5) : ''}` : `${prefix}${String((index * 37) % 1000).padStart(3, '0')}`;
 }
 
-/** Departures the runways can take in a quarter of an hour, in all and on the long runways. */
+/** Departures are coordinated a quarter of an hour at a time, to the numbers in CONFIG.schedule. */
 const QUARTER = 900;
-const DEPARTURES_PER_QUARTER = 11;
-const LONG_RUNWAY_DEPARTURES_PER_QUARTER = 3;
+const { departuresPerQuarter: DEPARTURES_PER_QUARTER, longRunwayDeparturesPerQuarter: LONG_RUNWAY_DEPARTURES_PER_QUARTER } = CONFIG.schedule;
 
 /**
  * Fit the departures to what the runways can take, as a coordinated airport's schedule is: one

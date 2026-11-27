@@ -671,9 +671,14 @@ export class Aircraft {
     this.heading = info.heading;
     this.pitch += (0 - this.pitch) * Math.min(1, dt * 1.5);
     if (this.exit && this.along >= this.exitAlong) {
-      // Onto the turn-off: from here the aircraft follows its path.
+      // Onto the turn-off: from here the aircraft follows its path. The runway places it by its
+      // middle and the path by a lead point ahead of its nose: carry it on from exactly where it is.
       this.phase = 'taxiIn';
+      const [wasX, wasY] = [this.x, this.y];
       this.mover.s = this.body + 14 + (this.along - this.exitAlong);
+      this.poseOnPath();
+      this.mover.s += (wasX - this.x) * info.ux + (wasY - this.y) * info.uy;
+      this.poseOnPath();
       this.mover.v = this.speed;
       this.mover.startAt = svc.now;
       this.reversing = false;

@@ -5,6 +5,7 @@
 // or fog rules out landing side by side on the two parallel runways, which are 750 feet apart.
 
 import { SOUTHEAST_PLAN, WEST_PLAN, type RunwayPlan } from './airside/tower.ts';
+import { CONFIG } from './config.ts';
 
 export interface Weather {
   /** Direction the wind blows from, degrees, and its speed, knots. */
@@ -28,13 +29,7 @@ export const WEATHER_PRESETS: { id: string; label: string; weather: Weather }[] 
 
 /** Heading of runway 28L/28R, degrees. */
 const HEADING_28 = 284;
-/** Tailwind on the 28s, knots, beyond which the airport turns to the Southeast Plan... */
-const TURN_SOUTHEAST = 8;
-/** ...and below which it turns back to the West Plan. */
-const TURN_WEST = 3;
-/** Side-by-side approaches need at least this ceiling, feet, and visibility, miles. */
-const PAIRED_CEILING = 1_600;
-const PAIRED_VISIBILITY = 4;
+const { turnSoutheast: TURN_SOUTHEAST, turnWest: TURN_WEST, pairedCeiling: PAIRED_CEILING, pairedVisibility: PAIRED_VISIBILITY } = CONFIG.weather;
 
 /** Wind along the 28s from behind, knots: negative when it is a headwind. */
 export function tailwindOn28(weather: Weather): number {

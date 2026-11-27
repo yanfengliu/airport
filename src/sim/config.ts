@@ -45,6 +45,21 @@ export const CONFIG = {
      * the pavement. Beyond the widest half-span, so a wing on the runway is a body on it.
      */
     strip: 45,
+    /**
+     * Seconds a departure cleared onto a runway that takes no landings may be held, beyond when it
+     * could otherwise roll, by traffic crossing in front of it; and the seconds it is taken to need
+     * to be lined up once cleared, as far as crossing traffic is concerned.
+     */
+    crossHoldsDeparture: 30,
+    crossLiningUp: 15,
+    /** Seconds longer at the hold line that give a departure the first turn to line up. */
+    firstCome: 30,
+    /** A departure that has not asked to line up for this many seconds has gone elsewhere. */
+    askLapses: 8,
+    /** Seconds beyond the start of the approach up to which landing slots are given out. */
+    slotHorizon: 240,
+    /** Seconds without new landings while the runways change from one plan to the other. */
+    changeover: 15 * 60,
     brakingHard: 2.5,
     brakingEasy: 1.4,
     takeoffAccel: { regional: 2.5, narrow: 2.3, wide: 1.9, super: 1.7 },
@@ -65,6 +80,21 @@ export const CONFIG = {
     bodyMargin: 9,
     /** Aircraft queued for one runway before more are held at their stands. */
     queueLimit: 7,
+  },
+
+  schedule: {
+    /** Departures the runways can take in a quarter of an hour, in all and on the long runways. */
+    departuresPerQuarter: 11,
+    longRunwayDeparturesPerQuarter: 3,
+  },
+
+  weather: {
+    /** Tailwind on the 28s, knots, beyond which the airport turns to the Southeast Plan, and below which it turns back. */
+    turnSoutheast: 8,
+    turnWest: 3,
+    /** Side-by-side approaches need at least this ceiling, feet, and visibility, miles. */
+    pairedCeiling: 1_600,
+    pairedVisibility: 4,
   },
 
   turnaround: {

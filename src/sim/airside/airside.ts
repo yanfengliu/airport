@@ -19,12 +19,7 @@ import { Tower } from './tower.ts';
 const AGAINST_TRAFFIC = 240;
 /** Room kept between the outlines of two aircraft on neighbouring stands, wings included, metres. */
 const BESIDE = 2;
-/** Seconds beyond the start of the approach up to which landing slots are given out. */
-const SLOT_HORIZON = 240;
-/** Seconds without new landings while the runways change from one plan to the other. */
-const CHANGEOVER = 15 * 60;
-/** An arrival this far behind its time is still waited for; one that would be later has gone elsewhere. */
-const LONGEST_ARRIVAL_DELAY = 6 * 3600;
+const { slotHorizon: SLOT_HORIZON, changeover: CHANGEOVER } = CONFIG.runway;
 
 export interface SimEvent {
   time: number;
@@ -354,9 +349,9 @@ export class Airside {
     // many at a time as there are runways landing.
     const streams = Math.max(1, this.tower.arrivalEnds.length);
     let queued = 0;
-    // Not as far back as before the day started: a flight due then that found no stand to be put
-    // on at the start is not flown.
-    for (const visit of this.book.inboundAfter(Math.max(this.now - LONGEST_ARRIVAL_DELAY, this.startTime - 3600))) {
+    // However late, an arrival is waited for until it lands; but not one due before the day
+    // started that found no stand to be put on at the start, which is not flown.
+    for (const visit of this.book.inboundAfter(this.startTime - 3600)) {
       const wantThreshold = visit.eta - TAXI_IN_NOMINAL;
       // The list is in timetable order, and a delayed flight can be due after a later one.
       if (wantThreshold - this.now > lead) continue;
@@ -491,7 +486,7 @@ export class Airside {
       if (closed) this.tower.closed.add(runway);
       else this.tower.closed.delete(runway);
     });
-    this.event('runways', `Runway ${runway} ${closed ? 'closed' : 'open again'}`, -1);
+    this.event('runways', closed ? `Runway ${runway} closed to new traffic: aircraft already on their way to it still use it` : `Runway ${runway} open again`, -1);
   }
 
   /**

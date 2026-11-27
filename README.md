@@ -20,7 +20,7 @@ The page takes a few parameters: `t=14:30` starts at that time of day, `seed=7` 
 - Drag to pan; right-drag, or drag with Shift held, to turn and tilt; wheel to zoom. The number keys go to the camera presets along the bottom.
 - Space pauses; `[` and `]` change speed (1×, 5×, 15×, 60×); the top bar jumps to dawn, day, dusk or night.
 - `I` lifts the terminal roofs to show the departures level, then the arrivals level.
-- `O` opens the operations panel: the runway plan, weather, landing and take-off rates, delays, gates, every security checkpoint, bags, road speeds and an event log. Its buttons change the weather, close runways and close checkpoints, and the airport responds.
+- `O` opens the operations panel: the runway plan, weather, landing and take-off rates, delays, gates, every security checkpoint, bags, road speeds and an event log. Its buttons change the weather, close runways and close checkpoints, and the airport responds. A closed runway takes no new traffic, while aircraft already on their way to it still use it; a closed checkpoint works through its line and sends new travellers to the next one.
 - `B` opens the departure and arrival boards. Click a row, or click an aircraft on the map, to see its card; `F` follows it with the camera and `Esc` lets it go.
 - `H` hides everything but the view.
 
