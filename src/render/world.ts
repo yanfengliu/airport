@@ -99,7 +99,7 @@ export function buildStaticWorld(layout: Layout, models: Models = new Map()): St
   const roofParts = buildBuildings({ buildings: drawn.aboveRoofs, boxes: [] }, facades, () => false, false);
   terminals.shell.add(roofParts.group);
   // The bridges stay when the roofs come off for the cut-away view.
-  const bridges = buildBridges(layout.airfield, models);
+  const bridges = buildBridges(layout, models);
   group.add(terminals.shell, bridges.group);
   glows.push(...terminals.glows, ...roofParts.glows);
 

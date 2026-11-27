@@ -127,6 +127,37 @@ describe('the terminals, furnished', () => {
     expect(f.groups.filter((g) => g.kind === 'food').length).toBeGreaterThan(100);
   });
 
+  it("keeps everything within the terminals' walls as drawn: the furniture, carousels and seats, and wherever people stand, queue, crowd or walk on to", () => {
+    const { t, f } = fitted();
+    const buildings = layout.terminals.buildings.map((b) => b.poly);
+    const inside = (x: number, y: number): boolean => buildings.some((poly) => insidePolygon(poly, x, y));
+    const out: string[] = [];
+    const judge = (what: string, x: number, y: number): void => {
+      if (!inside(x, y)) out.push(`${what} at ${x.toFixed(1)},${y.toFixed(1)}`);
+    };
+    // Every corner of every footprint (shrunk a little: touching the wall is not through it).
+    for (const i of f.items) for (const [x, y] of corners(i)) judge(i.kind, x, y);
+    for (const c of f.carousels) for (const [x, y] of corners(c)) judge('carousel', x, y);
+    for (let k = 0; k < f.seats.length; k += 3) judge('seat', f.seats[k], f.seats[k + 1]);
+    for (const spots of f.claimSpots) for (let k = 0; k < spots.length; k += 3) judge('claim spot', spots[k], spots[k + 1]);
+    for (const [, spots] of f.aisles) for (let k = 0; k < spots.length; k += 3) judge('shop spot', spots[k], spots[k + 1]);
+    for (const rope of f.ropes) for (let k = 0; k < rope.pts.length; k += 2) judge('rope', rope.pts[k], rope.pts[k + 1]);
+    const spot: LineSpot = { x: 0, y: 0, dx: 0, dy: 0 };
+    for (const [id, queue] of t.queues) {
+      const kind = t.plan.places[id].kind;
+      for (const s of queue.servers) {
+        judge(`${kind} server`, s.x, s.y);
+        if (!Number.isNaN(s.exitX)) judge(`${kind} exit`, s.exitX, s.exitY);
+      }
+      // The line between its ropes, and a crowd of a hundred past them.
+      for (let d = 0; d < queue.roped + 100 * 0.85; d += 0.3) {
+        queue.spotAt(d, spot);
+        judge(`${kind} line`, spot.x, spot.y);
+      }
+    }
+    expect(out.slice(0, 10)).toEqual([]);
+  });
+
   it('stands everything on the floor, nothing inside anything else, and no seat inside furniture', () => {
     const { t, f } = fitted();
     // On the floor: inside a terminal building, where the walking grid's cells may not reach right to the walls.
@@ -254,6 +285,25 @@ describe('crowds that are not machine-made', () => {
     for (let i = 0; i < pts.length; i += 1) for (let j = i + 1; j < pts.length; j += 1) closest = Math.min(closest, Math.hypot(pts[i][0] - pts[j][0], pts[i][1] - pts[j][1]));
     expect(closest).toBeGreaterThan(0.4);
     // On a grid, people share a handful of distances back from the ropes; in a crowd, hardly any.
+    const rows = new Set(pts.map(([x]) => Math.round(x * 10)));
+    expect(rows.size).toBeGreaterThan(pts.length * 0.4);
+  });
+
+  it('keeps a crowd past its ropes to the floor there is, each of its people in a place of their own', () => {
+    // Walls behind the line and to one side of it.
+    const standable = (x: number, y: number): boolean => x > -16 && y < 5;
+    const queue = new ServiceQueue({ x: 0, y: 0, heading: 0, length: 12, width: 6 }, [{ x: 8, y: 0 }], standable);
+    const spot: LineSpot = { x: 0, y: 0, dx: 0, dy: 0 };
+    const pts: [number, number][] = [];
+    // Sixty, one behind another, as close as a line's people stand (see People.room).
+    for (let d = queue.roped + 0.5; d < queue.roped + 0.5 + 60 * 0.85 * 0.77; d += 0.85 * 0.77) {
+      queue.spotAt(d, spot);
+      expect(standable(spot.x, spot.y), `${spot.x.toFixed(1)},${spot.y.toFixed(1)}`).toBe(true);
+      pts.push([spot.x, spot.y]);
+    }
+    let closest = Infinity;
+    for (let i = 0; i < pts.length; i += 1) for (let j = i + 1; j < pts.length; j += 1) closest = Math.min(closest, Math.hypot(pts[i][0] - pts[j][0], pts[i][1] - pts[j][1]));
+    expect(closest).toBeGreaterThan(0.4);
     const rows = new Set(pts.map(([x]) => Math.round(x * 10)));
     expect(rows.size).toBeGreaterThan(pts.length * 0.4);
   });

@@ -282,7 +282,7 @@ export function airfieldFurniture(layout: Pick<Layout, 'airfield' | 'roads' | 'r
   }
 
   // The bridges' fixed walkways and rotundas, and the buildings, which the gates' furniture keeps from.
-  const lines = bridgeLines(airfield);
+  const lines = bridgeLines(layout);
   const walkways = lines.flatMap((l) => l.fixed.map((f) => [f.x0, f.y0, f.x1, f.y1]));
   const rotundas = lines.map((l) => [l.end.x0, l.end.y0]);
   const nearBuildings = new Near([...layout.terminals.buildings.map((t) => t.poly.outer), ...layout.buildings.buildings.map((b) => b.poly.outer)], (ring, x, y) => ringReach(ring, x, y));

@@ -198,6 +198,19 @@ export function insidePolygon(p: PolygonData, x: number, y: number): boolean {
   return insideRing(p.outer, x, y) && !(p.holes ?? []).some((h) => insideRing(h, x, y));
 }
 
+/** Whether a point stands within any of some outlines, each first judged by its box. */
+export function withinAny(polys: readonly PolygonData[]): (x: number, y: number) => boolean {
+  const boxed = polys.map((poly) => {
+    let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < poly.outer.length; i += 2) {
+      [x0, x1] = [Math.min(x0, poly.outer[i]), Math.max(x1, poly.outer[i])];
+      [y0, y1] = [Math.min(y0, poly.outer[i + 1]), Math.max(y1, poly.outer[i + 1])];
+    }
+    return { poly, x0, y0, x1, y1 };
+  });
+  return (x, y) => boxed.some((b) => x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1 && insidePolygon(b.poly, x, y));
+}
+
 function signedArea(r: readonly number[]): number {
   let twice = 0;
   for (let i = 0, j = r.length - 2; i < r.length; j = i, i += 2) twice += r[j] * r[i + 1] - r[i] * r[j + 1];
@@ -277,9 +290,17 @@ class Layouter {
   readonly rooms: WalledRoom[] = [];
   private readonly taken = new Set<number>();
   private readonly grids: NavGrid[];
+  /** The terminals' outside walls, as drawn: nothing stands beyond them. */
+  private readonly walls: ((x: number, y: number) => boolean) | null;
 
-  constructor(grids: NavGrid[]) {
+  constructor(grids: NavGrid[], walls: readonly PolygonData[] = []) {
     this.grids = grids;
+    this.walls = walls.length ? withinAny(walls) : null;
+  }
+
+  /** Within the terminals' walls (true when they are not given). */
+  withinWalls(x: number, y: number): boolean {
+    return !this.walls || this.walls(x, y);
   }
 
   /** The grids of the level a floor is on: the arrivals level, or both halves of the departures level. */
@@ -339,6 +360,7 @@ class Layouter {
     const pts = this.samples(x, y, heading, halfL, halfW, 0.6);
     for (let i = 0; i < pts.length; i += 2) {
       if (this.taken.has(this.key(floor, pts[i], pts[i + 1]))) return false;
+      if (!this.withinWalls(pts[i], pts[i + 1])) return false;
       if (room ? !insidePolygon(room, pts[i], pts[i + 1]) : !this.walkable(floor, pts[i], pts[i + 1], inner)) return false;
     }
     return true;
@@ -421,7 +443,7 @@ function at(f: { x: number; y: number; ux: number; uy: number }, along: number, 
 
 /** Everything inside the terminals, laid out from the plan, its queues and the mapped rooms. */
 export function buildFittings(layout: Layout, plan: TerminalPlan, queues: ReadonlyMap<number, ServiceQueue>, brandOf: (place: Place) => number, island: (place: Place) => boolean = () => false): Fittings {
-  const out = new Layouter(plan.grids);
+  const out = new Layouter(plan.grids, layout.terminals.buildings.map((b) => b.poly));
   const span = new Map(layout.airfield.stands.map((s) => [s.id, s.span] as const));
   const gateSpan = new Map<number, number>();
   for (const [stand, place] of plan.holdroom) gateSpan.set(place.id, Math.max(gateSpan.get(place.id) ?? 0, span.get(stand) ?? 36));
@@ -668,7 +690,10 @@ function podium(out: Layouter, place: Place, queue: ServiceQueue): void {
   const f = frameAt(place.x, place.y, h);
   for (const s of queue.servers) {
     const side = Math.sign((s.x - place.x) * -f.uy + (s.y - place.y) * f.ux) || 1;
-    const [x, y] = at(frameAt(s.x, s.y, h), 0.35, side * 0.42);
+    // Beside the lane, at the door or as near it as is inside the glass.
+    const g = frameAt(s.x, s.y, h);
+    const along = [0.35, 0, -0.35, -0.7, -1.05].find((a) => out.withinWalls(...at(g, a, side * 0.42))) ?? -1.05;
+    const [x, y] = at(g, along, side * 0.42);
     out.put('reader', place.floor, x, y, h + Math.PI, 0, false);
   }
   // A metre into the hall from the door, on whichever side of the lanes there is floor for it.
@@ -855,6 +880,25 @@ function carousels(out: Layouter, layout: Layout, claim: Place): void {
       }
     }
   }
+  if (!list.length) {
+    // With no room drawn for it, or none it fits in, the hall's walls give it its way: as near the
+    // claim as there is floor for it and those round it, within the walls.
+    const wall = wallNear(layout, claim.x, claim.y, 80);
+    const along = wall ? headingOf(wall[0], wall[1]) : 0;
+    search: for (const margin of [2.5, 1]) {
+      for (let r = 0; r <= 40; r += 2.5) {
+        const n = r ? Math.ceil((2 * Math.PI * r) / 2.5) : 1;
+        for (let k = 0; k < n; k += 1) {
+          const [x, y] = [claim.x + r * Math.cos((k / n) * 2 * Math.PI), claim.y + r * Math.sin((k / n) * 2 * Math.PI)];
+          for (const heading of [along, along + Math.PI / 2]) {
+            if (!out.fits(floor, x, y, heading, CAROUSEL_LENGTH / 2 + margin, CAROUSEL_WIDTH / 2 + margin, false)) continue;
+            put(x, y, heading, CAROUSEL_LENGTH, CAROUSEL_WIDTH);
+            break search;
+          }
+        }
+      }
+    }
+  }
   if (!list.length) put(claim.x, claim.y, 0, CAROUSEL_LENGTH, CAROUSEL_WIDTH);
   out.carouselsOf.set(claim.id, list);
   for (const index of list) out.claimSpots[index] = standRound(out, out.carousels[index]);
@@ -953,16 +997,16 @@ function shop(out: Layouter, place: Place, poly: PolygonData, fr: Front): void {
   const spots: number[] = [];
   const spot = (d: number, c: number, facing: number): void => {
     const [x, y] = at(fr, d, c);
-    if (insidePolygon(poly, x, y)) spots.push(x, y, facing);
+    if (insidePolygon(poly, x, y) && out.withinWalls(x, y)) spots.push(x, y, facing);
   };
   if (D < 4.5 || W < 5) {
     const d = Math.max(SIZE.newsstand[1] / 2 + 0.2, D / 2);
-    if (within(poly, fr, d, 0, false, SIZE.newsstand[0], SIZE.newsstand[1])) {
-      const [x, y] = at(fr, d, 0);
-      out.put('newsstand', place.floor, x, y, intoRoom + Math.PI, tint);
+    const [nx, ny] = at(fr, d, 0);
+    if (within(poly, fr, d, 0, false, SIZE.newsstand[0], SIZE.newsstand[1]) && out.fits(place.floor, nx, ny, intoRoom + Math.PI / 2, SIZE.newsstand[0] / 2, SIZE.newsstand[1] / 2, false, poly)) {
+      out.put('newsstand', place.floor, nx, ny, intoRoom + Math.PI, tint);
+      spot(d - SIZE.newsstand[1] / 2 - 0.8, 0.6, intoRoom);
+      spot(d - SIZE.newsstand[1] / 2 - 0.8, -0.6, intoRoom);
     }
-    spot(d - SIZE.newsstand[1] / 2 - 0.8, 0.6, intoRoom);
-    spot(d - SIZE.newsstand[1] / 2 - 0.8, -0.6, intoRoom);
     out.spots(place.id, spots);
     return;
   }
@@ -1011,7 +1055,7 @@ function food(out: Layouter, place: Place, poly: PolygonData, fr: Front): void {
   if (modules(out, place, poly, fr, 'counter', counterAt, -span / 2, span / 2, false, intoRoom + Math.PI, tint)) {
     for (let c = -Math.min(W / 2 - 1, 2.4); c <= Math.min(W / 2 - 1, 2.4); c += 0.9) {
       const [x, y] = at(fr, counterAt - SIZE.counter[1] / 2 - 0.8, c);
-      if (insidePolygon(poly, x, y)) spots.push(x, y, intoRoom);
+      if (insidePolygon(poly, x, y) && out.withinWalls(x, y)) spots.push(x, y, intoRoom);
     }
   }
   // Tables in a grid: a set of a table and two chairs, or two sets pushed together for four.
@@ -1041,7 +1085,7 @@ function food(out: Layouter, place: Place, poly: PolygonData, fr: Front): void {
   }
   if (!spots.length) {
     const [x, y] = at(fr, D / 2, 0);
-    spots.push(x, y, intoRoom);
+    if (out.withinWalls(x, y)) spots.push(x, y, intoRoom);
   }
   out.spots(place.id, spots);
 }

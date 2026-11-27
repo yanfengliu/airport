@@ -157,7 +157,7 @@ describe('the airfield furniture', () => {
     expect(masts.length).toBeGreaterThan(gates.length / 3);
     for (const m of masts) expect(floodlights.find((f) => f.stand === m.stand), `${m.stand}'s lamp on its mast`).toMatchObject({ x: m.x, y: m.y, h: MAST_LAMP });
     const sim = new Sim(layout, { seed: 7, startTime: 4 * 3600 });
-    const lines = bridgeLines(airfield);
+    const lines = bridgeLines(layout);
     const rings = [...layout.terminals.buildings.map((t) => t.poly.outer), ...layout.buildings.buildings.map((b) => b.poly.outer)];
     const faults: string[] = [];
     // A mast's base and pole, round it: about a metre and a half.

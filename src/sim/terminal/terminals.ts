@@ -14,12 +14,31 @@ import { NOT_YET, type FlightBook, type Visit } from '../airside/flights.ts';
 import { CONFIG } from '../config.ts';
 import { AIRCRAFT, AIRLINES, AIRLINE_BY_CODE } from '../fleet.ts';
 import type { Rng } from '../rng.ts';
-import { BOOTH_FROM_PASSENGER, BRANDS, DESK_FROM_PASSENGER, LANE, SIZE, buildFittings, orient, type Fittings, type SeatKind } from './fittings.ts';
+import { BOOTH_FROM_PASSENGER, BRANDS, DESK_FROM_PASSENGER, LANE, SIZE, buildFittings, orient, withinAny, type Fittings, type SeatKind } from './fittings.ts';
 import { UNREACHABLE } from './grid.ts';
 import { People, POSE, ROLE, STEP } from './people.ts';
 import { FLOOR, FLOOR_HEIGHT, buildTerminalPlan, type Place, type PlaceKind, type TerminalPlan } from './plan.ts';
 import { ServiceQueue } from './queue.ts';
 import type { Transit } from '../transit/trains.ts';
+
+/**
+ * Points round a security lane's furniture, metres along the way through and across it from its
+ * server: the bins, the x-ray belt and the scanner or arch, each a few centimetres inside its edges
+ * and no more than a metre apart (see src/sim/terminal/fittings.ts: checkpoint, LANE, SIZE).
+ */
+const LANE_POINTS: readonly (readonly [number, number])[] = (
+  [
+    [-1.75, LANE.belt, SIZE.bins[1] / 2, SIZE.bins[0] / 2],
+    [LANE.beltAlong, LANE.belt, SIZE.xray[0] / 2, SIZE.xray[1] / 2],
+    [LANE.scannerAlong, LANE.scanner, Math.max(SIZE.scanner[1], SIZE.arch[1]) / 2, Math.max(SIZE.scanner[0], SIZE.arch[0]) / 2],
+  ] as const
+).flatMap(([a, c, ha, hc]) => {
+  const [ea, ec] = [ha - 0.05, hc - 0.05];
+  const [na, nc] = [Math.max(1, Math.ceil(2 * ea)), Math.max(1, Math.ceil(2 * ec))];
+  const points: [number, number][] = [];
+  for (let i = 0; i <= na; i += 1) for (let j = 0; j <= nc; j += 1) if (i === 0 || i === na || j === 0 || j === nc) points.push([a - ea + (2 * ea * i) / na, c - ec + (2 * ec * j) / nc]);
+  return points;
+});
 
 /** Most walkers at once: parties and staff. */
 export const CAPACITY = 40_000;
@@ -183,6 +202,8 @@ export class Terminals {
   private readonly fieldId = new Map<number, number>();
   private readonly pointsAround = new Map<number, number[]>();
   private readonly holdroomOfStand = new Map<string, Place>();
+  /** Whether a point stands within the terminals' walls, as drawn. */
+  private readonly withinWalls: (x: number, y: number) => boolean;
   private readonly nearShops = new Map<number, Place[]>();
   private readonly shops: Place[];
   private readonly pending: Pending[] = [];
@@ -231,6 +252,7 @@ export class Terminals {
 
   constructor(layout: Layout, book: FlightBook, rng: Rng, now: number) {
     this.layout = layout;
+    this.withinWalls = withinAny(layout.terminals.buildings.map((b) => b.poly));
     this.book = book;
     this.rng = rng;
     this.now = now;
@@ -547,17 +569,22 @@ export class Terminals {
     // into the concourse if there is room, else further back in the hall or to one side. A row
     // of check-in desks stands back from another hall's.
     let [rowX, rowY] = [place.x - ux * best.back, place.y - uy * best.back];
+    // A lane fits where people can walk its length and its furniture (bins, x-ray belt and scanner)
+    // stands within the terminal's walls, the walls as drawn.
+    const laneFits = (cx: number, cy: number, i: number): boolean => {
+      const across = (i - (servers - 1) / 2) * spacing;
+      const point = (a: number, b: number): [number, number] => [cx - uy * (across + b) + ux * a, cy + ux * (across + b) + uy * a];
+      for (const a of [-2, 0, 3, 6, 8]) for (const b of [-1.3, 0, 1.3]) if (!onFloor(...point(a, b))) return false;
+      for (const [a, b] of LANE_POINTS) if (!withinWalls(...point(a, b))) return false;
+      return true;
+    };
+    const floors = [this.plan.grids[FLOOR.landside], this.plan.grids[FLOOR.airside]];
+    const onFloor = (x: number, y: number): boolean => floors.some((g) => g.cellAt(x, y) >= 0);
+    const withinWalls = this.withinWalls;
     if (place.kind === 'checkpoint') {
-      const floors = [this.plan.grids[FLOOR.landside], this.plan.grids[FLOOR.airside]];
-      const onFloor = (x: number, y: number): boolean => floors.some((g) => g.cellAt(x, y) >= 0);
       const lanesOn = (cx: number, cy: number): number => {
         let n = 0;
-        for (let i = 0; i < servers; i += 1) {
-          const across = (i - (servers - 1) / 2) * spacing;
-          let ok = true;
-          for (const a of [-2, 0, 3, 6, 8]) for (const b of [-1.3, 0, 1.3]) if (ok && !onFloor(cx - uy * (across + b) + ux * a, cy + ux * (across + b) + uy * a)) ok = false;
-          if (ok) n += 1;
-        }
+        for (let i = 0; i < servers; i += 1) if (laneFits(cx, cy, i)) n += 1;
         return n;
       };
       let most = lanesOn(rowX, rowY);
@@ -570,8 +597,35 @@ export class Terminals {
         }
       }
     }
+    if (place.kind === 'holdroom') {
+      // A gate's lanes and the readers beside them stand inside the glass, the door to the jet
+      // bridge ahead: where the door is on the wall's line, or in a corner, the row steps back
+      // into the room or aside, as little as it can.
+      const inside = (b: number, side: number): boolean => {
+        for (let i = 0; i < servers; i += 1) {
+          const across = (i - (servers - 1) / 2) * spacing + side;
+          for (const a of [0, 0.5]) for (const c of [-0.6, 0, 0.6]) if (!withinWalls(rowX - ux * (b - a) - uy * (across + c), rowY - uy * (b - a) + ux * (across + c))) return false;
+        }
+        return true;
+      };
+      const steps: [number, number][] = [];
+      for (let b = 0; b <= 3; b += 0.5) for (const side of [0, 0.5, -0.5, 1, -1, 1.5, -1.5, 2, -2]) steps.push([b, side]);
+      steps.sort((p, q) => Math.hypot(p[0], p[1]) - Math.hypot(q[0], q[1]));
+      let found = steps.find(([b, side]) => inside(b, side));
+      // A door at the end of a narrow way has room for one lane.
+      if (!found && servers > 1) {
+        servers = 1;
+        found = steps.find(([b, side]) => inside(b, side));
+      }
+      const [back, aside] = found ?? [0, 0];
+      [rowX, rowY] = [rowX - ux * back - uy * aside, rowY - uy * back + ux * aside];
+    }
     const front: { x: number; y: number; exitX?: number; exitY?: number }[] = [];
+    // A checkpoint keeps only the lanes that fit where its row stands (all of them, if none does).
+    const keep = place.kind === 'checkpoint' ? Array.from({ length: servers }, (_, i) => laneFits(rowX, rowY, i)) : [];
+    const keepAll = !keep.some(Boolean);
     for (let i = 0; i < servers; i += 1) {
+      if (place.kind === 'checkpoint' && !keepAll && !keep[i]) continue;
       const across = (i - (servers - 1) / 2) * spacing;
       const x = rowX - uy * across;
       const y = rowY + ux * across;
@@ -580,7 +634,10 @@ export class Terminals {
       let along = NaN;
       let aside = 0;
       if (place.kind === 'checkpoint') [along, aside] = [7.6, LANE.scanner];
-      else if (place.kind === 'holdroom') [along, aside] = [3, 0];
+      else if (place.kind === 'holdroom') {
+        // To the door to the jet bridge, but no further than half a metre inside the glass.
+        along = [3, 2.5, 2, 1.5, 1, 0.5, 0].find((a) => withinWalls(x + ux * (a + 0.5), y + uy * (a + 0.5))) ?? 0;
+      }
       else if (place.kind === 'customs') {
         // A booth stands between each pair of servers: each walks on past its own side of it.
         const alone = i % 2 === 0 && i === servers - 1;
@@ -591,8 +648,40 @@ export class Terminals {
       }
       front.push(Number.isNaN(along) ? { x, y } : { x, y, exitX: x + ux * along - uy * aside, exitY: y + uy * along + ux * aside });
     }
-    const queue = new ServiceQueue({ x: rowX - ux * (length / 2 + 2), y: rowY - uy * (length / 2 + 2), heading, length, width }, front);
-    queue.setOpen(place.kind === 'holdroom' ? servers : Math.min(2, servers));
+    // The waiting area stands on the floor, within the walls, and so does the crowd past its ropes:
+    // where the area behind the row does not, the nearest that does, back from the row or to one
+    // side of it, as large as may be.
+    // The departures level is one floor, landside and airside, as people see it.
+    const level = place.floor === FLOOR.arrivals ? [this.plan.grids[FLOOR.arrivals]] : floors;
+    const standable = (x: number, y: number): boolean => level.some((g) => g.cellAt(x, y) >= 0) && withinWalls(x, y);
+    const covers = (cx: number, cy: number, len: number, wide: number): boolean => {
+      const [na, nb] = [Math.max(1, Math.ceil(len / 1.5)), Math.max(1, Math.ceil(wide / 1.5))];
+      for (let i = 0; i <= na; i += 1) {
+        for (let j = 0; j <= nb; j += 1) {
+          const a = -len / 2 + 0.05 + ((len - 0.1) * i) / na;
+          const b = -wide / 2 + 0.05 + ((wide - 0.1) * j) / nb;
+          if (!standable(cx + ux * a - uy * b, cy + uy * a + ux * b)) return false;
+        }
+      }
+      return true;
+    };
+    let area = { x: rowX - ux * (length / 2 + 2), y: rowY - uy * (length / 2 + 2), length, width };
+    if (!covers(area.x, area.y, length, width)) {
+      const sizes = [[1, 1], [1, 0.75], [0.75, 1], [0.75, 0.75], [0.5, 1], [1, 0.5], [0.5, 0.5]].map(([l, w]) => [length * l, Math.max(width * w, Math.min(width, 1.3))]);
+      search: for (const [len, wide] of sizes) {
+        for (const back of [0, 1.5, 3, 4.5, 6]) {
+          for (const side of [0, 1.3, -1.3, 2.6, -2.6, 3.9, -3.9, 5.2, -5.2, 6.5, -6.5]) {
+            const cx = rowX - ux * (len / 2 + 2 + back) - uy * side;
+            const cy = rowY - uy * (len / 2 + 2 + back) + ux * side;
+            if (!covers(cx, cy, len, wide)) continue;
+            area = { x: cx, y: cy, length: len, width: wide };
+            break search;
+          }
+        }
+      }
+    }
+    const queue = new ServiceQueue({ ...area, heading }, front, standable);
+    queue.setOpen(place.kind === 'holdroom' ? front.length : Math.min(2, front.length));
     id = this.people.addQueue(queue);
     this.queueId.set(place.id, id);
     this.placeByQueue[id] = place;

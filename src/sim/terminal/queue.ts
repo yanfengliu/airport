@@ -37,6 +37,13 @@ export interface LineSpot {
 export const LANE_WIDTH = 1.3;
 /** Metres of line each person takes up, on average. */
 export const SPACING = 0.85;
+/**
+ * Where the crowd past the ropes may stand only on some of the floor: each of its people stands in
+ * a whole place of its spiral, one in each, the spiral's places this much of a person apart so that
+ * no two share one; and so many places are looked through for the next it may stand in.
+ */
+const CROWD_LOOSER = 0.75;
+const CROWD_TRIES = 600;
 
 export class ServiceQueue {
   readonly shape: QueueShape;
@@ -52,13 +59,18 @@ export class ServiceQueue {
   /** Seconds waited by the last people to reach a server, for the measured wait. */
   private readonly recentWaits: number[] = [];
   private readonly joinedAt = new Map<number, number>();
+  /** Where the crowd past the ropes may stand, or null for anywhere. */
+  private readonly standable: ((x: number, y: number) => boolean) | null;
+  /** The whole places of the crowd's spiral it may stand in, in the order it fills them: found as far as needed. */
+  private readonly crowd: number[] = [];
   totalServed = 0;
   /** Seconds of waiting summed over everyone served. */
   totalWait = 0;
   longestWait = 0;
 
-  constructor(shape: QueueShape, servers: readonly { x: number; y: number; exitX?: number; exitY?: number }[]) {
+  constructor(shape: QueueShape, servers: readonly { x: number; y: number; exitX?: number; exitY?: number }[], standable: ((x: number, y: number) => boolean) | null = null) {
     this.shape = shape;
+    this.standable = standable;
     for (const s of servers) this.servers.push({ x: s.x, y: s.y, exitX: s.exitX ?? NaN, exitY: s.exitY ?? NaN, open: false, serving: -1, until: 0, served: 0 });
     // The head of the line is at the front edge; lanes run back and forth behind it.
     const ux = Math.cos(shape.heading);
@@ -155,8 +167,16 @@ export class ServiceQueue {
       return;
     }
     // Past the end of the ropes the line is a loose crowd, behind the back of the rectangle where
-    // the ropes begin, filling a half circle outwards from its middle as people bunch up there.
+    // the ropes begin, filling a half circle outwards from its middle as people bunch up there;
+    // where the floor is limited, in the places of it the floor has.
     const k = (d - total) / SPACING;
+    out.dx = Math.cos(this.shape.heading);
+    out.dy = Math.sin(this.shape.heading);
+    [out.x, out.y] = this.crowdAt(this.standable ? this.crowdPlace(Math.floor(k / CROWD_LOOSER)) : k);
+  }
+
+  /** The `k`th place of the crowd past the ropes, as its half circle fills, the floor aside. */
+  private crowdAt(k: number): [number, number] {
     const ux = Math.cos(this.shape.heading);
     const uy = Math.sin(this.shape.heading);
     const n = this.path.length;
@@ -168,10 +188,18 @@ export class ServiceQueue {
     const a = ((k * 2.39996323) % Math.PI) - Math.PI / 2;
     const back = this.shape.length / 2 + 0.9 + r * Math.cos(a);
     const side = across + r * Math.sin(a);
-    out.x = this.shape.x - ux * back - uy * side;
-    out.y = this.shape.y - uy * back + ux * side;
-    out.dx = ux;
-    out.dy = uy;
+    return [this.shape.x - ux * back - uy * side, this.shape.y - uy * back + ux * side];
+  }
+
+  /** The `i`th whole place of the crowd's spiral that it may stand in (or, with none near, the next of any). */
+  private crowdPlace(i: number): number {
+    while (this.crowd.length <= i) {
+      const after = this.crowd.length ? this.crowd[this.crowd.length - 1] + 1 : 0;
+      let j = after;
+      while (j < after + CROWD_TRIES && !this.standable!(...this.crowdAt(j))) j += 1;
+      this.crowd.push(j < after + CROWD_TRIES ? j : after);
+    }
+    return this.crowd[i];
   }
 
   /**

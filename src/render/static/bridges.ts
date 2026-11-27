@@ -6,7 +6,7 @@
 // Without the models, each length is a box on a post.
 
 import * as THREE from 'three';
-import type { Airfield } from '../../shared/layout.ts';
+import type { Layout } from '../../shared/layout.ts';
 import { MeshBuilder, box, rgb } from '../builder.ts';
 import { flatMaterial, propInstances, type Models } from '../models/library.ts';
 import { solidMesh } from './common.ts';
@@ -27,8 +27,9 @@ export const JET_BRIDGE = {
   linkHalf: 1.3,
   /** The middle of the post under the link. */
   post: -14.2,
-  /** The middle of the rotunda, which the tunnel turns on. */
+  /** The middle of the rotunda, which the tunnel turns on, and how far it reaches round from there. */
   rotunda: -8,
+  rotundaReach: 2.6,
   /** The telescoping tunnel: its back inside the rotunda, its front inside the cab's drum. */
   tunnel: [-6.62, 11.72],
   /** The middle of the cab's drum, which the cab turns on; the cab's face, which meets the door; its floor there. */
@@ -43,6 +44,8 @@ export const JET_BRIDGE = {
 /** Metres the end of a bridge pulls back from where it is mapped to, and the shortest it gets with the models (the rotunda and the cab's drum just clear). */
 export const BRIDGE_RETRACT = 6;
 export const BRIDGE_SHORTEST = 4.6;
+/** Metres between the rotunda and the terminal's glass. */
+export const ROTUNDA_GAP = 0.3;
 
 /** The parts of the bridge, by model id. */
 export const BRIDGE_PARTS = {
@@ -83,15 +86,36 @@ export interface Length {
   heading: number;
 }
 
+/** How near a point comes to any of some rings: 0 inside one. */
+function fromRings(rings: readonly (readonly number[])[], x: number, y: number): number {
+  let least = Infinity;
+  for (const ring of rings) {
+    let within = false;
+    for (let i = 0, j = ring.length - 2; i < ring.length; j = i, i += 2) {
+      const [ax, ay, bx, by] = [ring[j], ring[j + 1], ring[i], ring[i + 1]];
+      if (by > y !== ay > y && x < ((ax - bx) * (y - by)) / (ay - by) + bx) within = !within;
+      const [dx, dy] = [bx - ax, by - ay];
+      const t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy || 1)));
+      least = Math.min(least, Math.hypot(x - ax - dx * t, y - ay - dy * t));
+    }
+    if (within) return 0;
+  }
+  return least;
+}
+
 /**
  * Each stand's mapped bridge, from the terminal door out to the aircraft, as straight lengths of at
  * least half a metre: all but the last are the fixed walkway; the last moves, turning where it
  * starts, at the rotunda. The map draws some bridges the other way round; without a door, the end
- * nearer where the nose stops is the aircraft's.
+ * nearer where the nose stops is the aircraft's. Where the map turns the end at the terminal's
+ * glass, or inside it, the walkway comes out along the end's line until the rotunda clears the
+ * glass, if the end stays as long as the models need.
  */
-export function bridgeLines(airfield: Airfield): { stand: string; fixed: Length[]; end: Length }[] {
+export function bridgeLines(layout: Pick<Layout, 'airfield' | 'terminals'>): { stand: string; fixed: Length[]; end: Length }[] {
   const out: { stand: string; fixed: Length[]; end: Length }[] = [];
-  for (const stand of airfield.stands) {
+  const terminals = layout.terminals.buildings.map((b) => b.poly.outer);
+  const clear = (x: number, y: number): boolean => fromRings(terminals, x, y) >= JET_BRIDGE.rotundaReach + ROTUNDA_GAP;
+  for (const stand of layout.airfield.stands) {
     const mapped = stand.bridge;
     if (!mapped || mapped.length < 4) continue;
     const n = mapped.length;
@@ -110,8 +134,20 @@ export function bridgeLines(airfield: Airfield): { stand: string; fixed: Length[
       const length = Math.hypot(x1 - x0, y1 - y0);
       if (length >= 0.5) lengths.push({ x0, y0, x1, y1, length, heading: Math.atan2(y1 - y0, x1 - x0) });
     }
-    const end = lengths.pop();
-    if (end) out.push({ stand: stand.id, fixed: lengths, end });
+    let end = lengths.pop();
+    if (!end) continue;
+    if (!clear(end.x0, end.y0)) {
+      const [ux, uy] = [Math.cos(end.heading), Math.sin(end.heading)];
+      const most = end.length - BRIDGE_SHORTEST;
+      let s = 0.5;
+      while (s <= most && !clear(end.x0 + ux * s, end.y0 + uy * s)) s += 0.5;
+      if (s <= most) {
+        const [x, y] = [end.x0 + ux * s, end.y0 + uy * s];
+        lengths.push({ x0: end.x0, y0: end.y0, x1: x, y1: y, length: s, heading: end.heading });
+        end = { x0: x, y0: y, x1: end.x1, y1: end.y1, length: end.length - s, heading: end.heading };
+      }
+    }
+    out.push({ stand: stand.id, fixed: lengths, end });
   }
   return out;
 }
@@ -122,7 +158,7 @@ function turn(a: number, b: number): number {
   return Math.min(d, Math.PI);
 }
 
-export function buildBridges(airfield: Airfield, models: Models): Bridges {
+export function buildBridges(layout: Pick<Layout, 'airfield' | 'terminals'>, models: Models): Bridges {
   const group = new THREE.Group();
   group.name = 'jet-bridges';
   const ends: BridgeEnd[] = [];
@@ -136,7 +172,7 @@ export function buildBridges(airfield: Airfield, models: Models): Bridges {
   const rotundas: { x: number; y: number; h: number; facing: number }[] = [];
   const [linkBack, linkFront] = JET_BRIDGE.link;
   const tileLength = linkFront - linkBack;
-  for (const { stand, fixed: lengths, end } of bridgeLines(airfield)) {
+  for (const { stand, fixed: lengths, end } of bridgeLines(layout)) {
     ends.push({ stand, x0: end.x0, y0: end.y0, x1: end.x1, y1: end.y1 });
     if (!drawn) {
       for (const l of lengths) {

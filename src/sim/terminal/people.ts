@@ -101,6 +101,8 @@ export class People {
   private serials = 0;
   /** The point a person is walking to, by index, to face the way it says on arrival; SEAT for their seat; -1 for neither. */
   private aim: Int32Array;
+  /** The cell a walker is stepping to, downhill on the field it follows; -1 for none chosen yet. */
+  private toward: Int32Array;
   private script: Int32Array;
   private pc: Uint8Array;
   private length: Uint8Array;
@@ -155,6 +157,7 @@ export class People {
     this.luggage = new Uint8Array(capacity);
     this.serial = new Float64Array(capacity);
     this.aim = new Int32Array(capacity).fill(-1);
+    this.toward = new Int32Array(capacity).fill(-1);
     this.script = new Int32Array(capacity * STEPS * 2);
     this.pc = new Uint8Array(capacity);
     this.length = new Uint8Array(capacity);
@@ -367,6 +370,7 @@ export class People {
           return true;
         }
         this.tx[id] = arg;
+        this.toward[id] = -1;
         this.act[id] = ACT.walk;
         return false;
       case STEP.point:
@@ -446,9 +450,14 @@ export class People {
       this.act[id] = ACT.toPoint;
       return;
     }
-    // Head for the next cell downhill; crowding ahead slows the pace.
-    const choice = ((id * 2654435761) >>> 0) / 4294967296;
-    const target = grid.downhill(field, cell, choice);
+    // Head for the next cell downhill, and keep on for it until there or somewhere as near the goal:
+    // choosing afresh from each cell one crosses on the way could turn someone back and forth
+    // between two cells for ever. Crowding ahead slows the pace.
+    let target = this.toward[id];
+    if (target < 0 || field[target] >= field[cell]) {
+      target = grid.downhill(field, cell, ((id * 2654435761) >>> 0) / 4294967296);
+      this.toward[id] = target;
+    }
     const crowd = grid.occupancy[target];
     const pace = crowd > 9 ? 0.3 : crowd > 5 ? 0.6 : 1;
     const gx = grid.cx[target] + this.ox[id];

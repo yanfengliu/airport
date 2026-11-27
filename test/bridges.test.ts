@@ -3,15 +3,16 @@
 // each mapped bridge (src/render/static/bridges.ts), and the tunnel, the cab and the lift move to
 // the door of each aircraft that parks (src/render/dynamic/bridge-layer.ts), both by where
 // JET_BRIDGE says each part is in the model. Bound: those measures, held to the converted parts;
-// and at every stand with a bridge, for every type the stand takes, the cab's face at the front
-// door with its floor at the sill, and nothing of the bridge (tunnel, lift or cab) in the wings,
-// engines or tail, or in a floodlight mast, there or pulled back.
+// every rotunda clear of the terminal's glass; and at every stand with a bridge, for every type the
+// stand takes, the cab's face at the front door with its floor at the sill, and nothing of the
+// bridge (tunnel, lift or cab) in the wings, engines or tail, or in a floodlight mast, there or
+// pulled back.
 
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import { BridgeLayer, doorFor } from '../src/render/dynamic/bridge-layer.ts';
 import { airfieldFurniture } from '../src/render/static/airfield-props.ts';
-import { BRIDGE_PARTS, JET_BRIDGE, buildBridges } from '../src/render/static/bridges.ts';
+import { BRIDGE_PARTS, JET_BRIDGE, ROTUNDA_GAP, buildBridges } from '../src/render/static/bridges.ts';
 import { airframe } from '../src/shared/airframe.ts';
 import { outline, polygonGap } from '../src/shared/footprint.ts';
 import { fuselageAt, newFuselage } from '../src/sim/airfield/path.ts';
@@ -31,6 +32,25 @@ function points(id: string): [number, number, number][] {
 }
 
 const span = (values: number[]): [number, number] => [Math.min(...values), Math.max(...values)];
+
+function insideRing(ring: readonly number[], x: number, y: number): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 2; i < ring.length; j = i, i += 2) {
+    if (ring[i + 1] > y !== ring[j + 1] > y && x < ((ring[j] - ring[i]) * (y - ring[i + 1])) / (ring[j + 1] - ring[i + 1]) + ring[i]) inside = !inside;
+  }
+  return inside;
+}
+
+/** How near a ring's edges come to a point. */
+function toRing(ring: readonly number[], x: number, y: number): number {
+  let least = Infinity;
+  for (let i = 0, j = ring.length - 2; i < ring.length; j = i, i += 2) {
+    const [ax, ay, dx, dy] = [ring[j], ring[j + 1], ring[i] - ring[j], ring[i + 1] - ring[j + 1]];
+    const t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy || 1)));
+    least = Math.min(least, Math.hypot(x - ax - dx * t, y - ay - dy * t));
+  }
+  return least;
+}
 const middle = (values: number[]): number => (Math.min(...values) + Math.max(...values)) / 2;
 
 describe('the jet bridge model', () => {
@@ -41,8 +61,10 @@ describe('the jet bridge model', () => {
     expect(span(link.map((p) => p[0]))[1]).toBeCloseTo(JET_BRIDGE.link[1], 1);
     expect(Math.max(...link.map((p) => Math.abs(p[2])))).toBeCloseTo(JET_BRIDGE.linkHalf, 1);
     expect(middle(points(BRIDGE_PARTS.post).map((p) => p[0]))).toBeCloseTo(JET_BRIDGE.post, 1);
-    // The rotunda's pedestal stands under its middle.
-    expect(middle(points(BRIDGE_PARTS.rotunda).filter((p) => p[1] < 0.2).map((p) => p[0]))).toBeCloseTo(JET_BRIDGE.rotunda, 1);
+    // The rotunda's pedestal stands under its middle, and it reaches round so far from there.
+    const rotunda = points(BRIDGE_PARTS.rotunda);
+    expect(middle(rotunda.filter((p) => p[1] < 0.2).map((p) => p[0]))).toBeCloseTo(JET_BRIDGE.rotunda, 1);
+    expect(Math.max(...rotunda.map((p) => Math.hypot(p[0] - JET_BRIDGE.rotunda, p[2])))).toBeCloseTo(JET_BRIDGE.rotundaReach, 1);
     // The tunnel's walls, without the cables hung under its front.
     const walls = points(BRIDGE_PARTS.tunnel).filter((p) => p[1] > 2.7);
     expect(span(walls.map((p) => p[0]))[0]).toBeCloseTo(JET_BRIDGE.tunnel[0], 1);
@@ -68,7 +90,7 @@ describe('the jet bridge model', () => {
 
 describe('the jet bridges', () => {
   const layout = loadLayoutFromDisk();
-  const bridges = once(() => buildBridges(layout.airfield, models));
+  const bridges = once(() => buildBridges(layout, models));
 
   it('are all drawn from the model, each with a moving end', () => {
     const { ends, group } = bridges();
@@ -76,6 +98,18 @@ describe('the jet bridges', () => {
     const names = group.children.map((m) => m.name).sort();
     expect(names).toEqual(['jet-bridge-links', 'jet-bridge-posts', 'jet-bridge-rotundas']);
     expect((group.children.find((m) => m.name === 'jet-bridge-rotundas') as THREE.InstancedMesh).count).toBe(ends.length);
+  });
+
+  it("turn on rotundas that stand clear of the terminal's glass", () => {
+    const { ends } = bridges();
+    const rings = layout.terminals.buildings.map((b) => b.poly.outer);
+    const faults: string[] = [];
+    for (const e of ends) {
+      // The rotunda round the end's pivot, every way, against the terminal's outline.
+      const reach = rings.some((ring) => insideRing(ring, e.x0, e.y0)) ? 0 : Math.min(...rings.map((ring) => toRing(ring, e.x0, e.y0)));
+      if (reach < JET_BRIDGE.rotundaReach + ROTUNDA_GAP - 0.01) faults.push(`${e.stand}: its rotunda ${reach.toFixed(1)} m from the glass`);
+    }
+    expect(faults).toEqual([]);
   });
 
   it('reach the front door of every type each stand takes, square on and level with its sill, clear of its wings, engines and tail and of the floodlight masts', () => {
