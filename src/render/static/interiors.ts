@@ -79,6 +79,10 @@ const TUB_CHAIR = 'velvet-tub-chair-b0b5f8';
 const CAROUSEL = 'baggage-reclaim-carousel-7ceef0';
 const STANCHIONS = 'queue-barrier-stanchion-run-1836c8';
 const SUITCASE = 'spinner-suitcase-1a55f1';
+/** Further than this, metres of camera distance, the furniture is too small to see and is not drawn. */
+const DETAIL_DISTANCE = 900;
+/** Size of the tiles the furniture is drawn in, metres. */
+const TILE = 400;
 /** Bags drawn on one carousel at most, and on all the check-in belts. */
 const BAGS_ON_CAROUSEL = 48;
 const BAGS_AT_CHECKIN = 600;
@@ -86,8 +90,8 @@ const BAGS_AT_CHECKIN = 600;
 export interface Interiors {
   departures: THREE.Group;
   arrivals: THREE.Group;
-  /** Move the bags and trays; `time` is the simulation's clock, seconds. */
-  update(terminals: Terminals, time: number): void;
+  /** Move the bags and trays; `time` is the simulation's clock, seconds; furniture shows when the camera is near enough. */
+  update(terminals: Terminals, time: number, cameraDistance?: number): void;
 }
 
 /** A tileable grey texture centred on white: tiles with grout, or carpet's fleck. */
@@ -403,10 +407,24 @@ export function buildInteriors(layout: Layout, terminals: Terminals, models: Mod
     }
   }
 
+  const detail: THREE.Object3D[] = [];
   for (const lv of ['up', 'down'] as const) {
     for (const [id, list] of placed[lv]) {
       const m = model(id);
-      if (m && list.length) groups[lv].add(propInstances(m, flat, list, `interior-${lv}-${id}`));
+      if (!m || !list.length) continue;
+      // In tiles, so that what is out of view is not drawn: each tile's copies are one mesh, culled whole.
+      const tiles = new Map<string, Placed[]>();
+      for (const p of list) {
+        const key = `${Math.floor(p.x / TILE)},${Math.floor(p.y / TILE)}`;
+        const tile = tiles.get(key) ?? [];
+        tile.push(p);
+        tiles.set(key, tile);
+      }
+      for (const [key, tile] of tiles) {
+        const mesh = propInstances(m, flat, tile, `interior-${lv}-${id}-${key}`);
+        detail.push(mesh);
+        groups[lv].add(mesh);
+      }
     }
     groups[lv].add(solidMesh(own[lv], flat, `interior-${lv}-own`, false));
     groups[lv].visible = false;
@@ -446,7 +464,9 @@ export function buildInteriors(layout: Layout, terminals: Terminals, models: Mod
   return {
     departures: groups.up,
     arrivals: groups.down,
-    update(world: Terminals, time: number): void {
+    update(world: Terminals, time: number, cameraDistance = 0): void {
+      const near = cameraDistance <= DETAIL_DISTANCE;
+      for (const mesh of detail) mesh.visible = near;
       if (groups.down.visible && claimBags) {
         let n = 0;
         world.fittings.carousels.forEach((c, index) => {

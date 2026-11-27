@@ -19,8 +19,13 @@ export const CLOTHING: number[] = [
 
 const SKIN = [0xf1c9a5, 0xe0ac84, 0xc68658, 0x8d5a3b, 0x5c3a25, 0xf6d7bd];
 const WHITE: RGB = [1, 1, 1];
-/** Nearer than this, metres of camera distance, people are drawn as characters. */
+/** Nearer than this, metres of camera distance, people round what the camera looks at are drawn as characters. */
 const NEAR = 420;
+/** How far from what the camera looks at people are drawn as characters, as a share of the camera's distance, and at most. */
+const NEAR_REACH = 1.4;
+const NEAR_REACH_MOST = 260;
+/** Characters drawn at most in all; beyond that, people are figures. */
+const NEAR_MOST = 3000;
 /** Characters drawn at most, of each model. */
 const PER_MODEL = 2500;
 /** Metres walked in one cycle of the walk. */
@@ -33,6 +38,13 @@ const TRAVELLERS: [string, number][] = [
   ['passenger-ac425a', 3],
   ['backpacker-f56207', 1],
   ['cafe-customer-ca7e8e', 2],
+  ['salaryman-commuter-4170c1', 2],
+  ['city-commuter-52a53f', 2],
+  ['commuter-381e7f', 2],
+  ['student-with-backpack-65d2b4', 1],
+  ['student-in-a-hoodie-7c8223', 1],
+  ['visitor-with-badge-1005a3', 1],
+  ['spectator-d086fe', 1],
 ];
 const CHILD = 'neighborhood-child-8cc5ac';
 /** Staff by role; the crew are pilots and cabin crew in turn. */
@@ -40,14 +52,14 @@ const STAFF: Partial<Record<number, string[]>> = {
   [ROLE.security]: ['airport-security-officer-8fd38a'],
   [ROLE.agent]: ['check-in-agent-229fce'],
   [ROLE.gate]: ['check-in-agent-229fce'],
-  [ROLE.shop]: ['cafe-customer-ca7e8e'],
+  [ROLE.shop]: ['barista-505240', 'shopkeeper-be5547'],
   [ROLE.cleaner]: ['baggage-handler-0823f5'],
   [ROLE.ramp]: ['baggage-handler-0823f5'],
   [ROLE.crew]: ['airline-pilot-63226a', 'flight-attendant-befaf4'],
   [ROLE.officer]: ['police-officer-1cc379'],
 };
 /** Models that are a uniform: their people differ in skin and hair, not in clothes. */
-const UNIFORMS = new Set(['airport-security-officer-8fd38a', 'check-in-agent-229fce', 'airline-pilot-63226a', 'flight-attendant-befaf4', 'baggage-handler-0823f5', 'police-officer-1cc379']);
+const UNIFORMS = new Set(['airport-security-officer-8fd38a', 'check-in-agent-229fce', 'airline-pilot-63226a', 'flight-attendant-befaf4', 'baggage-handler-0823f5', 'police-officer-1cc379', 'barista-505240', 'shopkeeper-be5547']);
 const SUITCASE = 'spinner-suitcase-1a55f1';
 
 function bodyGeometry(): THREE.BufferGeometry {
@@ -98,6 +110,12 @@ export class PeopleLayer {
   private readonly lastY: Float32Array;
   private readonly lastSerial: Float64Array;
   private readonly matrix = new THREE.Matrix4();
+  /** What the camera looks at, and the square of how far round it people are characters (negative: nobody). */
+  private nearX = 0;
+  private nearY = 0;
+  private reach2 = -1;
+  /** Per person, this frame: drawn as characters already. */
+  private drawnNear: Uint8Array;
 
   constructor(capacity: number, models: Models | null = null) {
     this.capacity = capacity;
@@ -122,6 +140,7 @@ export class PeopleLayer {
     this.lastX = new Float32Array(capacity);
     this.lastY = new Float32Array(capacity);
     this.lastSerial = new Float64Array(capacity).fill(-1);
+    this.drawnNear = new Uint8Array(capacity);
     // The characters, each dressed in its own table of outfits.
     let seed = 1;
     const wanted = [...TRAVELLERS.map(([t]) => t), CHILD, ...Object.values(STAFF).flatMap((list) => list ?? [])];
@@ -168,14 +187,23 @@ export class PeopleLayer {
     return this.travellers[0]?.crowd ?? null;
   }
 
-  /** `alpha` is how far the frame is between the last two simulation steps. */
-  update(people: People, alpha: number, cameraDistance: number): void {
+  /**
+   * `alpha` is how far the frame is between the last two simulation steps; (`focusX`, `focusY`)
+   * is the point on the map the camera looks at. People near it are drawn as characters, the rest
+   * as figures.
+   */
+  update(people: People, alpha: number, cameraDistance: number, focusX = 0, focusY = 0): void {
     const visible = this.group.visible && cameraDistance <= this.maxDistance;
     const near = visible && this.crowds.size > 0 && cameraDistance <= NEAR;
-    this.drawFar(people, alpha, visible && !near);
+    const reach = near ? Math.min(NEAR_REACH_MOST, cameraDistance * NEAR_REACH) : -1;
+    this.nearX = focusX;
+    this.nearY = focusY;
+    this.reach2 = reach * Math.abs(reach);
     for (const crowd of this.crowds.values()) crowd.begin();
     this.bagCount = 0;
     if (near) this.drawNear(people, alpha);
+    else this.drawnNear.fill(0, 0, people.high);
+    this.drawFar(people, alpha, visible);
     for (const crowd of this.crowds.values()) crowd.end();
     if (this.bags) {
       this.bags.count = this.bagCount;
@@ -185,10 +213,17 @@ export class PeopleLayer {
 
   private drawNear(people: People, alpha: number): void {
     const seats = this.fittings?.seats;
-    for (let id = 0; id < people.high; id += 1) {
+    let drawn = 0;
+    this.drawnNear.fill(0, 0, people.high);
+    for (let id = 0; id < people.high && drawn < NEAR_MOST; id += 1) {
       if (!people.alive[id] || !this.floors[people.floor[id]]) continue;
       const x = people.px[id] + (people.x[id] - people.px[id]) * alpha;
       const y = people.py[id] + (people.y[id] - people.py[id]) * alpha;
+      const fx = x - this.nearX;
+      const fy = y - this.nearY;
+      if (fx * fx + fy * fy > this.reach2) continue;
+      this.drawnNear[id] = 1;
+      drawn += Math.max(1, people.size[id]);
       const h = people.ph[id] + (people.h[id] - people.ph[id]) * alpha;
       const serial = people.serial[id];
       // How far through the walk: by the distance walked since last drawn.
@@ -272,7 +307,7 @@ export class PeopleLayer {
     if (show) {
       const matrices = this.bodies.instanceMatrix.array as Float32Array;
       for (let id = 0; id < people.high && count < this.capacity; id += 1) {
-        if (!people.alive[id] || !this.floors[people.floor[id]]) continue;
+        if (!people.alive[id] || !this.floors[people.floor[id]] || this.drawnNear[id]) continue;
         const x = people.px[id] + (people.x[id] - people.px[id]) * alpha;
         const y = people.py[id] + (people.y[id] - people.py[id]) * alpha;
         const h = people.ph[id] + (people.h[id] - people.ph[id]) * alpha;

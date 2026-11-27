@@ -1,6 +1,8 @@
 // Draws the moving ends of the jet bridges: pulled back from the stand while no aircraft is there,
 // out to the door once one has parked, and back again when its doors close, so that no aircraft
-// taxis in or pushes back through its bridge.
+// taxis in or pushes back through its bridge. The tunnel stops a little off the fuselage's side
+// and its cab turns square to the door, as a bridge's does, so that a bridge coming from ahead of
+// the aircraft does not run over its nose.
 
 import * as THREE from 'three';
 import type { Aircraft } from '../../sim/airside/aircraft.ts';
@@ -17,12 +19,14 @@ const DOOR_BACK = 0.12;
 const DOOR_BACK_LEAST = 4.2;
 /** How far off the fuselage's side the bridge stops, metres. */
 const DOOR_GAP = 0.4;
+/** Length of the cab at the end of the tunnel, which turns to meet the door square on, metres. */
+const CAB = 2.8;
 
 /**
  * Where a parked aircraft's forward door is for a bridge whose pivot is at (px, py): on the side
  * of the fuselage facing the pivot, a little behind the nose, just off the skin.
  */
-export function doorFor(a: Pick<Aircraft, 'x' | 'y' | 'heading' | 'type'>, px: number, py: number): { x: number; y: number } {
+export function doorFor(a: Pick<Aircraft, 'x' | 'y' | 'heading' | 'type'>, px: number, py: number): { x: number; y: number; nx: number; ny: number } {
   const fx = Math.cos(a.heading);
   const fy = Math.sin(a.heading);
   // Left of the way the nose points; the right if the bridge comes from that side.
@@ -34,19 +38,23 @@ export function doorFor(a: Pick<Aircraft, 'x' | 'y' | 'heading' | 'type'>, px: n
   }
   const along = a.type.length / 2 - Math.max(DOOR_BACK_LEAST, DOOR_BACK * a.type.length);
   const out = a.type.fuselage / 2 + DOOR_GAP;
-  return { x: a.x + fx * along + sx * out, y: a.y + fy * along + sy * out };
+  return { x: a.x + fx * along + sx * out, y: a.y + fy * along + sy * out, nx: sx, ny: sy };
 }
 
 export class BridgeLayer {
   readonly group = new THREE.Group();
   private readonly ends: readonly BridgeEnd[];
   private readonly tunnel: THREE.InstancedMesh;
+  private readonly cab: THREE.InstancedMesh;
   private readonly post: THREE.InstancedMesh;
   /** How far out each end is, 0 pulled back to 1 at the door. */
   private readonly out: Float32Array;
   /** Where each end reaches to at the door: the last aircraft's door, or as mapped before any. */
   private readonly doorX: Float64Array;
   private readonly doorY: Float64Array;
+  /** The way out from the fuselage's side at that door. */
+  private readonly sideX: Float64Array;
+  private readonly sideY: Float64Array;
   private readonly matrix = new THREE.Matrix4();
   private last = Number.NaN;
 
@@ -55,6 +63,9 @@ export class BridgeLayer {
     this.out = new Float32Array(ends.length);
     this.doorX = Float64Array.from(ends, (e) => e.x1);
     this.doorY = Float64Array.from(ends, (e) => e.y1);
+    // Before any aircraft has parked, the cab carries straight on along the mapped line.
+    this.sideX = Float64Array.from(ends, (e) => -(e.x1 - e.x0) / (Math.hypot(e.x1 - e.x0, e.y1 - e.y0) || 1));
+    this.sideY = Float64Array.from(ends, (e) => -(e.y1 - e.y0) / (Math.hypot(e.x1 - e.x0, e.y1 - e.y0) || 1));
     this.group.name = 'jet-bridge-ends';
     const material = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.2 });
     // A walkway one metre long, stretched to length per bridge; the post at the outer end.
@@ -63,8 +74,11 @@ export class BridgeLayer {
     const post = new MeshBuilder();
     box(post, 0, 0, 0, BRIDGE_FLOOR, 0.45, 0.45, 0, BRIDGE_STEEL, BRIDGE_STEEL);
     this.tunnel = new THREE.InstancedMesh(walkway.build(), material, Math.max(1, ends.length));
+    const cab = new MeshBuilder();
+    box(cab, 0, 0, BRIDGE_FLOOR - 0.1, BRIDGE_ROOF + 0.15, CAB / 2, 1.75, 0, BRIDGE_STEEL, BRIDGE_TUNNEL);
+    this.cab = new THREE.InstancedMesh(cab.build(), material, Math.max(1, ends.length));
     this.post = new THREE.InstancedMesh(post.build(), material, Math.max(1, ends.length));
-    for (const mesh of [this.tunnel, this.post]) {
+    for (const mesh of [this.tunnel, this.cab, this.post]) {
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       mesh.frustumCulled = false;
@@ -89,6 +103,8 @@ export class BridgeLayer {
         const door = doorFor(at, end.x0, end.y0);
         this.doorX[i] = door.x;
         this.doorY[i] = door.y;
+        this.sideX[i] = door.nx;
+        this.sideY[i] = door.ny;
       }
       const target = at ? 1 : 0;
       this.out[i] = target > this.out[i] ? Math.min(target, this.out[i] + step) : Math.max(target, this.out[i] - step);
@@ -100,8 +116,11 @@ export class BridgeLayer {
       const back = Math.min(mapped, Math.max(SHORTEST, mapped - RETRACT));
       const restX = end.x0 + (mx / mapped) * back;
       const restY = end.y0 + (my / mapped) * back;
-      const tipX = restX + (this.doorX[i] - restX) * this.out[i];
-      const tipY = restY + (this.doorY[i] - restY) * this.out[i];
+      // Out, the tunnel ends a cab's length off the side of the fuselage at the door.
+      const reachX = this.doorX[i] + this.sideX[i] * CAB;
+      const reachY = this.doorY[i] + this.sideY[i] * CAB;
+      const tipX = restX + (reachX - restX) * this.out[i];
+      const tipY = restY + (reachY - restY) * this.out[i];
       const length = Math.max(0.5, Math.hypot(tipX - end.x0, tipY - end.y0));
       const c = (tipX - end.x0) / length;
       const s = (tipY - end.y0) / length;
@@ -111,8 +130,19 @@ export class BridgeLayer {
       this.tunnel.setMatrixAt(i, this.matrix);
       this.matrix.set(c, 0, s, tipX, 0, 1, 0, 0, -s, 0, c, -tipY, 0, 0, 0, 1);
       this.post.setMatrixAt(i, this.matrix);
+      // The cab: along the tunnel while pulled back, turning square to the door as it reaches it.
+      let kx = c + (-this.sideX[i] - c) * this.out[i];
+      let ky = s + (-this.sideY[i] - s) * this.out[i];
+      const k = Math.hypot(kx, ky) || 1;
+      kx /= k;
+      ky /= k;
+      const cx = tipX + (kx * CAB) / 2;
+      const cy = tipY + (ky * CAB) / 2;
+      this.matrix.set(kx, 0, ky, cx, 0, 1, 0, 0, -ky, 0, kx, -cy, 0, 0, 0, 1);
+      this.cab.setMatrixAt(i, this.matrix);
     });
     this.tunnel.instanceMatrix.needsUpdate = true;
+    this.cab.instanceMatrix.needsUpdate = true;
     this.post.instanceMatrix.needsUpdate = true;
   }
 }

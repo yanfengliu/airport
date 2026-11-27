@@ -76,6 +76,15 @@ const MODELS: Wanted[] = [
   { id: 'flight-attendant-befaf4', role: 'character', drop: HELD, dropped: 'what it held in its hand removed' },
   { id: 'baggage-handler-0823f5', role: 'character', drop: HELD, dropped: 'what it held in its hand removed' },
   { id: 'police-officer-1cc379', role: 'character', drop: HELD, dropped: 'what it held in its hand removed' },
+  { id: 'salaryman-commuter-4170c1', role: 'character', drop: HELD, dropped: 'what it held in its hand removed' },
+  { id: 'city-commuter-52a53f', role: 'character', drop: HELD, dropped: 'what it held in its hand removed' },
+  { id: 'commuter-381e7f', role: 'character', drop: HELD, dropped: 'what it held in its hand removed' },
+  { id: 'student-with-backpack-65d2b4', role: 'character', drop: HELD, dropped: 'what it held in its hand removed' },
+  { id: 'student-in-a-hoodie-7c8223', role: 'character', drop: HELD, dropped: 'what it held in its hand removed' },
+  { id: 'visitor-with-badge-1005a3', role: 'character', drop: HELD, dropped: 'what it held in its hand removed' },
+  { id: 'spectator-d086fe', role: 'character', drop: HELD, dropped: 'what it held in its hand removed' },
+  { id: 'barista-505240', role: 'character', drop: HELD, dropped: 'what it held in its hand removed' },
+  { id: 'shopkeeper-be5547', role: 'character', drop: HELD, dropped: 'what it held in its hand removed' },
 ];
 
 /** Frames sampled from each character's walk, and the seat height the sitting pose is made for, metres. */

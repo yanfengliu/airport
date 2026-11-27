@@ -319,8 +319,8 @@ async function start(): Promise<void> {
     if (sim.transit) trainLayer.update(sim.transit, owed / CONFIG.dt);
     if (sim.terminals && inside !== 'off') {
       peopleLayer.fittings = sim.terminals.fittings;
-      peopleLayer.update(sim.terminals.people, owed / CONFIG.dt, camera.distance);
-      interiors.update(sim.terminals, sim.time + owed);
+      peopleLayer.update(sim.terminals.people, owed / CONFIG.dt, camera.distance, camera.x, camera.y);
+      interiors.update(sim.terminals, sim.time + owed, camera.distance);
     }
     world.update(realSeconds, stage.day, { height: canvas.height, fov: stage.camera.fov, fog: stage.fogDensity, lamp: stage.lampGain });
     stage.render();

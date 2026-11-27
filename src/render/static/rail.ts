@@ -97,17 +97,29 @@ export function buildRail(rail: Rail): THREE.Group {
     const z = Math.max(0, s.z);
     const nx = -Math.sin(heading);
     const ny = Math.cos(heading);
+    // The roof clears the highest track under it: a line climbing away from the platforms must not
+    // come up through it.
+    let under = z;
+    for (const line of rail.lines) {
+      if (line.kind !== s.kind) continue;
+      for (let i = 0; i < line.pts.length; i += 3) {
+        const dx = line.pts[i] - s.x;
+        const dy = line.pts[i + 1] - s.y;
+        if (Math.abs(dx * Math.cos(heading) + dy * Math.sin(heading)) <= length / 2 + 4 && Math.abs(dx * nx + dy * ny) <= halfWidth + 2) under = Math.max(under, line.pts[i + 2]);
+      }
+    }
+    const roof = Math.max(z + 5.6, under + 5.0);
     for (const side of [1, -1]) {
       const ox = nx * side * (halfWidth - 2.2);
       const oy = ny * side * (halfWidth - 2.2);
       box(structure, s.x + ox, s.y + oy, Math.max(0, z - 1.2), z + 1.05, length / 2, 2.2, heading, platformTone, platformTone);
       if (s.kind !== 'caltrain') {
         for (const along of [-0.42, -0.14, 0.14, 0.42]) {
-          box(structure, s.x + ox + Math.cos(heading) * length * along, s.y + oy + Math.sin(heading) * length * along, z + 1.05, z + 5.6, 0.22, 0.22, heading, canopyTone, canopyTone);
+          box(structure, s.x + ox + Math.cos(heading) * length * along, s.y + oy + Math.sin(heading) * length * along, z + 1.05, roof, 0.22, 0.22, heading, canopyTone, canopyTone);
         }
       }
     }
-    if (s.kind !== 'caltrain') box(structure, s.x, s.y, z + 5.6, z + 6.2, length / 2 + 2, halfWidth + 1, heading, canopyTone, canopyTone);
+    if (s.kind !== 'caltrain') box(structure, s.x, s.y, roof, roof + 0.6, length / 2 + 2, halfWidth + 1, heading, canopyTone, canopyTone);
   }
 
   group.add(solidMesh(structure, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88, metalness: 0 }), 'rail-structures'));
