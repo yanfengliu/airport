@@ -2,6 +2,7 @@
 // mesh of a car per kind of train; each train is as many cars as its route says.
 
 import * as THREE from 'three';
+import { CONFIG } from '../../sim/config.ts';
 import type { Transit, TransitRoute } from '../../sim/transit/trains.ts';
 import { MeshBuilder, box, rgb, type RGB } from '../builder.ts';
 
@@ -20,10 +21,12 @@ interface CarStyle {
   capacity: number;
 }
 
+/** The cars' length and width are the simulation's, which keeps trains on tracks side by side apart by them. */
+const cars = CONFIG.transit.cars;
 const STYLES: Record<Kind, CarStyle> = {
-  airtrain: { length: 11.8, width: 2.8, height: 3.3, floor: 0.9, body: rgb(0xeef1f3), band: rgb(0x1f6fb5), glass: rgb(0x22303a), roof: rgb(0xd8dde1), capacity: 48 },
-  bart: { length: 21.3, width: 3.2, height: 3.2, floor: 1.0, body: rgb(0xc9cfd4), band: rgb(0x1d5fa8), glass: rgb(0x1c2730), roof: rgb(0xb4bbc1), capacity: 40 },
-  caltrain: { length: 26, width: 3.2, height: 4.7, floor: 0.6, body: rgb(0xd8dadc), band: rgb(0xb3262d), glass: rgb(0x1c2730), roof: rgb(0xa9afb4), capacity: 24 },
+  airtrain: { ...cars.airtrain, height: 3.3, floor: 0.9, body: rgb(0xeef1f3), band: rgb(0x1f6fb5), glass: rgb(0x22303a), roof: rgb(0xd8dde1), capacity: 48 },
+  bart: { ...cars.bart, height: 3.2, floor: 1.0, body: rgb(0xc9cfd4), band: rgb(0x1d5fa8), glass: rgb(0x1c2730), roof: rgb(0xb4bbc1), capacity: 40 },
+  caltrain: { ...cars.caltrain, height: 4.7, floor: 0.6, body: rgb(0xd8dadc), band: rgb(0xb3262d), glass: rgb(0x1c2730), roof: rgb(0xa9afb4), capacity: 24 },
 };
 
 /** A car as stacked slabs: skirt, coloured band, windows, roof. The gap between cars is in its length. */

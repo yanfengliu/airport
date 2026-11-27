@@ -39,6 +39,8 @@ export interface Place {
   area: string;
   /** Size of the mapped room, square metres; 0 when the place was put there by rule. */
   size: number;
+  /** The mapped room, by index into the layout's indoor areas; -1 when the place was put there by rule. */
+  room: number;
   /** Direction people face when queuing here, radians from east. */
   heading: number;
 }
@@ -239,13 +241,13 @@ export function buildTerminalPlan(layout: Layout, airlines: readonly { code: str
     const grid = grids[floor];
     const cell = grid.nearestCell(x, y, 60);
     if (cell < 0) return null;
-    const place: Place = { id: places.length, kind, name, floor, x: grid.cx[cell], y: grid.cy[cell], cell, area: '', size: 0, heading: 0, ...extra };
+    const place: Place = { id: places.length, kind, name, floor, x: grid.cx[cell], y: grid.cy[cell], cell, area: '', size: 0, room: -1, heading: 0, ...extra };
     places.push(place);
     return place;
   };
 
   // ---- concourses: where each boarding area's route from its hall crosses into it --------------
-  const securityRooms = layout.terminals.areas.filter((a) => a.kind === 'security').map((a) => ({ at: centroid(a.poly), size: area(a.poly) }));
+  const securityRooms = layout.terminals.areas.flatMap((a, room) => (a.kind === 'security' ? [{ at: centroid(a.poly), size: area(a.poly), room }] : []));
   const checkpoint = new Map<string, Place>();
   const exit = new Map<string, Place>();
   for (const [letter, doors] of [...doorsByArea.entries()].sort()) {
@@ -271,16 +273,18 @@ export function buildTerminalPlan(layout: Layout, airlines: readonly { code: str
     if (best < 0) continue;
     let [x, y] = [whole.cx[best], whole.cy[best]];
     let size = 0;
+    let room = -1;
     // A mapped checkpoint nearby is the real one.
     const mapped = securityRooms.filter((r) => Math.hypot(r.at[0] - x, r.at[1] - y) < SNAP).sort((a, b) => Math.hypot(a.at[0] - x, a.at[1] - y) - Math.hypot(b.at[0] - x, b.at[1] - y))[0];
     if (mapped) {
       [x, y] = mapped.at;
       size = mapped.size;
+      room = mapped.room;
     }
     // Two concourses entered from one spot share a checkpoint.
     const shared = [...checkpoint.values()].find((c) => Math.hypot(c.x - x, c.y - y) < 30);
     const heading = Math.atan2(into[1], into[0]);
-    const cp = shared ?? add('checkpoint', `Checkpoint ${letter}`, FLOOR.landside, x, y, { area: letter, size, heading });
+    const cp = shared ?? add('checkpoint', `Checkpoint ${letter}`, FLOOR.landside, x, y, { area: letter, size, room, heading });
     if (!cp) continue;
     if (shared) cp.name += `/${letter}`;
     checkpoint.set(letter, cp);
@@ -299,20 +303,20 @@ export function buildTerminalPlan(layout: Layout, airlines: readonly { code: str
 
   // ---- customs, for arrivals at the international gates ----------------------------------------
   const customs = new Map<string, Place>();
-  for (const a of layout.terminals.areas) {
+  layout.terminals.areas.forEach((a, room) => {
     const m = a.kind === 'customs' && a.name ? /Primary screening ([A-G])/i.exec(a.name) : null;
-    if (!m) continue;
+    if (!m) return;
     const [x, y] = centroid(a.poly);
-    const place = add('customs', `Customs ${m[1]}`, FLOOR.airside, x, y, { area: m[1], size: area(a.poly) });
+    const place = add('customs', `Customs ${m[1]}`, FLOOR.airside, x, y, { area: m[1], size: area(a.poly), room });
     if (place) customs.set(m[1], place);
-  }
+  });
 
   // ---- baggage claim -------------------------------------------------------------------------
   const claimRooms = layout.terminals.areas
-    .filter((a) => a.kind === 'claim')
-    .map((a) => {
+    .flatMap((a, room) => {
+      if (a.kind !== 'claim') return [];
       const [x, y] = centroid(a.poly);
-      return add('claim', a.name ?? 'Baggage claim', FLOOR.arrivals, x, y, { size: area(a.poly) });
+      return [add('claim', a.name ?? 'Baggage claim', FLOOR.arrivals, x, y, { size: area(a.poly), room })];
     })
     .filter((p): p is Place => p !== null);
   const claim = new Map<string, { domestic: Place; international: Place }>();
@@ -328,11 +332,11 @@ export function buildTerminalPlan(layout: Layout, airlines: readonly { code: str
 
   // ---- check-in: named halls for the airlines that have them, the nearest hall for the rest ----
   const checkinRooms = layout.terminals.areas
-    .filter((a) => a.kind === 'checkin' && !/re-check/i.test(a.name ?? ''))
-    .map((a) => {
+    .flatMap((a, room) => {
+      if (a.kind !== 'checkin' || /re-check/i.test(a.name ?? '')) return [];
       const [x, y] = centroid(a.poly);
-      const place = add('checkin', a.name ?? 'Check-in', FLOOR.landside, x, y, { size: area(a.poly) });
-      return place && { place, code: CHECKIN_NAMES.find(([re]) => re.test(a.name ?? ''))?.[1] ?? '' };
+      const place = add('checkin', a.name ?? 'Check-in', FLOOR.landside, x, y, { size: area(a.poly), room });
+      return [place && { place, code: CHECKIN_NAMES.find(([re]) => re.test(a.name ?? ''))?.[1] ?? '' }];
     })
     .filter((p): p is { place: Place; code: string } => p !== null);
   const checkin = new Map<string, Place[]>();
@@ -387,14 +391,14 @@ export function buildTerminalPlan(layout: Layout, airlines: readonly { code: str
   }
 
   // ---- shops, places to eat, lounges ---------------------------------------------------------
-  for (const a of layout.terminals.areas) {
-    if (a.kind !== 'shop' && a.kind !== 'food' && a.kind !== 'lounge') continue;
+  layout.terminals.areas.forEach((a, room) => {
+    if (a.kind !== 'shop' && a.kind !== 'food' && a.kind !== 'lounge') return;
     const [x, y] = centroid(a.poly);
     // Mostly beyond security; a few in the halls.
     const air = grids[FLOOR.airside].nearestCell(x, y, 25);
     const floor = air >= 0 ? FLOOR.airside : FLOOR.landside;
-    add(a.kind, a.name ?? (a.kind === 'food' ? 'Café' : a.kind === 'shop' ? 'Shop' : 'Lounge'), floor, x, y, { size: area(a.poly) });
-  }
+    add(a.kind, a.name ?? (a.kind === 'food' ? 'Café' : a.kind === 'shop' ? 'Shop' : 'Lounge'), floor, x, y, { size: area(a.poly), room });
+  });
 
   const fields = new Map<number, Uint16Array>();
   return {

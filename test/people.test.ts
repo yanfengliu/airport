@@ -110,18 +110,20 @@ describe('a closed checkpoint', () => {
 
 describe('staff through a change of shift', () => {
   // The 14:00 handover: everyone on the morning shift's posts goes home and others take them over.
-  // Looked at half a minute either side, while those going home are still walking out, so that no
-  // person's number can have been given to someone new.
+  // Looked at half a minute either side. People are told apart by their serial numbers: someone
+  // going home by a door next to their post is gone in a quarter of a minute, and their index in
+  // the store may be someone new's by the time the second look is taken.
   const sim = new Sim(layout, { seed: 4, startTime: 13 * 3600 + 40 * 60, people: true });
+  const who = (ids: number[]): number[] => ids.map((id) => sim.terminals!.people.serial[id]);
   sim.run(20 * 60 - 30);
-  const before = new Set(sim.terminals!.onPosts());
+  const before = new Set(who(sim.terminals!.onPosts()));
   sim.run(60);
-  const after = sim.terminals!.onPosts();
+  const after = who(sim.terminals!.onPosts());
 
   it('hands every post to someone else at the shift change', () => {
     expect(before.size).toBeGreaterThan(50);
     expect(after.length).toBeGreaterThan(50);
-    expect(after.filter((id) => before.has(id)).length).toBe(0);
+    expect(after.filter((serial) => before.has(serial)).length).toBe(0);
   });
 });
 

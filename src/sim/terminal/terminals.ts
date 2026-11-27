@@ -14,8 +14,9 @@ import { NOT_YET, type FlightBook, type Visit } from '../airside/flights.ts';
 import { CONFIG } from '../config.ts';
 import { AIRCRAFT, AIRLINES, AIRLINE_BY_CODE } from '../fleet.ts';
 import type { Rng } from '../rng.ts';
+import { BOOTH_FROM_PASSENGER, BRANDS, DESK_FROM_PASSENGER, LANE, SIZE, buildFittings, orient, type Fittings, type SeatKind } from './fittings.ts';
 import { UNREACHABLE } from './grid.ts';
-import { ACT, People, ROLE, STEP } from './people.ts';
+import { People, POSE, ROLE, STEP } from './people.ts';
 import { FLOOR, FLOOR_HEIGHT, buildTerminalPlan, type Place, type PlaceKind, type TerminalPlan } from './plan.ts';
 import { ServiceQueue } from './queue.ts';
 import type { Transit } from '../transit/trains.ts';
@@ -32,7 +33,18 @@ const { shiftsFrom: SHIFTS_FROM, shiftHours: SHIFT_HOURS, shopsOpen: SHOPS_OPEN 
 /** Metres from its gate within which a party can be boarding that gate's flight. */
 const GATE_REACH = 60;
 
-const EVENT = { airside: 1, board: 2, atClaim: 3, leave: 4, shop: 5, roam: 6, aboard: 7 } as const;
+const EVENT = { airside: 1, board: 2, atClaim: 3, leave: 4, shop: 5, roam: 6, aboard: 7, atGate: 8, atShop: 9 } as const;
+/** Boarding is called in this many groups, over this share of the time from the start of boarding to the doors closing. */
+const BOARDING_GROUPS = 6;
+const GROUPS_OVER = 0.5;
+/** Suitcases drawn with a party at most. */
+const LUGGAGE_SHOWN = 4;
+/** How long a check-in's bag drop is remembered, for the bags riding its belt, seconds. */
+const DROPS_KEPT = 150;
+/** A gate's travellers may sit at the seats of other gates this close, metres. */
+const NEAR_SEATS = 30;
+/** Metres between servers, by the kind of place: see queueAt. */
+const SPACING: Partial<Record<PlaceKind, number>> = { checkin: 2.0, checkpoint: 3.0, customs: 1.8, holdroom: 1.6 };
 /** Signals from here on are stations': raised while a train stands there with its doors open. Below are flights'. */
 const STATION_SIGNALS = 4096;
 /** Longest a station waits for a train before its door works as a plain door again, seconds. */
@@ -178,11 +190,29 @@ export class Terminals {
   private readonly deplaning = new Map<number, number>();
   private readonly boarding = new Set<number>();
   private readonly posts = new Map<string, Post>();
+  /** The furniture: desks, lanes, seats, shelves, tables, carousels. */
+  readonly fittings: Fittings;
+  /** Who holds each seat, by person; a seat is free once its holder has gone or got up. */
+  private readonly seatHolder: Int32Array;
+  /** Point ids: where to walk before sitting in each seat group; round each carousel; in each shop. */
+  private readonly groupApproach: number[] = [];
+  private readonly claimPoints: number[][] = [];
+  private readonly aislePoints = new Map<number, number[]>();
+  /** Rows of check-in desks placed so far, for the next hall's to keep clear of. */
+  private readonly deskRows: { x: number; y: number; heading: number; halfL: number; halfW: number }[] = [];
+  /** Seat groups each place's people may use, worked out the first time they are needed. */
+  private readonly nearSeats = new Map<number, number[]>();
+  /** Walks to where each queue is joined, by place id. */
+  private readonly entryFieldId = new Map<number, number>();
+  /** Bags dropped at check-in: the time, the place, the desk and how many, four numbers each. */
+  private readonly dropped: number[] = [];
   /** Owner data per walker. */
   private readonly bags = new Uint8Array(CAPACITY);
   private readonly bagReady = new Float64Array(CAPACITY);
   private readonly lostBag = new Uint8Array(CAPACITY);
   private readonly claimAt = new Int16Array(CAPACITY).fill(-1);
+  /** Per walker: the carousel its bags come round on, by index; -1 for none. */
+  private readonly carouselOf = new Int16Array(CAPACITY).fill(-1);
   /** Per walker: the station where it waits for a train, by index; -1 for none. */
   private readonly boardAt = new Int16Array(CAPACITY).fill(-1);
   /** Stations with a way into the terminals, in order, and by `kind:name` as the trains know them. */
@@ -244,7 +274,7 @@ export class Terminals {
     this.people.events = {
       notify: (person, event) => this.onNotify(person, event),
       called: (person, queue, _server, waited) => this.onCalled(person, queue, waited),
-      served: (person, queue) => this.onServed(person, queue),
+      served: (person, queue, server) => this.onServed(person, queue, server),
       left: () => undefined,
       serviceTime: (person, queue) => this.serviceTime(person, queue),
     };
@@ -252,6 +282,18 @@ export class Terminals {
     for (const place of this.plan.places) {
       if (place.kind === 'checkpoint' || place.kind === 'checkin' || place.kind === 'customs' || place.kind === 'holdroom') this.queueAt(place);
     }
+    // The furniture goes where the queues and the rooms leave it room; walkers then keep clear of it.
+    this.fittings = buildFittings(layout, this.plan, this.queues, (place) => this.brandOf(place), (place) => this.islandPartner(place) !== null);
+    this.people.setSeats(this.fittings.seats);
+    this.seatHolder = new Int32Array(this.fittings.seats.length / 3).fill(-1);
+    for (const g of this.fittings.groups) this.groupApproach.push(this.people.addPoint(g.ax, g.ay));
+    const points = (spots: readonly number[]): number[] => {
+      const ids: number[] = [];
+      for (let i = 0; i < spots.length; i += 3) ids.push(this.people.addPoint(spots[i], spots[i + 1], spots[i + 2]));
+      return ids;
+    };
+    for (const spots of this.fittings.claimSpots) this.claimPoints.push(points(spots ?? []));
+    for (const [place, spots] of this.fittings.aisles) this.aislePoints.set(place, points(spots));
     this.housekeeping(true);
   }
 
@@ -267,8 +309,11 @@ export class Terminals {
     return id;
   }
 
-  /** Standing places near a place: on its floor, within `radius`, so a crowd spreads out. */
-  private around(place: Place, radius: number, count: number): number[] {
+  /**
+   * Standing places near a place: on its floor, within `radius`, so a crowd spreads out; facing
+   * `facing` give or take, or any way when it is NaN.
+   */
+  private around(place: Place, radius: number, count: number, facing = NaN): number[] {
     let list = this.pointsAround.get(place.id);
     if (!list) {
       list = [];
@@ -277,14 +322,117 @@ export class Terminals {
         const angle = this.rng.range(0, Math.PI * 2);
         const r = Math.sqrt(this.rng.next()) * radius;
         const cell = grid.cellAt(place.x + Math.cos(angle) * r, place.y + Math.sin(angle) * r);
-        // Not against a wall: a party standing there would poke through it.
-        if (cell < 0 || grid.edge[cell]) continue;
-        list.push(this.people.addPoint(grid.cx[cell] + this.rng.range(-0.6, 0.6), grid.cy[cell] + this.rng.range(-0.6, 0.6)));
+        // Not against a wall, nor in among the furniture: a party standing there would poke through it.
+        if (cell < 0 || grid.edge[cell] || grid.extra[cell]) continue;
+        const turn = Number.isNaN(facing) ? NaN : facing + this.rng.range(-0.6, 0.6);
+        list.push(this.people.addPoint(grid.cx[cell] + this.rng.range(-0.6, 0.6), grid.cy[cell] + this.rng.range(-0.6, 0.6), turn));
       }
-      if (!list.length) list.push(this.people.addPoint(place.x, place.y));
+      if (!list.length) list.push(this.people.addPoint(place.x, place.y, facing));
       this.pointsAround.set(place.id, list);
     }
     return list;
+  }
+
+  /** The walk to where a place's queue is joined, at the far end of its ropes; made the first time it is needed. */
+  private entryField(place: Place): number {
+    let id = this.entryFieldId.get(place.id);
+    if (id === undefined) {
+      const queue = this.queues.get(place.id);
+      const grid = this.plan.grids[place.floor];
+      const e = queue ? queue.entrance : place;
+      const cell = grid.nearestCell(e.x, e.y, 30);
+      if (cell < 0) return this.field(place);
+      id = this.people.addField(place.floor, grid.field([cell]), grid.cx[cell], grid.cy[cell]);
+      this.entryFieldId.set(place.id, id);
+    }
+    return id;
+  }
+
+  /** The airline whose wall stands behind a check-in hall's desks, as an index into BRANDS; -1 for none. */
+  private brandOf(place: Place): number {
+    for (const [code, halls] of this.plan.checkin) {
+      if (!halls.includes(place)) continue;
+      const at = (BRANDS as readonly string[]).indexOf(code);
+      if (at >= 0) return at;
+    }
+    return -1;
+  }
+
+  // ---- seats -------------------------------------------------------------------------------
+
+  /** Whether a seat is free: nobody holds it, or whoever did has gone or got up from it. */
+  private seatFree(seat: number): boolean {
+    const holder = this.seatHolder[seat];
+    if (holder < 0) return true;
+    const people = this.people;
+    const first = people.seat[holder];
+    return !people.alive[holder] || first < 0 || seat < first || seat >= first + (people.size[holder] || 1);
+  }
+
+  /**
+   * Seats side by side for a whole party at a place, of the kind asked, taken for them now; the
+   * first of them, or -1 when no row or table has room. Of the rows with room one is picked at
+   * random, so a hall fills up unevenly, as halls do.
+   */
+  private takeSeats(person: number, place: Place, kind: SeatKind): number {
+    const groups = this.seatGroupsFor(place);
+    if (!groups.length) return -1;
+    const size = this.people.size[person] || 1;
+    const runs: number[] = [];
+    for (const g of groups) {
+      const group = this.fittings.groups[g];
+      if (group.kind !== kind || group.count < size) continue;
+      // At a table, a party sits only where nobody sits yet; along a row, wherever there is room.
+      const table = kind !== 'gate';
+      let free = 0;
+      for (let i = 0; i < group.count; i += 1) {
+        free = this.seatFree(group.first + i) ? free + 1 : 0;
+        if (!table && free >= size) runs.push(group.first + i - size + 1);
+      }
+      if (table && free === group.count) runs.push(group.first);
+    }
+    if (!runs.length) return -1;
+    const first = this.rng.pick(runs);
+    for (let i = 0; i < size; i += 1) this.seatHolder[first + i] = person;
+    this.people.seat[person] = first;
+    return first;
+  }
+
+  /** Seat groups a place's people may use: its own, and at a gate those of gates within a short walk. */
+  private seatGroupsFor(place: Place): number[] {
+    let list = this.nearSeats.get(place.id);
+    if (!list) {
+      list = [...(this.fittings.groupsOf.get(place.id) ?? [])];
+      if (place.kind === 'holdroom') {
+        for (const other of this.plan.holdroom.values()) {
+          if (other === place || Math.hypot(other.x - place.x, other.y - place.y) > NEAR_SEATS) continue;
+          for (const g of this.fittings.groupsOf.get(other.id) ?? []) if (!list.includes(g)) list.push(g);
+        }
+      }
+      this.nearSeats.set(place.id, list);
+    }
+    return list;
+  }
+
+  /** The group a seat belongs to. */
+  private groupOfSeat(seat: number): number {
+    const groups = this.fittings.groups;
+    let lo = 0;
+    let hi = groups.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (groups[mid].first <= seat) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
+  }
+
+  /** People sitting down now, and how many seats there are. */
+  seated(): { sitting: number; seats: number } {
+    let sitting = 0;
+    const people = this.people;
+    for (let id = 0; id < people.high; id += 1) if (people.alive[id] && people.pose[id] === POSE.sitting) sitting += people.size[id];
+    return { sitting, seats: this.fittings.seats.length / 3 };
   }
 
   /** The queue at a place, made the first time it is needed. */
@@ -299,24 +447,37 @@ export class Terminals {
       // Lanes for the checkpoint's own busiest hour, at about 150 people a lane an hour, with a
       // margin: a checkpoint is built for the traffic it gets.
       servers = Math.max(8, Math.min(28, Math.ceil((this.peakHour(place) / 150) * 1.25)));
-      length = 30;
-      width = 20;
+      length = 24;
+      width = 14;
     } else if (place.kind === 'checkin') {
       servers = place.size ? Math.max(6, Math.min(20, Math.round(place.size / 20))) : 8;
-      // Counters face the hall away from the road outside.
+      // Counters face the hall away from the road outside, squared up to the walls of the hall.
       const curb = this.nearestWay(place, 'curb');
       if (curb) heading = Math.atan2(place.y - curb.y, place.x - curb.x);
+      if (place.room >= 0) {
+        const f = orient(this.layout.terminals.areas[place.room].poly);
+        const base = Math.atan2(f.uy, f.ux);
+        let best = base;
+        for (let k = 1; k < 4; k += 1) {
+          const h = base + (k * Math.PI) / 2;
+          if (Math.cos(h - heading) > Math.cos(best - heading)) best = h;
+        }
+        heading = best;
+      }
     } else if (place.kind === 'customs') {
       // Booths, kiosks and the Global Entry lanes together.
       servers = place.size ? Math.max(24, Math.min(48, Math.round(place.size / 25))) : 30;
       length = 24;
       width = 18;
     } else if (place.kind === 'holdroom') {
+      // Two lanes to the door, people one behind another in a single line.
       servers = 2;
-      length = 10;
-      width = 3;
+      length = 14;
+      width = 1.3;
     }
-    const spacing = place.kind === 'holdroom' ? 1.6 : 2.4;
+    // Servers as far apart as the desks, lanes and booths drawn for them: a desk module, a lane's
+    // belt and scanner, half a booth with a window each side; two boarding lanes at a gate.
+    const spacing = SPACING[place.kind] ?? 2.4;
     // Of the four ways the line could face, the one whose desks and waiting area lie most inside
     // the floor; if none fits well, a shorter line.
     const grid = this.plan.grids[place.floor];
@@ -334,11 +495,42 @@ export class Terminals {
       }
       return inside / Math.max(1, total);
     };
-    let best = { heading, length, score: -1 };
-    for (const len of [length, length / 2]) {
+    // Check-in desks stand ahead of the passengers in a row of modules: a row is not to stand in
+    // another hall's, as where the aisles of a hall come in pairs, two sides of one island.
+    const deskRow = (h: number, back: number): { x: number; y: number; heading: number; halfL: number; halfW: number } => ({
+      x: place.x + Math.cos(h) * (DESK_FROM_PASSENGER + 0.35 - back),
+      y: place.y + Math.sin(h) * (DESK_FROM_PASSENGER + 0.35 - back),
+      heading: h + Math.PI / 2,
+      halfL: (servers * spacing) / 2 + 0.6,
+      halfW: SIZE.desk[1] / 2 + 0.4,
+    });
+    const clash = (r: { x: number; y: number; heading: number; halfL: number; halfW: number }): number => {
+      let hit = 0;
+      for (const other of this.deskRows) {
+        for (let a = -r.halfL; a <= r.halfL; a += 1) {
+          for (const b of [-r.halfW, 0, r.halfW]) {
+            const x = r.x + Math.cos(r.heading) * a - Math.sin(r.heading) * b;
+            const y = r.y + Math.sin(r.heading) * a + Math.cos(r.heading) * b;
+            const dx = x - other.x;
+            const dy = y - other.y;
+            if (Math.abs(dx * Math.cos(other.heading) + dy * Math.sin(other.heading)) <= other.halfL && Math.abs(-dx * Math.sin(other.heading) + dy * Math.cos(other.heading)) <= other.halfW) hit += 1;
+          }
+        }
+      }
+      return hit;
+    };
+    let best = { heading, length, back: 0, score: -Infinity };
+    // An aisle of a counter island: a long, narrow hall with another beside it, side by side. The
+    // two face each other's way, their desks back to back down the middle between them.
+    const partner = place.kind === 'checkin' ? this.islandPartner(place) : null;
+    if (partner) best = { heading: partner.heading, length, back: partner.back, score: Infinity };
+    for (const len of partner ? [] : [length, length / 2]) {
       for (const turn of [0, Math.PI, Math.PI / 2, -Math.PI / 2]) {
-        const score = fit(heading + turn, len) - (turn === 0 ? 0 : 0.02);
-        if (score > best.score) best = { heading: heading + turn, length: len, score };
+        for (const back of place.kind === 'checkin' ? [0, 1.5, 3, 4.5] : [0]) {
+          let score = fit(heading + turn, len) - (turn === 0 ? 0 : 0.02) - back * 0.01;
+          if (place.kind === 'checkin') score -= clash(deskRow(heading + turn, back)) * 0.2;
+          if (score > best.score) best = { heading: heading + turn, length: len, back, score };
+        }
       }
       if (best.score > 0.85) break;
     }
@@ -347,18 +539,87 @@ export class Terminals {
     place.heading = heading;
     const ux = Math.cos(heading);
     const uy = Math.sin(heading);
-    const front: { x: number; y: number }[] = [];
+    if (place.kind === 'checkin') this.deskRows.push(deskRow(heading, best.back));
+    // A checkpoint's lanes go where the most of them stand on the floor: straight across the way
+    // into the concourse if there is room, else further back in the hall or to one side. A row
+    // of check-in desks stands back from another hall's.
+    let [rowX, rowY] = [place.x - ux * best.back, place.y - uy * best.back];
+    if (place.kind === 'checkpoint') {
+      const floors = [this.plan.grids[FLOOR.landside], this.plan.grids[FLOOR.airside]];
+      const onFloor = (x: number, y: number): boolean => floors.some((g) => g.cellAt(x, y) >= 0);
+      const lanesOn = (cx: number, cy: number): number => {
+        let n = 0;
+        for (let i = 0; i < servers; i += 1) {
+          const across = (i - (servers - 1) / 2) * spacing;
+          let ok = true;
+          for (const a of [-2, 0, 3, 6, 8]) for (const b of [-1.3, 0, 1.3]) if (ok && !onFloor(cx - uy * (across + b) + ux * a, cy + ux * (across + b) + uy * a)) ok = false;
+          if (ok) n += 1;
+        }
+        return n;
+      };
+      let most = lanesOn(rowX, rowY);
+      for (let back = 0; back <= 24 && most < servers; back += 3) {
+        for (const side of [0, -3, 3, -6, 6, -9, 9, -12, 12, -15, 15, -18, 18]) {
+          const cx = place.x - ux * back - uy * side;
+          const cy = place.y - uy * back + ux * side;
+          const n = lanesOn(cx, cy);
+          if (n > most) [most, rowX, rowY] = [n, cx, cy];
+        }
+      }
+    }
+    const front: { x: number; y: number; exitX?: number; exitY?: number }[] = [];
     for (let i = 0; i < servers; i += 1) {
       const across = (i - (servers - 1) / 2) * spacing;
-      front.push({ x: place.x - uy * across, y: place.y + ux * across });
+      const x = rowX - uy * across;
+      const y = rowY + ux * across;
+      // On through the body scanner and past the belt's end; past the side of the booth, in the gap
+      // to the next; out of the door to the jet bridge.
+      let along = NaN;
+      let aside = 0;
+      if (place.kind === 'checkpoint') [along, aside] = [7.6, LANE.scanner];
+      else if (place.kind === 'holdroom') [along, aside] = [3, 0];
+      else if (place.kind === 'customs') {
+        // A booth stands between each pair of servers: each walks on past its own side of it.
+        const alone = i % 2 === 0 && i === servers - 1;
+        const side = i % 2 === 0 ? -1 : 1;
+        const beside = SIZE.booth[0] / 2 + 0.45;
+        along = BOOTH_FROM_PASSENGER + SIZE.booth[1] / 2 + 0.5;
+        aside = alone ? beside : side * (beside - spacing / 2);
+      }
+      front.push(Number.isNaN(along) ? { x, y } : { x, y, exitX: x + ux * along - uy * aside, exitY: y + uy * along + ux * aside });
     }
-    const queue = new ServiceQueue({ x: place.x - ux * (length / 2 + 2), y: place.y - uy * (length / 2 + 2), heading, length, width }, front);
+    const queue = new ServiceQueue({ x: rowX - ux * (length / 2 + 2), y: rowY - uy * (length / 2 + 2), heading, length, width }, front);
     queue.setOpen(place.kind === 'holdroom' ? servers : Math.min(2, servers));
     id = this.people.addQueue(queue);
     this.queueId.set(place.id, id);
     this.placeByQueue[id] = place;
     this.queues.set(place.id, queue);
     return id;
+  }
+
+  /**
+   * For a check-in hall that is one aisle of a counter island, the way its passengers face, towards
+   * the other aisle, and how far its row of servers stands back so that the two rows of desks meet
+   * in the middle; null for any other hall.
+   */
+  private islandPartner(place: Place): { heading: number; back: number } | null {
+    if (place.room < 0) return null;
+    const f = orient(this.layout.terminals.areas[place.room].poly);
+    if (f.halfL < 3 * f.halfW) return null;
+    const across = Math.atan2(f.ux, -f.uy);
+    for (const other of this.plan.places) {
+      if (other === place || other.kind !== 'checkin' || other.room < 0) continue;
+      const g = orient(this.layout.terminals.areas[other.room].poly);
+      if (g.halfL < 3 * g.halfW || Math.abs(f.ux * g.ux + f.uy * g.uy) < 0.95) continue;
+      const dx = other.x - place.x;
+      const dy = other.y - place.y;
+      const apart = dx * Math.cos(across) + dy * Math.sin(across);
+      const along = Math.abs(dx * f.ux + dy * f.uy);
+      if (Math.abs(apart) > 8 || along > f.halfL) continue;
+      // Each row's desks end at the middle between the two aisles.
+      return { heading: apart > 0 ? across : across + Math.PI, back: Math.max(0, DESK_FROM_PASSENGER + SIZE.desk[1] / 2 - Math.abs(apart) / 2) };
+    }
+    return null;
   }
 
   /**
@@ -516,6 +777,7 @@ export class Terminals {
     this.manageLanes(now);
     this.manageStaff(now);
     this.pruneBags();
+    this.pruneDrops();
     this.watchStations(now);
   }
 
@@ -642,7 +904,6 @@ export class Terminals {
     // before now is already through, waiting near the gate, any bags checked and on their way.
     if (sinceStart > WARM_THROUGH || (sinceStart > 0 && this.now > boardingAt - 1800)) {
       this.stats.departing.placed += size;
-      const spot = this.around(holdroom, 16, 30);
       const id = this.addParty(KIND.departing, FLOOR.airside, holdroom.x, holdroom.y, size, visit);
       if (id < 0) {
         unseen();
@@ -651,7 +912,8 @@ export class Terminals {
       this.stats.bags.checked += bags;
       this.stats.bags.loaded += bags;
       this.bagsOnFlight.set(visit.id, (this.bagsOnFlight.get(visit.id) ?? 0) + bags);
-      this.people.setScript(id, [STEP.point, this.rng.pick(spot), STEP.until, this.signalOf(visit), STEP.walk, this.field(holdroom), STEP.queue, this.queueAt(holdroom), STEP.notify, EVENT.board]);
+      // Somewhere about the gate already: in a seat if there is one.
+      this.atGate(id, visit, true);
       return;
     }
     const by = this.rng.weighted(ARRIVE_BY, (e) => e[1])[0];
@@ -686,10 +948,12 @@ export class Terminals {
       return;
     }
     this.bags[id] = bags;
+    // The bags to be checked are pulled along until then.
+    if (bags && checkin) this.people.luggage[id] = Math.min(LUGGAGE_SHOWN, bags);
     const steps: number[] = [];
     if (way.floor !== FLOOR.landside) steps.push(STEP.floor, FLOOR.landside);
-    if (bags && checkin) steps.push(STEP.walk, this.field(checkin), STEP.queue, this.queueAt(checkin));
-    steps.push(STEP.walk, this.field(checkpoint), STEP.queue, this.queueAt(checkpoint), STEP.floor, FLOOR.airside, STEP.notify, EVENT.airside);
+    if (bags && checkin) steps.push(STEP.walk, this.entryField(checkin), STEP.queue, this.queueAt(checkin));
+    steps.push(STEP.walk, this.entryField(checkpoint), STEP.queue, this.queueAt(checkpoint), STEP.floor, FLOOR.airside, STEP.notify, EVENT.airside);
     this.people.setScript(id, steps);
   }
 
@@ -702,6 +966,7 @@ export class Terminals {
     this.bagReady[id] = 0;
     this.lostBag[id] = 0;
     this.claimAt[id] = -1;
+    this.carouselOf[id] = -1;
     this.boardAt[id] = -1;
     if (visit && kind === KIND.departing) this.partiesOf.get(visit.id)?.add(id);
     return id;
@@ -715,18 +980,84 @@ export class Terminals {
       this.missed(person);
       return;
     }
-    const boardingAt = visit.etd - CONFIG.turnaround.boardingStarts[AIRCRAFT[visit.rotation.type].body] * 60;
-    const spare = boardingAt - this.now;
-    const toGate = [STEP.walk, this.field(holdroom), STEP.point, this.rng.pick(this.around(holdroom, 16, 30)), STEP.until, this.signalOf(visit), STEP.walk, this.field(holdroom), STEP.queue, this.queueAt(holdroom), STEP.notify, EVENT.board];
+    const spare = this.boardingStarts(visit) - this.now;
     const shops = this.shopsNear(holdroom);
     if (visit.boardingOpen || spare < 1500 || !shops.length || !this.rng.chance(0.7)) {
-      this.people.setScript(person, toGate);
+      this.people.setScript(person, [STEP.walk, this.field(holdroom), STEP.notify, EVENT.atGate]);
       return;
     }
     const shop = this.rng.pick(shops);
-    const dwell = Math.min(spare - 900, this.rng.range(600, 2400));
     this.claimAt[person] = shop.id;
-    this.people.setScript(person, [STEP.walk, this.field(shop), STEP.point, this.rng.pick(this.around(shop, 7, 10)), STEP.notify, EVENT.shop, STEP.wait, Math.round(dwell), ...toGate]);
+    this.people.setScript(person, [STEP.walk, this.field(shop), STEP.notify, EVENT.atShop]);
+  }
+
+  /** When boarding of a flight starts. */
+  private boardingStarts(visit: Visit): number {
+    return visit.etd - CONFIG.turnaround.boardingStarts[AIRCRAFT[visit.rotation.type].body] * 60;
+  }
+
+  /**
+   * A departing party has reached its gate: it sits down if there is a seat, or stands about,
+   * until its boarding group is called; or goes straight to the line if boarding has begun.
+   * `placed` is a party put there at a mid-day start, already in its seat.
+   */
+  private atGate(person: number, visit: Visit, placed = false): void {
+    const holdroom = this.holdroomOf(visit);
+    if (!holdroom) return;
+    if (visit.doorsClosed) {
+      this.missed(person);
+      return;
+    }
+    const board = [STEP.walk, this.field(holdroom), STEP.queue, this.queueAt(holdroom), STEP.notify, EVENT.board];
+    if (visit.boardingOpen) {
+      this.people.setScript(person, board);
+      return;
+    }
+    const until = [STEP.until, this.signalOf(visit)];
+    const seat = this.takeSeats(person, holdroom, 'gate');
+    if (seat >= 0) {
+      const way = placed ? [] : [STEP.point, this.groupApproach[this.groupOfSeat(seat)]];
+      this.people.setScript(person, [...way, STEP.sit, seat, ...until, ...board]);
+      if (placed) {
+        // Already in the seat.
+        this.people.x[person] = this.people.px[person] = this.fittings.seats[seat * 3];
+        this.people.y[person] = this.people.py[person] = this.fittings.seats[seat * 3 + 1];
+      }
+      return;
+    }
+    this.people.setScript(person, [STEP.point, this.rng.pick(this.around(holdroom, 16, 30, holdroom.heading)), ...until, ...board]);
+  }
+
+  /** A departing party has reached the shop, café or lounge it made for: it browses, eats or sits, then goes to its gate. */
+  private atShop(person: number, visit: Visit): void {
+    const shop = this.plan.places[this.claimAt[person]];
+    const holdroom = this.holdroomOf(visit);
+    if (!shop || !holdroom) return;
+    const spare = this.boardingStarts(visit) - this.now;
+    const dwell = Math.round(Math.min(spare - 900, this.rng.range(600, 2400)));
+    const toGate = [STEP.walk, this.field(holdroom), STEP.notify, EVENT.atGate];
+    if (dwell < 120 || visit.boardingOpen) {
+      this.claimAt[person] = -1;
+      this.people.setScript(person, toGate);
+      return;
+    }
+    const aisles = this.aislePoints.get(shop.id);
+    const stand = (): number => (aisles?.length ? this.rng.pick(aisles) : this.rng.pick(this.around(shop, 7, 10)));
+    if (shop.kind === 'food' || shop.kind === 'lounge') {
+      const seat = this.takeSeats(person, shop, shop.kind);
+      const here = seat >= 0 ? [STEP.sit, seat] : [STEP.point, stand()];
+      this.people.setScript(person, [...here, STEP.notify, EVENT.shop, STEP.wait, dwell, ...toGate]);
+      return;
+    }
+    // A shop: from one shelf to another.
+    const half = Math.round(dwell / 2);
+    this.people.setScript(person, [STEP.point, stand(), STEP.notify, EVENT.shop, STEP.wait, half, STEP.point, stand(), STEP.wait, dwell - half, ...toGate]);
+  }
+
+  /** How long a party waits after boarding starts before its group is called, seconds. */
+  private groupCall(visit: Visit): number {
+    const window = (CONFIG.turnaround.boardingStarts[AIRCRAFT[visit.rotation.type].body] - CONFIG.turnaround.doorsClose) * 60;
+    return Math.round(this.rng.int(BOARDING_GROUPS) * ((window * GROUPS_OVER) / BOARDING_GROUPS) + this.rng.range(0, 40));
   }
 
   /** The flight left without this departing party, or never came: it goes home. */
@@ -888,7 +1219,7 @@ export class Terminals {
     }
     const steps: number[] = [];
     const customs = international ? this.plan.customs.get(area) ?? [...this.plan.customs.values()][0] : undefined;
-    if (customs) steps.push(STEP.walk, this.field(customs), STEP.queue, this.queueAt(customs));
+    if (customs) steps.push(STEP.walk, this.entryField(customs), STEP.queue, this.queueAt(customs));
     const out = this.plan.exit.get(area) ?? [...this.plan.exit.values()][0];
     if (out) steps.push(STEP.walk, this.field(out));
     steps.push(STEP.floor, FLOOR.arrivals);
@@ -912,6 +1243,14 @@ export class Terminals {
       case EVENT.airside:
         if (visit) this.afterSecurity(person, visit);
         else this.leaveBuilding(person, 'B', 'pickup');
+        return;
+      case EVENT.atGate:
+        if (visit) this.atGate(person, visit);
+        else this.missed(person);
+        return;
+      case EVENT.atShop:
+        if (visit) this.atShop(person, visit);
+        else this.missed(person);
         return;
       case EVENT.shop: {
         const shop = this.plan.places[this.claimAt[person]];
@@ -947,7 +1286,12 @@ export class Terminals {
         const claim = this.plan.places[this.claimAt[person]];
         const wait = Math.max(0, this.bagReady[person] - this.now) + (this.lostBag[person] ? 900 : 0);
         this.stats.bags.delivered += this.lostBag[person] ? 0 : this.bags[person];
-        const spot = claim ? this.rng.pick(this.around(claim, 14, 40)) : -1;
+        // A flight's bags all come round one carousel; its passengers wait there.
+        const carousels = claim ? this.fittings.carouselsOf.get(claim.id) : undefined;
+        const carousel = carousels?.length && visit ? carousels[visit.id % carousels.length] : -1;
+        this.carouselOf[person] = carousel;
+        const round = carousel >= 0 ? this.claimPoints[carousel] : undefined;
+        const spot = round?.length ? this.rng.pick(round) : claim ? this.rng.pick(this.around(claim, 14, 40)) : -1;
         people.setScript(person, spot >= 0 ? [STEP.point, spot, STEP.wait, Math.round(wait), STEP.notify, EVENT.leave] : [STEP.wait, Math.round(wait), STEP.notify, EVENT.leave]);
         return;
       }
@@ -959,13 +1303,17 @@ export class Terminals {
           return;
         }
         people.flags[person] |= LEAVING;
-        // Their bags are settled as they go: collected, or reported lost.
+        // Their bags are settled as they go: collected and pulled along, or reported lost.
         if (this.bags[person]) {
           if (this.lostBag[person]) this.stats.bags.lost += this.bags[person];
-          else this.stats.bags.collected += this.bags[person];
+          else {
+            this.stats.bags.collected += this.bags[person];
+            people.luggage[person] = Math.min(LUGGAGE_SHOWN, this.bags[person]);
+          }
           this.bags[person] = 0;
         }
         this.claimAt[person] = -1;
+        this.carouselOf[person] = -1;
         const area = visit ? this.holdroomOf(visit)?.area ?? 'B' : 'B';
         this.leaveBuilding(person, area, this.rng.weighted(LEAVE_BY, (e) => e[1])[0]);
         return;
@@ -1033,12 +1381,14 @@ export class Terminals {
     stats.longest = Math.max(stats.longest, waited);
   }
 
-  private onServed(person: number, queue: number): void {
+  private onServed(person: number, queue: number, server: number): void {
     const place = this.placeOfQueue(queue);
     if (!place || place.kind !== 'checkin') return;
     // Bags go into the system: sorted, screened and taken to the aircraft in time, or not.
     const bags = this.bags[person];
+    this.people.luggage[person] = 0;
     if (!bags) return;
+    this.dropped.push(this.now, place.id, server, bags);
     const visit = this.book.visits.get(this.people.visit[person]);
     this.stats.bags.checked += bags;
     const ready = this.now + this.rng.range(480, 1500);
@@ -1066,6 +1416,13 @@ export class Terminals {
     let n = 0;
     for (let i = 0; i < this.bagsMoving.length; i += 2) if (this.bagsMoving[i] > this.now) n += this.bagsMoving[i + 1];
     return n;
+  }
+
+  /** Forget bag drops whose bags have long gone down the belt. */
+  private pruneDrops(): void {
+    let from = 0;
+    while (from < this.dropped.length && this.dropped[from] < this.now - DROPS_KEPT) from += 4;
+    if (from) this.dropped.splice(0, from);
   }
 
   /** Forget the lots of bags that have left the bag system. */
@@ -1108,13 +1465,14 @@ export class Terminals {
       if (visit.boardingOpen && !this.boarding.has(visit.id)) {
         this.boarding.add(visit.id);
         this.people.setSignal(signal, true);
-        // Anyone waiting at the gate the flight used to have goes to the one it has now.
+        // Those waiting at the gate board when their group is called, staying in their seats till
+        // then; anyone waiting at the gate the flight used to have goes to the one it has now.
         const holdroom = this.holdroomOf(visit);
         for (const person of this.partiesOf.get(visit.id) ?? []) {
-          if (!holdroom || this.people.floor[person] !== FLOOR.airside || this.people.act[person] === ACT.queued) continue;
-          if (Math.hypot(this.people.x[person] - holdroom.x, this.people.y[person] - holdroom.y) > 40 && this.people.act[person] === ACT.wait) {
-            this.people.setScript(person, [STEP.walk, this.field(holdroom), STEP.queue, this.queueAt(holdroom), STEP.notify, EVENT.board]);
-          }
+          if (!holdroom || this.people.floor[person] !== FLOOR.airside || this.people.waitingFor(person) !== signal) continue;
+          const away = Math.hypot(this.people.x[person] - holdroom.x, this.people.y[person] - holdroom.y) > 40;
+          const call = away ? [] : [STEP.wait, this.groupCall(visit)];
+          this.people.setScript(person, [...call, STEP.walk, this.field(holdroom), STEP.queue, this.queueAt(holdroom), STEP.notify, EVENT.board]);
         }
       }
       if (!this.boarding.has(visit.id)) {
@@ -1180,8 +1538,13 @@ export class Terminals {
         if (!s.open) return;
         const ux = Math.cos(place.heading);
         const uy = Math.sin(place.heading);
-        // Behind the desk or the belt, facing whoever is being served.
-        wanted.set(`${placeId}:${i}`, { x: s.x + ux * 1.4, y: s.y + uy * 1.4, floor: place.floor, role });
+        // Behind the desk, at the booth's window, where the bags come off the x-ray belt, beside the boarding lane.
+        let along = DESK_FROM_PASSENGER + 0.3;
+        let aside = 0;
+        if (place.kind === 'checkpoint') [along, aside] = [6.6, LANE.belt - 0.9];
+        else if (place.kind === 'customs') along = BOOTH_FROM_PASSENGER + 0.3;
+        else if (place.kind === 'holdroom') [along, aside] = [0.4, (Math.sign((s.x - place.x) * -uy + (s.y - place.y) * ux) || 1) * 1.55];
+        wanted.set(`${placeId}:${i}`, { x: s.x + ux * along - uy * aside, y: s.y + uy * along + ux * aside, floor: place.floor, role });
       });
     }
     const hour = (now / 3600) % 24;
@@ -1304,6 +1667,22 @@ export class Terminals {
       if (this.bagReady[id] <= this.now && !this.lostBag[id]) n += this.bags[id];
     }
     return n;
+  }
+
+  /** Bags going round one carousel now: delivered and not yet picked up. */
+  bagsOnCarousel(carousel: number): number {
+    let n = 0;
+    const people = this.people;
+    for (let id = 0; id < people.high; id += 1) {
+      if (!people.alive[id] || this.carouselOf[id] !== carousel || (people.flags[id] & KIND_MASK) !== KIND.arriving) continue;
+      if (this.bagReady[id] <= this.now && !this.lostBag[id]) n += this.bags[id];
+    }
+    return n;
+  }
+
+  /** Bags dropped at check-in lately: the time, the place, the desk and how many, four numbers each. */
+  recentDrops(): readonly number[] {
+    return this.dropped;
   }
 
   /** A number that changes if anything about the people does; for the determinism test. */

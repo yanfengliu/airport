@@ -15,7 +15,9 @@
 //   --no-perf               skip the frame-rate measurement
 //
 // Fixed views are reached by clicking the preset buttons; random views by wheel, drag and
-// right-drag from a preset, so the input path is exercised and not only the camera state.
+// right-drag from a preset, so the input path is exercised and not only the camera state. At each
+// time of day the cut-away is then taken close up inside: a gate's seating, a checkpoint, check-in
+// and a claim hall, the camera put on the busiest of each by the page's handle.
 // Writes manifest.json beside the captures: the view each one ended at, frames per second, the
 // GPU that drew it, and any console errors. Then measures the frame rate at the morning peak at
 // 1920×1080 with the clock running at 1× and 60× in the busiest views. Exits 1 if the page logged
@@ -160,6 +162,31 @@ try {
       await waitSettled();
       await capture(`${time}-random-${String(i + 1).padStart(2, '0')}`, { kind: 'random', time, from, moves });
     }
+
+    // The terminals inside, close up, cut away: the busiest gate's seating, checkpoint and check-in,
+    // and the claim hall carousel with most bags on it.
+    for (const [inside, kind, distance] of [['departures', 'holdroom', 60], ['departures', 'checkpoint', 70], ['departures', 'checkin', 55], ['arrivals', 'claim', 60]]) {
+      await page.click(`[data-inside="${inside}"]`);
+      await page.evaluate(([kind, distance]) => {
+        const t = window.__sfo.sim().terminals;
+        let best = null;
+        if (kind === 'claim') {
+          t.fittings.carousels.forEach((c, i) => {
+            const n = t.bagsOnCarousel(i);
+            if (!best || n > best.n) best = { x: c.x, y: c.y, h: 0.6, n };
+          });
+        } else {
+          for (const [id, q] of t.queues) {
+            const p = t.plan.places[id];
+            if (p.kind === kind && (!best || q.line.length > best.n)) best = { x: p.x, y: p.y, h: 7.2, n: q.line.length };
+          }
+        }
+        window.__sfo.camera.setView({ x: best.x, y: best.y, h: best.h, distance, tilt: 50, bearing: 30 }, true);
+      }, [kind, distance]);
+      await waitSettled();
+      await capture(`${time}-inside-${kind}`, { kind: 'inside', time, inside });
+    }
+    await page.click('[data-inside="off"]');
   }
 
   const slowest = captures.reduce((min, c) => Math.min(min, c.fps), Infinity);

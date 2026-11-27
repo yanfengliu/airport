@@ -10,6 +10,7 @@ import { TrainLayer } from '../render/dynamic/train-layer.ts';
 import { buildInteriors } from '../render/static/interiors.ts';
 import { VehicleLayer } from '../render/dynamic/vehicle-layer.ts';
 import { wingOver } from '../render/models/aircraft.ts';
+import { loadModels, type Models } from '../render/models/library.ts';
 import { Stage, hazeFor } from '../render/stage.ts';
 import { buildStaticWorld } from '../render/world.ts';
 import { formatClock } from '../shared/sun.ts';
@@ -60,7 +61,13 @@ async function start(): Promise<void> {
   const stage = new Stage({ canvas, preserveDrawingBuffer: params.has('capture') });
   const camera = new MapCamera(stage.camera, canvas);
 
+  // The furniture and people models load alongside the map; without them the terminals are drawn bare.
+  const modelsLoading: Promise<Models> = loadModels().catch((error: unknown) => {
+    console.warn(`Models not loaded: ${error instanceof Error ? error.message : String(error)}`);
+    return new Map();
+  });
   const { layout, provenance } = await loadLayout((done, total) => progress((done / total) * 0.6, 'Loading the airport…'));
+  const models = await modelsLoading;
   progress(0.7, 'Building the scene…');
   await nextFrame();
   const world = buildStaticWorld(layout);
@@ -103,8 +110,8 @@ async function start(): Promise<void> {
   const bridgeLayer = new BridgeLayer(world.bridgeEnds);
   const vehicleLayer = new VehicleLayer();
   const trainLayer = new TrainLayer();
-  const peopleLayer = new PeopleLayer(60_000);
-  const interiors = buildInteriors(layout, sim.terminals!);
+  const peopleLayer = new PeopleLayer(60_000, models);
+  const interiors = buildInteriors(layout, sim.terminals!, models);
   stage.scene.add(aircraftLayer.group, gseLayer.group, bridgeLayer.group, vehicleLayer.group, trainLayer.group, peopleLayer.group, interiors.departures, interiors.arrivals);
   let inside: Inside = 'off';
   /** Lift the terminal roofs and show one level inside, or put them back. */
@@ -232,7 +239,8 @@ async function start(): Promise<void> {
     select(a ? a.id : null);
   };
 
-  const hud = createHud(hudRoot, PRESETS, provenance.attribution, {
+  const credit = models.size ? `${provenance.attribution} · 3D models: Polyfork, CC BY 4.0` : provenance.attribution;
+  const hud = createHud(hudRoot, PRESETS, credit, {
     setSpeed,
     jumpTo: (seconds) => {
       // Another time of day is another run of the same day, set up as the viewer left it.
@@ -310,8 +318,9 @@ async function start(): Promise<void> {
     if (sim.roads) vehicleLayer.update(sim.roads.traffic.vehicles, owed / CONFIG.dt, camera.distance, lamps);
     if (sim.transit) trainLayer.update(sim.transit, owed / CONFIG.dt);
     if (sim.terminals && inside !== 'off') {
+      peopleLayer.fittings = sim.terminals.fittings;
       peopleLayer.update(sim.terminals.people, owed / CONFIG.dt, camera.distance);
-      interiors.update(sim.terminals, realSeconds);
+      interiors.update(sim.terminals, sim.time + owed);
     }
     world.update(realSeconds, stage.day, { height: canvas.height, fov: stage.camera.fov, fog: stage.fogDensity, lamp: stage.lampGain });
     stage.render();

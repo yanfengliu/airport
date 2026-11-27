@@ -33,6 +33,11 @@ export class NavGrid {
   readonly edge: Uint8Array;
   /** People standing in each cell right now. */
   readonly occupancy: Uint16Array;
+  /**
+   * Extra cost of stepping into each cell: furniture stands there (seats, counters, shelves), so
+   * walkers go round it where they can. It never cuts a way off, only makes it dearer.
+   */
+  readonly extra: Uint8Array;
 
   /** `keep`, when given, leaves out cells whose centre it rejects, to cut one floor into parts. */
   constructor(polygons: readonly PolygonData[], cell: number, keep?: (x: number, y: number) => boolean) {
@@ -89,6 +94,7 @@ export class NavGrid {
     this.neighbours = new Int32Array(count * 8).fill(-1);
     this.edge = new Uint8Array(count);
     this.occupancy = new Uint16Array(count);
+    this.extra = new Uint8Array(count);
     for (let row = 0; row < this.rows; row += 1) {
       for (let col = 0; col < this.cols; col += 1) {
         const id = this.index[row * this.cols + col];
@@ -173,7 +179,7 @@ export class NavGrid {
         for (let k = 0; k < 8; k += 1) {
           const n = this.neighbours[id * 8 + k];
           if (n < 0) continue;
-          const next = cost + (k < 4 ? STRAIGHT : DIAGONAL) + (this.edge[n] ? WALL_COST : 0);
+          const next = cost + (k < 4 ? STRAIGHT : DIAGONAL) + (this.edge[n] ? WALL_COST : 0) + this.extra[n];
           if (next < distance[n] && next < UNREACHABLE) {
             distance[n] = next;
             push(next, n);

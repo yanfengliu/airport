@@ -3,13 +3,16 @@
 // leave); the systems that own flights, security and shops write those scripts.
 
 import { UNREACHABLE, type NavGrid } from './grid.ts';
-import type { ServiceQueue } from './queue.ts';
+import { SPACING, type LineSpot, type ServiceQueue } from './queue.ts';
 
 export const ROLE = { passenger: 0, security: 1, agent: 2, gate: 3, shop: 4, cleaner: 5, ramp: 6, crew: 7, officer: 8 } as const;
 export type RoleName = keyof typeof ROLE;
 
 /** What a person is doing this moment. */
-export const ACT = { idle: 0, walk: 1, toPoint: 2, queued: 3, served: 4, wait: 5 } as const;
+export const ACT = { idle: 0, walk: 1, toPoint: 2, queued: 3, served: 4, wait: 5, exit: 6 } as const;
+
+/** How a person holds themselves: standing, or sitting in a seat. */
+export const POSE = { standing: 0, sitting: 1 } as const;
 
 /** Script step kinds. Each step is a kind and one argument. */
 export const STEP = {
@@ -29,9 +32,13 @@ export const STEP = {
   notify: 7,
   /** Leave the simulation. */
   leave: 8,
+  /** Walk to seat `arg` in the seat table and sit down; the party takes it and the seats after it. */
+  sit: 9,
 } as const;
 
 const STEPS = 14;
+/** In `aim`: walking to the seat held, to sit down on arrival. */
+const SEAT = -2;
 /** Distance-field value below which a walk has arrived (tenths of a cell). */
 const ARRIVED = 12;
 
@@ -78,6 +85,22 @@ export class People {
   visit: Int32Array;
   party: Int32Array;
   flags: Uint16Array;
+  /** Standing or sitting (POSE). */
+  pose: Uint8Array;
+  /** The way a person faces while standing still or sitting, radians from east. */
+  facing: Float32Array;
+  /**
+   * The first of the seats a party holds, from when the owner gives them to it, while it walks
+   * there and sits, until it gets up; -1 for none.
+   */
+  seat: Int32Array;
+  /** Suitcases the party pulls along: set by the owner. */
+  luggage: Uint8Array;
+  /** Who each one is: a number given once and never again, unlike the index, which is reused. */
+  serial: Float64Array;
+  private serials = 0;
+  /** The point a person is walking to, by index, to face the way it says on arrival; SEAT for their seat; -1 for neither. */
+  private aim: Int32Array;
   private script: Int32Array;
   private pc: Uint8Array;
   private length: Uint8Array;
@@ -90,9 +113,13 @@ export class People {
   private readonly fieldFloor: number[] = [];
   private readonly fieldGoal: number[] = [];
   private readonly points: number[] = [];
+  /** The way to face at each point, or NaN to keep facing the way one came. */
+  private readonly pointFacing: number[] = [];
+  /** Seats: x, y and the way the sitter faces, three numbers each. */
+  private seats: ArrayLike<number> = [];
   private readonly queues: ServiceQueue[] = [];
   private readonly signals: Uint8Array;
-  private readonly spot = { x: 0, y: 0 };
+  private readonly spot: LineSpot = { x: 0, y: 0, dx: 0, dy: 0 };
   events: PeopleEvents | null = null;
 
   constructor(capacity: number, grids: NavGrid[], floorHeight: (floor: number, cell: number) => number, signals = 4096) {
@@ -122,6 +149,12 @@ export class People {
     this.visit = new Int32Array(capacity).fill(-1);
     this.party = new Int32Array(capacity).fill(-1);
     this.flags = new Uint16Array(capacity);
+    this.pose = new Uint8Array(capacity);
+    this.facing = new Float32Array(capacity);
+    this.seat = new Int32Array(capacity).fill(-1);
+    this.luggage = new Uint8Array(capacity);
+    this.serial = new Float64Array(capacity);
+    this.aim = new Int32Array(capacity).fill(-1);
     this.script = new Int32Array(capacity * STEPS * 2);
     this.pc = new Uint8Array(capacity);
     this.length = new Uint8Array(capacity);
@@ -141,9 +174,27 @@ export class People {
     return this.fields.length - 1;
   }
 
-  addPoint(x: number, y: number): number {
+  /** A point people can be sent to, and the way they face once there (NaN: the way they came). */
+  addPoint(x: number, y: number, facing = NaN): number {
     this.points.push(x, y);
+    this.pointFacing.push(facing);
     return this.points.length / 2 - 1;
+  }
+
+  /** The seat table: x, y and the way the sitter faces, three numbers per seat. */
+  setSeats(seats: ArrayLike<number>): void {
+    this.seats = seats;
+  }
+
+  /** The signal a person is standing or sitting waiting for, or -1 when that is not what they are doing. */
+  waitingFor(id: number): number {
+    if (this.act[id] !== ACT.wait) return -1;
+    // While it waits, an `until` step leaves the count on the step before it (see `begin`).
+    const pc = this.pc[id];
+    const base = id * STEPS * 2;
+    if (pc < this.length[id] && this.script[base + pc * 2] === STEP.wait) return -1;
+    const next = (pc + 1) & 0xff;
+    return next < this.length[id] && this.script[base + next * 2] === STEP.until ? this.script[base + next * 2 + 1] : -1;
   }
 
   addQueue(queue: ServiceQueue): number {
@@ -166,6 +217,7 @@ export class People {
     const id = this.free.length ? this.free.pop()! : this.high < this.capacity ? this.high++ : -1;
     if (id < 0) return -1;
     this.alive[id] = 1;
+    this.serial[id] = ++this.serials;
     this.role[id] = role;
     this.size[id] = size;
     this.act[id] = ACT.idle;
@@ -178,11 +230,16 @@ export class People {
     this.visit[id] = -1;
     this.party[id] = -1;
     this.flags[id] = 0;
+    this.pose[id] = POSE.standing;
+    this.seat[id] = -1;
+    this.luggage[id] = 0;
+    this.aim[id] = -1;
     this.pc[id] = 0;
     this.length[id] = 0;
     // A fixed offset from the low bits of `jitter`, up to about a metre each way.
     this.ox[id] = (((jitter >>> 0) % 200) / 100 - 1) * 0.9;
     this.oy[id] = ((((jitter >>> 8) >>> 0) % 200) / 100 - 1) * 0.9;
+    this.facing[id] = ((((jitter >>> 16) >>> 0) % 628) / 100) - Math.PI;
     this.enterCell(id);
     this.h[id] = this.ph[id] = this.cell[id] >= 0 ? this.floorHeight(floor, this.cell[id]) : 0;
     this.count += 1;
@@ -195,6 +252,8 @@ export class People {
     if (this.queue[id] >= 0) this.queues[this.queue[id]].leave(id);
     this.alive[id] = 0;
     this.queue[id] = -1;
+    this.seat[id] = -1;
+    this.pose[id] = POSE.standing;
     this.free.push(id);
     this.count -= 1;
   }
@@ -253,7 +312,14 @@ export class People {
           this.walk(id, dt);
           break;
         case ACT.toPoint:
-          if (this.moveTowards(id, this.tx[id], this.ty[id], this.speed[id] * dt)) this.next(id);
+          if (this.moveTowards(id, this.tx[id], this.ty[id], this.speed[id] * dt)) {
+            this.arrive(id);
+            this.next(id);
+          }
+          break;
+        case ACT.exit:
+          // Out through the lane or past the booth, then on with the script.
+          if (this.moveTowards(id, this.tx[id], this.ty[id], this.speed[id] * dt)) this.act[id] = ACT.idle;
           break;
         case ACT.queued:
           // Where to stand is set for the whole line at once, in stepQueues.
@@ -271,11 +337,29 @@ export class People {
     }
   }
 
+  /** Reached the point or seat being walked to: sit down, or face the way the point says. */
+  private arrive(id: number): void {
+    const aim = this.aim[id];
+    const seat = this.seat[id];
+    if (aim === SEAT && seat >= 0) {
+      this.pose[id] = POSE.sitting;
+      this.facing[id] = this.seats[seat * 3 + 2];
+    } else if (aim >= 0 && !Number.isNaN(this.pointFacing[aim])) this.facing[id] = this.pointFacing[aim];
+  }
+
   /** Start the current step. Returns false when the person is gone or the step is waiting. */
   private begin(id: number, now: number): boolean {
     const at = id * STEPS * 2 + this.pc[id] * 2;
     const kind = this.script[at];
     const arg = this.script[at + 1];
+    // Anything that moves them gets them up out of their seat first, and gives it up.
+    if (kind !== STEP.wait && kind !== STEP.until && kind !== STEP.notify) {
+      if (this.pose[id] === POSE.sitting) {
+        this.pose[id] = POSE.standing;
+        this.seat[id] = -1;
+      }
+      this.aim[id] = -1;
+    }
     switch (kind) {
       case STEP.walk:
         if (this.fieldFloor[arg] !== this.floor[id]) {
@@ -288,16 +372,29 @@ export class People {
       case STEP.point:
         this.tx[id] = this.points[arg * 2];
         this.ty[id] = this.points[arg * 2 + 1];
+        this.aim[id] = arg;
         this.act[id] = ACT.toPoint;
         return false;
-      case STEP.queue:
+      case STEP.sit:
+        this.tx[id] = this.seats[arg * 3];
+        this.ty[id] = this.seats[arg * 3 + 1];
+        this.seat[id] = arg;
+        this.aim[id] = SEAT;
+        this.act[id] = ACT.toPoint;
+        return false;
+      case STEP.queue: {
+        const queue = this.queues[arg];
+        // The tail: as much line ahead as everyone already in it takes up.
+        let ahead = 0;
+        for (const other of queue.line) ahead += this.room(other);
         this.queue[id] = arg;
-        this.queues[arg].join(id, now);
+        queue.join(id, now);
         this.act[id] = ACT.queued;
-        this.queues[arg].tail(this.spot);
+        this.standAt(id, queue, ahead);
         this.tx[id] = this.spot.x;
         this.ty[id] = this.spot.y;
         return false;
+      }
       case STEP.wait:
         this.until[id] = now + arg;
         this.act[id] = ACT.wait;
@@ -382,20 +479,45 @@ export class People {
     return false;
   }
 
+  /**
+   * Metres of line a party takes up: about SPACING a head, some standing closer to the one in
+   * front and some further back, each in their own way.
+   */
+  private room(id: number): number {
+    return (this.size[id] || 1) * SPACING * (1.05 + 0.28 * (this.oy[id] / 0.9));
+  }
+
+  /**
+   * Where a person with `ahead` metres of line in front of them stands, into `this.spot`: on the
+   * line, a little to one side as people stand, facing roughly the way it goes.
+   */
+  private standAt(id: number, queue: ServiceQueue, ahead: number): void {
+    queue.spotAt(ahead, this.spot);
+    const side = this.ox[id] * 0.3;
+    this.spot.x += -this.spot.dy * side;
+    this.spot.y += this.spot.dx * side;
+    this.facing[id] = Math.atan2(this.spot.dy, this.spot.dx) + this.ox[id] * this.oy[id] * 0.5;
+  }
+
   /** Run every queue: call people forward and finish those whose service is over. */
   stepQueues(now: number): void {
     for (let q = 0; q < this.queues.length; q += 1) {
       const queue = this.queues[q];
       if (!queue.size) continue;
-      // Everyone in line moves up to their place, which follows from their position in it.
-      // A party takes as much line as it has people.
+      // Everyone in line has a place, which follows from how much line is ahead of them; but
+      // people shuffle up only once the gap in front has opened a little, so a line moves on in
+      // waves from the front rather than all at once.
       const line = queue.line;
       let ahead = 0;
       for (let place = 0; place < line.length; place += 1) {
-        queue.spot(ahead, this.spot);
-        this.tx[line[place]] = this.spot.x;
-        this.ty[line[place]] = this.spot.y;
-        ahead += this.size[line[place]] || 1;
+        const id = line[place];
+        this.standAt(id, queue, ahead);
+        const gap = Math.hypot(this.spot.x - this.tx[id], this.spot.y - this.ty[id]);
+        if (place === 0 || gap > 0.5 + 0.55 * Math.abs(this.ox[id] / 0.9)) {
+          this.tx[id] = this.spot.x;
+          this.ty[id] = this.spot.y;
+        }
+        ahead += this.room(id);
       }
       queue.step(
         now,
@@ -411,6 +533,12 @@ export class People {
           if (!this.alive[person] || this.queue[person] !== q) return;
           this.queue[person] = -1;
           this.next(person);
+          const s = queue.servers[server];
+          if (!Number.isNaN(s.exitX)) {
+            this.act[person] = ACT.exit;
+            this.tx[person] = s.exitX;
+            this.ty[person] = s.exitY;
+          }
           this.events?.served(person, q, server);
         },
       );

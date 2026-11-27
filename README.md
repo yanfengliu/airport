@@ -30,7 +30,8 @@ The page takes a few parameters: `t=14:30` starts at that time of day, `seed=7` 
 - **Aircraft.** About 600 visits a day (589 once each airline's share is rounded) by the airlines that fly to SFO with the types they fly, on a schedule shaped like SFO's day and fitted to what the runways can take. The tower gives landing slots, clears line-ups, take-offs and runway crossings, and never sends a departure towards an arrival coming the other way; ground control keeps every aircraft's fuselage on ground nobody else holds, in one order of right of way, so no two meet and nothing locks up. Stands are chosen for the ways in and out an aircraft would really take, and so that no two parked aircraft come within a metre of each other, wings and all. Ground equipment works round parked aircraft, and jet bridges swing out to the forward door.
 - **Weather and runways.** A west wind lands aircraft on 28L and 28R and launches them from 1L and 1R; a southeast wind turns the airport round to the Southeast Plan; low cloud or fog leaves one arrival stream. Runways and checkpoints can be closed.
 - **Roads and rail.** Cars, taxis, shuttles, buses and trucks follow the car ahead, change lanes and merge, and make drop-offs, pick-ups and trips to the garages, going round again if they miss the curb. AirTrain runs both lines; BART and Caltrain run to their stations; trains on shared track take it one at a time.
-- **People.** Travellers in parties come by car, train or garage, check bags, queue at security, shop and eat, wait at the gate and board; arrivals clear customs, wait at the belts and leave. Those who come or go by AirTrain or BART ride the trains. Some change planes airside. Lanes and desks open and close with the lines, staff hand over their posts at 06:00, 14:00 and 22:00, and the shops close at night. Everyone and every bag is accounted for; bags are counted per party, not followed one by one.
+- **People.** Travellers in parties come by car, train or garage, pull their suitcases to check-in, queue at security, browse the shops and sit to eat, sit at their gate and board when their group is called; arrivals clear customs, wait round their flight's carousel and leave with their bags. In a line each stands their own way and steps up when a gap opens. Those who come or go by AirTrain or BART ride the trains. Some change planes airside. Lanes and desks open and close with the lines, staff hand over their posts at 06:00, 14:00 and 22:00, and the shops close at night. Everyone and every bag is accounted for; bags are counted per party, not followed one by one.
+- **The terminals inside.** Check-in desks with their bag belts, kiosks, security lanes with x-ray belts and body scanners, passport booths, gate desks and seats, carousels, shops with shelves, cafés with tables, lounges, plants and stanchions, laid out in the mapped rooms by the simulation, which seats people in them and keeps walkers clear of them.
 
 ## Checking it
 
@@ -41,6 +42,10 @@ The page takes a few parameters: `t=14:30` starts at that time of day, `seed=7` 
 - `npm run visual` drives the built app on the GPU through its real controls, writes full-resolution captures, and measures the frame rate at the morning peak with the clock running; `node tools/visual/controls.mjs` checks every control does what it says.
 
 The plan, its acceptance criteria and the record of the work are in [docs/work/0_sfo-simulation/plan.md](docs/work/0_sfo-simulation/plan.md).
+
+## Models
+
+The furniture, luggage and people inside the terminals are [Polyfork](https://polyfork.dev)'s free low-poly models, whose mesh files are under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). `node tools/models/polyfork.ts` fetches the ones listed in it once (into `artifacts/`, not tracked) and converts each into the compact form the app loads, in `public/models/`: welded and quantized, colours as slots so people can be dressed differently, and characters posed in a walk cycle, standing and sitting. `public/models/CREDITS.md` credits every model and says what was changed. Polyfork does not endorse this project.
 
 ## Data and licence
 
