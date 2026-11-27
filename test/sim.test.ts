@@ -5,24 +5,31 @@
 import { describe, expect, it } from 'vitest';
 import { Sim } from '../src/sim/sim.ts';
 import { loadLayoutFromDisk } from './helpers/layout.ts';
+import { once } from './helpers/once.ts';
 
 const layout = loadLayoutFromDisk();
 
 describe('airside, briefly', () => {
-  const sim = new Sim(layout, { seed: 3, startTime: 6 * 3600 });
-  sim.run(2 * 3600);
+  const briefly = once(() => {
+    const sim = new Sim(layout, { seed: 3, startTime: 6 * 3600 });
+    sim.run(2 * 3600);
+    return sim;
+  });
 
   it('lands and launches aircraft', () => {
+    const sim = briefly();
     expect(sim.airside.tower.stats.landings).toBeGreaterThanOrEqual(10);
     expect(sim.airside.tower.stats.takeoffs).toBeGreaterThanOrEqual(10);
   });
 
   it('uses most of the numbered gates', () => {
+    const sim = briefly();
     const gates = layout.airfield.stands.filter((s) => s.contact);
     expect(gates.filter((s) => sim.usableStands.has(s.id)).length).toBeGreaterThanOrEqual(85);
   });
 
   it('never hands a piece of taxiway back out of turn', () => {
+    const sim = briefly();
     expect(sim.airside.traffic.outOfOrder).toBe(0);
   });
 });

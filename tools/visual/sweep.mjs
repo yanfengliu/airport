@@ -190,6 +190,9 @@ try {
   }
 
   const slowest = captures.reduce((min, c) => Math.min(min, c.fps), Infinity);
+  // Done with the captures: a page left open goes on drawing its scene every frame and shares the
+  // GPU with the page being measured, which then measures the two together.
+  await page.close();
 
   // ---- the 'Fast enough' criterion: the morning peak at 1920×1080, the clock running ----------
   // Frames counted in the page while the simulation runs at 1× and at 60×, in the views that draw

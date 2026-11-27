@@ -12,6 +12,7 @@ import { RoadSim } from '../src/sim/roads/roads.ts';
 import { RoadTraffic } from '../src/sim/roads/traffic.ts';
 import { Rng } from '../src/sim/rng.ts';
 import { loadLayoutFromDisk } from './helpers/layout.ts';
+import { once } from './helpers/once.ts';
 
 const layout = loadLayoutFromDisk();
 const gates = layout.airfield.stands.filter((s) => s.contact);
@@ -60,37 +61,44 @@ describe('road network', () => {
 });
 
 describe('road traffic at the morning peak', () => {
-  let overlaps = 0;
-  let curbStops = 0;
-  /** Every vehicle out to set down or pick up, each with a stop planned; and those that were going a way that missed it. */
-  const errands = new Set<number>();
-  const astray = new Set<number>();
-  const roads = run(7, 40, (r, time) => {
-    for (const v of r.traffic.vehicles) {
-      if (v.purpose !== PURPOSE.dropOff && v.purpose !== PURPOSE.pickUp) continue;
-      errands.add(v.id);
-      if (v.stopLink >= 0 && v.stoppedUntil < 0 && v.link !== v.stopLink && v.route.indexOf(v.stopLink, v.routeAt) < 0) astray.add(v.id);
-    }
-    if (Math.round(time / CONFIG.dt) % 20) return;
-    overlaps += r.traffic.overlaps();
-    curbStops = Math.max(curbStops, r.traffic.vehicles.filter((v) => v.stoppedUntil >= 0 && (v.purpose === PURPOSE.dropOff || v.purpose === PURPOSE.pickUp)).length);
+  const peak = once(() => {
+    let overlaps = 0;
+    let curbStops = 0;
+    /** Every vehicle out to set down or pick up, each with a stop planned; and those that were going a way that missed it. */
+    const errands = new Set<number>();
+    const astray = new Set<number>();
+    const roads = run(7, 40, (r, time) => {
+      for (const v of r.traffic.vehicles) {
+        if (v.purpose !== PURPOSE.dropOff && v.purpose !== PURPOSE.pickUp) continue;
+        errands.add(v.id);
+        if (v.stopLink >= 0 && v.stoppedUntil < 0 && v.link !== v.stopLink && v.route.indexOf(v.stopLink, v.routeAt) < 0) astray.add(v.id);
+      }
+      if (Math.round(time / CONFIG.dt) % 20) return;
+      overlaps += r.traffic.overlaps();
+      curbStops = Math.max(curbStops, r.traffic.vehicles.filter((v) => v.stoppedUntil >= 0 && (v.purpose === PURPOSE.dropOff || v.purpose === PURPOSE.pickUp)).length);
+    });
+    return { roads, overlaps, curbStops, errands, astray };
   });
 
   it('keeps the freeways moving', () => {
+    const { roads } = peak();
     // Free flow is 65 mph; at the peak traffic is heavy but not stopped.
     expect(speedOn(roads, 'US 101')).toBeGreaterThan(18);
     expect(roads.traffic.stats.finished).toBeGreaterThan(5000);
   });
 
   it('leaves nobody standing still for long, at a red light or anywhere but a curb', () => {
+    const { roads } = peak();
     expect(roads.traffic.stats.longestStuck).toBeLessThan(300);
   });
 
   it('never has one vehicle inside another, in a lane or changing lanes', () => {
+    const { overlaps } = peak();
     expect(overlaps).toBe(0);
   });
 
   it('brings cars to the curbs and the garages', () => {
+    const { roads, curbStops } = peak();
     const s = roads.airport.stats;
     // Counted when they pull up or drive in, not when they set out.
     expect(s.dropOffs).toBeGreaterThan(100);
@@ -103,6 +111,7 @@ describe('road traffic at the morning peak', () => {
   });
 
   it('accounts for every curb stop: made, given up, or still to come, and none lost with a vehicle that leaves', () => {
+    const { roads, errands, astray } = peak();
     const t = roads.traffic.stats;
     const toCome = roads.traffic.vehicles.filter((v) => v.stopLink >= 0 && v.stoppedUntil < 0).length;
     expect(t.stopsMade + t.stopsMissed + toCome).toBe(errands.size);
@@ -113,20 +122,24 @@ describe('road traffic at the morning peak', () => {
 
 describe('a curb stop that cannot be made', () => {
   // Nothing leads onto a road where it comes onto the map: a stop there is on nobody's way.
-  const roads = new RoadSim(layout.roads, layout.land.bounds, centre, new Rng(3).fork('roads'));
-  roads.airport.scale = 0;
-  const nowhere = roads.net.links.find((l) => l.enters)!;
-  let time = 7.5 * 3600;
-  const step = (): void => {
-    time += CONFIG.dt;
-    roads.step(CONFIG.dt, time, time);
-  };
-  for (let i = 0; i < 120; i += 1) step();
-  const vehicle = roads.traffic.vehicles.find((v) => v.link !== nowhere.id)!;
-  roads.traffic.planStop(vehicle, nowhere.id, 10, 30);
-  while (!vehicle.gone && time < 9 * 3600) step();
+  const given = once(() => {
+    const roads = new RoadSim(layout.roads, layout.land.bounds, centre, new Rng(3).fork('roads'));
+    roads.airport.scale = 0;
+    const nowhere = roads.net.links.find((l) => l.enters)!;
+    let time = 7.5 * 3600;
+    const step = (): void => {
+      time += CONFIG.dt;
+      roads.step(CONFIG.dt, time, time);
+    };
+    for (let i = 0; i < 120; i += 1) step();
+    const vehicle = roads.traffic.vehicles.find((v) => v.link !== nowhere.id)!;
+    roads.traffic.planStop(vehicle, nowhere.id, 10, 30);
+    while (!vehicle.gone && time < 9 * 3600) step();
+    return { roads, vehicle };
+  });
 
   it('is counted as given up once the vehicle leaves the map with it still to make', () => {
+    const { roads, vehicle } = given();
     expect(vehicle.gone).toBe(true);
     const t = roads.traffic.stats;
     expect({ made: t.stopsMade, missed: t.stopsMissed }).toEqual({ made: 0, missed: 1 });

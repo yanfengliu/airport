@@ -21,6 +21,7 @@ import { standPath } from '../src/sim/airside/aircraft.ts';
 import { AIRCRAFT, type AircraftType } from '../src/sim/fleet.ts';
 import { Sim } from '../src/sim/sim.ts';
 import { loadLayoutFromDisk, repoRoot } from './helpers/layout.ts';
+import { once } from './helpers/once.ts';
 
 /** Metres within which two points are one: the mesh is kept in 32-bit numbers. */
 const TOL = 1e-3;
@@ -144,8 +145,8 @@ function mismatches(points: readonly [number, number][], polygons: readonly numb
 /** How near something drawn each corner of a type's outline must be, metres. */
 const looseness = (type: AircraftType): number => (modelFit(type) || OWN_MODEL[type.id] ? 1.6 : TOL);
 
-const sim = new Sim(loadLayoutFromDisk(), { seed: 7, startTime: 4 * 3600 });
-const net = sim.airside.net;
+/** The simulation the stands are laid out in, for its taxi network and the stands it uses. */
+const airport = once(() => new Sim(loadLayoutFromDisk(), { seed: 7, startTime: 4 * 3600 }));
 
 describe('the outline the stands are judged by', () => {
   it('is what the model draws, for every type', () => {
@@ -156,6 +157,8 @@ describe('the outline the stands are judged by', () => {
   });
 
   it('stands where the aircraft layer draws a parked aircraft, at every stand and for every type it takes', () => {
+    const sim = airport();
+    const net = sim.airside.net;
     const faults: string[] = [];
     let compared = 0;
     const corner = new THREE.Vector3();
@@ -184,6 +187,8 @@ describe('the outline the stands are judged by', () => {
   });
 
   it('matches the drawn aircraft at the stands of the pairs review 1 found', () => {
+    const sim = airport();
+    const net = sim.airside.net;
     for (const [stand, id] of [['D8', 'BCS3'], ['D9', 'B77W'], ['E3', 'A21N'], ['E6', 'B789']] as const) {
       const type = AIRCRAFT[id];
       const path = standPath(net, stand, type.length)!;
@@ -193,6 +198,7 @@ describe('the outline the stands are judged by', () => {
   });
 
   it('keeps those pairs off their stands together: drawn, they are less than a metre apart', () => {
+    const sim = airport();
     const pairs = [['D8', 'BCS3', 'D9', 'B77W'], ['E3', 'A21N', 'E6', 'B789']] as const;
     for (const [s1, t1, s2, t2] of pairs) {
       const gap = shapeClearance(sim.airside.parkedShape(s1, AIRCRAFT[t1])!, sim.airside.parkedShape(s2, AIRCRAFT[t2])!);

@@ -19,6 +19,7 @@ import { ACT, POSE, ROLE } from '../src/sim/terminal/people.ts';
 import { FLOOR } from '../src/sim/terminal/plan.ts';
 import { ServiceQueue, type LineSpot } from '../src/sim/terminal/queue.ts';
 import { loadLayoutFromDisk, repoRoot } from './helpers/layout.ts';
+import { once } from './helpers/once.ts';
 
 const layout = loadLayoutFromDisk();
 
@@ -58,14 +59,15 @@ function overlap(a: [number, number][], b: [number, number][]): boolean {
 }
 
 describe('the terminals, furnished', () => {
-  const sim = new Sim(layout, { seed: 7, startTime: 6.5 * 3600, people: true });
-  const t = sim.terminals!;
-  const f = t.fittings;
-  const places = t.plan.places;
-  const byKind = (kind: FittingKind): Fitting[] => f.items.filter((i) => i.kind === kind);
+  const fitted = once(() => {
+    const t = new Sim(layout, { seed: 7, startTime: 6.5 * 3600, people: true }).terminals!;
+    return { t, f: t.fittings, places: t.plan.places };
+  });
+  const byKind = (kind: FittingKind): Fitting[] => fitted().f.items.filter((i) => i.kind === kind);
   const near = (list: readonly Fitting[], x: number, y: number, reach: number): boolean => list.some((i) => Math.hypot(i.x - x, i.y - y) <= reach);
 
   it('has a desk for every check-in server, a lane for every security server, a booth for every passport server and a desk at every gate', () => {
+    const { t, places } = fitted();
     const desks = byKind('desk');
     const xrays = byKind('xray');
     const scanners = [...byKind('scanner'), ...byKind('arch')];
@@ -90,6 +92,7 @@ describe('the terminals, furnished', () => {
   });
 
   it('gives nearly every gate seats of its own, and every gate seats within a short walk', () => {
+    const { t, f } = fitted();
     const gates = [...t.plan.holdroom.values()];
     const own = gates.filter((g) => (f.groupsOf.get(g.id) ?? []).some((i) => f.groups[i].kind === 'gate'));
     expect(own.length).toBeGreaterThanOrEqual(Math.ceil(gates.length * 0.95));
@@ -101,6 +104,7 @@ describe('the terminals, furnished', () => {
   });
 
   it('has carousels in every claim hall, with room round them to wait', () => {
+    const { t, f, places } = fitted();
     const claims = new Set([...t.plan.claim.values()].flatMap((c) => [c.domestic.id, c.international.id]));
     for (const id of claims) {
       const list = f.carouselsOf.get(id) ?? [];
@@ -110,6 +114,7 @@ describe('the terminals, furnished', () => {
   });
 
   it('fits out the mapped shops, cafés and lounges', () => {
+    const { f } = fitted();
     const inRoom = (kinds: FittingKind[], room: number): boolean => f.items.some((i) => kinds.includes(i.kind) && insidePolygon(layout.terminals.areas[room].poly, i.x, i.y));
     const walled = f.rooms.filter((r) => r.kind === 'shop' || r.kind === 'food' || r.kind === 'lounge');
     expect(walled.length).toBeGreaterThan(70);
@@ -123,6 +128,7 @@ describe('the terminals, furnished', () => {
   });
 
   it('stands everything on the floor, nothing inside anything else, and no seat inside furniture', () => {
+    const { t, f } = fitted();
     // On the floor: inside a terminal building, where the walking grid's cells may not reach right to the walls.
     const grids = t.plan.grids;
     const buildings = layout.terminals.buildings.map((b) => b.poly);
@@ -182,26 +188,30 @@ describe('the terminals, furnished', () => {
 });
 
 describe('crowds that are not machine-made', () => {
-  const sim = new Sim(layout, { seed: 7, startTime: 6.5 * 3600, people: true });
-  const t = sim.terminals!;
-  const p = t.people;
-  let longestBoarding = 0;
-  /** Passengers seen going faster than anyone walks, and of them those whose doors were not about to close. */
-  let hurrying = 0;
-  let early = 0;
-  const { doorsClose, hurryFrom } = CONFIG.turnaround;
-  for (let k = 0; k < 75; k += 1) {
-    sim.run(60);
-    for (const [id, q] of t.queues) if (t.plan.places[id].kind === 'holdroom') longestBoarding = Math.max(longestBoarding, q.line.length);
-    for (let id = 0; id < p.high; id += 1) {
-      if (!p.alive[id] || p.role[id] !== ROLE.passenger || p.speed[id] <= 1.46) continue;
-      hurrying += 1;
-      const visit = sim.airside.book.visits.get(p.visit[id]);
-      if (!visit || sim.time < visit.etd - (doorsClose + hurryFrom) * 60) early += 1;
+  const crowds = once(() => {
+    const sim = new Sim(layout, { seed: 7, startTime: 6.5 * 3600, people: true });
+    const t = sim.terminals!;
+    const p = t.people;
+    let longestBoarding = 0;
+    /** Passengers seen going faster than anyone walks, and of them those whose doors were not about to close. */
+    let hurrying = 0;
+    let early = 0;
+    const { doorsClose, hurryFrom } = CONFIG.turnaround;
+    for (let k = 0; k < 75; k += 1) {
+      sim.run(60);
+      for (const [id, q] of t.queues) if (t.plan.places[id].kind === 'holdroom') longestBoarding = Math.max(longestBoarding, q.line.length);
+      for (let id = 0; id < p.high; id += 1) {
+        if (!p.alive[id] || p.role[id] !== ROLE.passenger || p.speed[id] <= 1.46) continue;
+        hurrying += 1;
+        const visit = sim.airside.book.visits.get(p.visit[id]);
+        if (!visit || sim.time < visit.etd - (doorsClose + hurryFrom) * 60) early += 1;
+      }
     }
-  }
+    return { t, p, longestBoarding, hurrying, early };
+  });
 
   it('keeps no line to one spacing, one centreline or one way of facing', () => {
+    const { t, p } = crowds();
     let lines = 0;
     for (const queue of t.queues.values()) {
       const line = queue.line;
@@ -249,6 +259,7 @@ describe('crowds that are not machine-made', () => {
   });
 
   it('sits people waiting at their gates in real seats, one party to a seat, and boards them by groups', () => {
+    const { t, p, longestBoarding } = crowds();
     let waiting = 0;
     let sitting = 0;
     const held = new Map<number, number>();
@@ -276,6 +287,7 @@ describe('crowds that are not machine-made', () => {
   });
 
   it('has passengers run for gates whose doors are about to close, and nobody else', () => {
+    const { t, hurrying, early } = crowds();
     // Walking is 1.1 to 1.45 m/s; hurrying is a run, or with children a brisk walk.
     expect(hurrying).toBeGreaterThan(0);
     expect(early).toBe(0);
@@ -284,6 +296,7 @@ describe('crowds that are not machine-made', () => {
   });
 
   it('has travellers pull their bags until they check them in, and after they collect them', () => {
+    const { p } = crowds();
     let before = 0;
     let after = 0;
     let airside = 0;
