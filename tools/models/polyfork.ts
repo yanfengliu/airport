@@ -117,6 +117,21 @@ const MODELS: Wanted[] = [
   // Outside: the airliners every type but the A380 is drawn with, fitted to its size (src/shared/airframe.ts).
   { id: 'narrow-body-airliner-619183', role: 'prop' },
   { id: 'widebody-airliner-ae0a5a', role: 'prop' },
+  // Outside: road traffic (src/render/dynamic/vehicle-layer.ts) and AirTrain's cars.
+  { id: 'compact-hatchback-386417', role: 'prop' },
+  { id: 'town-car-56eeb6', role: 'prop' },
+  { id: 'hatchback-80s-e95554', role: 'prop' },
+  { id: 'station-wagon-70s-11d67b', role: 'prop' },
+  { id: 'family-crossover-suv-42027f', role: 'prop' },
+  { id: 'pickup-truck-a34bf2', role: 'prop' },
+  { id: 'family-minivan-924de0', role: 'prop' },
+  { id: 'boxy-delivery-van-a3ceae', role: 'prop' },
+  { id: 'yellow-cab-8df4a0', role: 'prop' },
+  { id: 'campus-shuttle-bus-27dcaa', role: 'prop' },
+  { id: 'city-bus-49fd97', role: 'prop' },
+  { id: 'semi-tractor-e9455c', role: 'prop' },
+  { id: 'box-trailer-2743e6', role: 'prop' },
+  { id: 'guideway-rail-shuttle-3d67d7', role: 'prop' },
 ];
 
 /** Frames sampled from each character's built-in clips, and the seat height the sitting pose is made for, metres. */

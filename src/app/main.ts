@@ -108,8 +108,8 @@ async function start(): Promise<void> {
   const aircraftLayer = new AircraftLayer(models);
   const gseLayer = new GseLayer(new Set(layout.airfield.stands.filter((s) => !s.contact).map((s) => s.id)), models);
   const bridgeLayer = new BridgeLayer(world.bridgeEnds);
-  const vehicleLayer = new VehicleLayer();
-  const trainLayer = new TrainLayer();
+  const vehicleLayer = new VehicleLayer(models);
+  const trainLayer = new TrainLayer(models);
   const peopleLayer = new PeopleLayer(60_000, models);
   const interiors = buildInteriors(layout, sim.terminals!, models);
   stage.scene.add(aircraftLayer.group, gseLayer.group, bridgeLayer.group, vehicleLayer.group, trainLayer.group, peopleLayer.group, interiors.departures, interiors.arrivals);
@@ -315,8 +315,8 @@ async function start(): Promise<void> {
     aircraftLayer.update(sim.airside.aircraft, owed / CONFIG.dt, lamps);
     gseLayer.update(sim.airside.aircraft, sim.time + owed, owed / CONFIG.dt, camera.distance);
     bridgeLayer.update(sim.airside.aircraft, sim.time + owed);
-    if (sim.roads) vehicleLayer.update(sim.roads.traffic.vehicles, owed / CONFIG.dt, camera.distance, lamps);
-    if (sim.transit) trainLayer.update(sim.transit, owed / CONFIG.dt);
+    if (sim.roads) vehicleLayer.update(sim.roads.traffic.vehicles, owed / CONFIG.dt, camera.distance, lamps, camera.x, camera.y);
+    if (sim.transit) trainLayer.update(sim.transit, owed / CONFIG.dt, sim.time + owed);
     if (sim.terminals && inside !== 'off') {
       peopleLayer.fittings = sim.terminals.fittings;
       peopleLayer.update(sim.terminals.people, owed / CONFIG.dt, camera.distance, camera.x, camera.y, realSeconds);

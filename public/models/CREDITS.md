@@ -66,6 +66,20 @@ Most of the 3D models in this folder are from [Polyfork](https://polyfork.dev), 
 - Lavatory Service Truck by Polyfork (https://polyfork.dev/asset/lavatory-service-truck-023f33), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
 - Narrow-Body Airliner by Polyfork (https://polyfork.dev/asset/narrow-body-airliner-619183), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
 - Widebody Airliner by Polyfork (https://polyfork.dev/asset/widebody-airliner-ae0a5a), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
+- Compact Hatchback by Polyfork (https://polyfork.dev/asset/compact-hatchback-386417), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
+- Town Car by Polyfork (https://polyfork.dev/asset/town-car-56eeb6), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
+- Hatchback-80s by Polyfork (https://polyfork.dev/asset/hatchback-80s-e95554), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
+- Station-wagon-70s by Polyfork (https://polyfork.dev/asset/station-wagon-70s-11d67b), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
+- Family Crossover SUV by Polyfork (https://polyfork.dev/asset/family-crossover-suv-42027f), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
+- Pickup Truck by Polyfork (https://polyfork.dev/asset/pickup-truck-a34bf2), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
+- Family Minivan by Polyfork (https://polyfork.dev/asset/family-minivan-924de0), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
+- Boxy Delivery Van by Polyfork (https://polyfork.dev/asset/boxy-delivery-van-a3ceae), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
+- Yellow Cab by Polyfork (https://polyfork.dev/asset/yellow-cab-8df4a0), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
+- Campus Shuttle Bus by Polyfork (https://polyfork.dev/asset/campus-shuttle-bus-27dcaa), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
+- City Bus by Polyfork (https://polyfork.dev/asset/city-bus-49fd97), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
+- Semi Tractor by Polyfork (https://polyfork.dev/asset/semi-tractor-e9455c), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
+- Box Trailer by Polyfork (https://polyfork.dev/asset/box-trailer-2743e6), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
+- Guideway Rail Shuttle by Polyfork (https://polyfork.dev/asset/guideway-rail-shuttle-3d67d7), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
 
 ## Our own models
 
