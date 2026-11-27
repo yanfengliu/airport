@@ -9,6 +9,11 @@ import { ModelKit, type V3 } from './kit.ts';
 
 /** Gap between two cars coupled, metres: half at each end. */
 const GAP = 0.7;
+/**
+ * How far the doors stand out from the shell at most, open, metres: the bands a hair proud, the leaves
+ * 3 cm beyond them, their windows 1 cm more, and 6 cm more as they ease out to slide.
+ */
+const PROUD = 0.12;
 /** Frames of a door opening, closed to open. */
 const DOOR_FRAMES = 6;
 
@@ -61,7 +66,9 @@ function car(kit: ModelKit, d: CarDesign, cab: boolean): void {
     light: kit.colour('light', d.colours.light),
   };
   const half = (d.length - GAP) / 2;
-  const outline = section(d);
+  // The shell stands in from the car's width by as much as the doors stand proud of it, open: the
+  // car as drawn, doors and all, is no wider than the simulation keeps trains apart by.
+  const outline = section(d, PROUD);
   // The shell: a gangway end at the back; at the front a gangway end, or a cab sloping in to its windscreen.
   const back = -half;
   const front = cab ? half - 1.6 : half;
@@ -74,7 +81,7 @@ function car(kit: ModelKit, d: CarDesign, cab: boolean): void {
   }
   kit.loft(0, rings, (band, side) => (cab && band === 2 && side >= 3 && side <= 8 ? s.glass : shellSlot(band, side)), [s.body, cab ? s.body : s.body]);
   // The stripe and the window bands, standing a hair proud of each side.
-  const w = d.width / 2 + 0.01;
+  const w = d.width / 2 - PROUD + 0.01;
   const bandFront = cab ? half - 1.7 : half - 0.4;
   for (const side of [1, -1]) {
     const x = side * w;

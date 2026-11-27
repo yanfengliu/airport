@@ -185,9 +185,20 @@ const MODELS: Wanted[] = [
   { id: 'semi-tractor-e9455c', role: 'prop' },
   { id: 'box-trailer-2743e6', role: 'prop' },
   { id: 'guideway-rail-shuttle-3d67d7', role: 'prop' },
-  // Outside: the airfield's furniture at the runways (src/render/static/airfield-props.ts).
+  // Outside: the airfield's furniture at the runways (src/render/static/airfield-props.ts), and at
+  // the stands and round the airfield.
   { id: 'windsock-d5df79', role: 'prop' },
   { id: 'papi-unit-adc7c4', role: 'prop' },
+  { id: 'ils-localizer-antenna-array-f094b7', role: 'prop' },
+  { id: 'ils-glide-path-antenna-15d814', role: 'prop' },
+  { id: 'rotating-airport-beacon-e1ea5a', role: 'prop' },
+  { id: 'apron-floodlight-mast-e0d04a', role: 'prop' },
+  { id: 'stand-docking-guidance-display-2a0b05', role: 'prop' },
+  // Outside: buildings from the kit, drawn where the map has a building of their kind.
+  { id: 'maintenance-hangar-6fab99', role: 'prop' },
+  { id: 'cargo-shed-bcb2a8', role: 'prop' },
+  { id: 'fuel-farm-tank-ed67f0', role: 'prop' },
+  { id: 'multi-storey-car-park-021465', role: 'prop' },
   // Outside: Polyfork's jet bridge, cut into the parts that are placed or moved apart (see
   // JET_BRIDGE below).
   ...JET_BRIDGE.map(([as, take, cut]): Wanted => ({ id: 'jet-bridge-4f39c0', as, role: 'prop', take, cut: `${cut}, cut from the whole bridge` })),

@@ -34,15 +34,23 @@ const STYLES: Record<Kind, CarStyle> = {
 };
 
 /** Each line's models: a car, and a car with a driving cab, or one model for every car. */
-const MODELS: Record<Kind, { car: string; cab?: string }> = {
+export const MODELS: Record<Kind, { car: string; cab?: string }> = {
   airtrain: { car: 'guideway-rail-shuttle-3d67d7' },
   bart: { car: 'rapid-transit-car', cab: 'rapid-transit-cab-car' },
   caltrain: { car: 'bilevel-commuter-car', cab: 'bilevel-commuter-cab-car' },
 };
 /** Room between two cars coupled, metres, which a car's model leaves out of its length. */
-const GAP = 0.7;
+export const GAP = 0.7;
 /** Seconds the doors take to open, and to close. */
-const DOORS_MOVE = 1.6;
+export const DOORS_MOVE = 1.6;
+
+/**
+ * How far open a train's doors are, 0 shut to 1 open, at `now`: opening over DOORS_MOVE seconds from
+ * `since`, when they were first seen open, and closing over the last DOORS_MOVE seconds before `until`.
+ */
+export function doorShare(since: number, until: number, now: number): number {
+  return Math.max(0, Math.min(1, (now - since) / DOORS_MOVE, (until - now) / DOORS_MOVE));
+}
 
 /** A car as stacked slabs: skirt, coloured band, windows, roof. The gap between cars is in its length. */
 function carGeometry(style: CarStyle): THREE.BufferGeometry {
@@ -131,7 +139,7 @@ export class TrainLayer {
     }
     const since = this.opened.get(train.id) ?? now;
     if (!this.opened.has(train.id)) this.opened.set(train.id, now);
-    return Math.max(0, Math.min(1, (now - since) / DOORS_MOVE, (train.doorsUntil - now) / DOORS_MOVE));
+    return doorShare(since, train.doorsUntil, now);
   }
 
   /**

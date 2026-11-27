@@ -13,12 +13,12 @@ import { airframe } from '../../shared/airframe.ts';
 import type { Aircraft } from '../../sim/airside/aircraft.ts';
 import { MeshBuilder, box } from '../builder.ts';
 import { flatMaterial, type Model, type Models } from '../models/library.ts';
-import { BRIDGE_FLOOR, BRIDGE_PARTS, BRIDGE_ROOF, BRIDGE_STEEL, BRIDGE_TUNNEL, JET_BRIDGE, type BridgeEnd } from '../static/bridges.ts';
+import { BRIDGE_FLOOR, BRIDGE_PARTS, BRIDGE_RETRACT, BRIDGE_ROOF, BRIDGE_SHORTEST, BRIDGE_STEEL, BRIDGE_TUNNEL, JET_BRIDGE, type BridgeEnd } from '../static/bridges.ts';
 
-/** Metres the end of a bridge pulls back from the door, and the shortest it gets (with the models, the rotunda and the cab's drum just clear). */
-const RETRACT = 6;
+/** Metres the end of a bridge pulls back, and the shortest it gets without the models (with them, BRIDGE_SHORTEST). */
+const RETRACT = BRIDGE_RETRACT;
 const SHORTEST = 1.5;
-const SHORTEST_DRAWN = 4.6;
+const SHORTEST_DRAWN = BRIDGE_SHORTEST;
 /** Simulated seconds to reach out to the door or to pull back. */
 const TRAVEL = 40;
 /** How far off the fuselage's side the bridge stops, metres. */

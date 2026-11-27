@@ -4,11 +4,13 @@
 // the door of each aircraft that parks (src/render/dynamic/bridge-layer.ts), both by where
 // JET_BRIDGE says each part is in the model. Bound: those measures, held to the converted parts;
 // and at every stand with a bridge, for every type the stand takes, the cab's face at the front
-// door with its floor at the sill, and nothing of the bridge in the wings, engines or tail.
+// door with its floor at the sill, and nothing of the bridge (tunnel, lift or cab) in the wings,
+// engines or tail, or in a floodlight mast, there or pulled back.
 
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import { BridgeLayer, doorFor } from '../src/render/dynamic/bridge-layer.ts';
+import { airfieldFurniture } from '../src/render/static/airfield-props.ts';
 import { BRIDGE_PARTS, JET_BRIDGE, buildBridges } from '../src/render/static/bridges.ts';
 import { airframe } from '../src/shared/airframe.ts';
 import { outline, polygonGap } from '../src/shared/footprint.ts';
@@ -18,6 +20,7 @@ import { AIRCRAFT } from '../src/sim/fleet.ts';
 import { Sim } from '../src/sim/sim.ts';
 import { loadLayoutFromDisk } from './helpers/layout.ts';
 import { loadModelsFromDisk } from './helpers/models.ts';
+import { once } from './helpers/once.ts';
 
 const models = loadModelsFromDisk(Object.values(BRIDGE_PARTS));
 
@@ -65,22 +68,56 @@ describe('the jet bridge model', () => {
 
 describe('the jet bridges', () => {
   const layout = loadLayoutFromDisk();
-  const sim = new Sim(layout, { seed: 7, startTime: 4 * 3600 });
-  const bridges = buildBridges(layout.airfield, models);
+  const bridges = once(() => buildBridges(layout.airfield, models));
 
   it('are all drawn from the model, each with a moving end', () => {
-    expect(bridges.ends.length).toBeGreaterThan(90);
-    const names = bridges.group.children.map((m) => m.name).sort();
+    const { ends, group } = bridges();
+    expect(ends.length).toBeGreaterThan(90);
+    const names = group.children.map((m) => m.name).sort();
     expect(names).toEqual(['jet-bridge-links', 'jet-bridge-posts', 'jet-bridge-rotundas']);
-    expect((bridges.group.children.find((m) => m.name === 'jet-bridge-rotundas') as THREE.InstancedMesh).count).toBe(bridges.ends.length);
+    expect((group.children.find((m) => m.name === 'jet-bridge-rotundas') as THREE.InstancedMesh).count).toBe(ends.length);
   });
 
-  it('reach the front door of every type each stand takes, square on and level with its sill, clear of its wings, engines and tail', () => {
+  it('reach the front door of every type each stand takes, square on and level with its sill, clear of its wings, engines and tail and of the floodlight masts', () => {
     const faults: string[] = [];
     let docked = 0;
     const matrix = new THREE.Matrix4();
     const at = new THREE.Vector3();
-    for (const end of bridges.ends) {
+    const sim = new Sim(layout, { seed: 7, startTime: 4 * 3600 });
+    // Each mast's base and pole, as a square three metres across.
+    const masts = airfieldFurniture(layout).masts.map((m) => ({ stand: m.stand, x: m.x, y: m.y, square: [m.x - 1.5, m.y - 1.5, m.x + 1.5, m.y - 1.5, m.x + 1.5, m.y + 1.5, m.x - 1.5, m.y + 1.5] }));
+    /** The tunnel, the lift under it and the cab of a layer's one bridge, in plan. */
+    const parts = (layer: BridgeLayer): { tunnel: number[]; lift: number[]; cab: number[] } => {
+      const plan = (name: string, x0: number, x1: number, half: number): number[] => {
+        (layer.group.children.find((m) => m.name === name) as THREE.InstancedMesh).getMatrixAt(0, matrix);
+        return [
+          [x0, -half],
+          [x1, -half],
+          [x1, half],
+          [x0, half],
+        ].flatMap(([x, z]) => {
+          at.set(x, 0, z).applyMatrix4(matrix);
+          return [at.x, -at.z];
+        });
+      };
+      return {
+        tunnel: plan('jet-bridge-tunnels', JET_BRIDGE.rotunda + 2, JET_BRIDGE.drum - 2, 1.45),
+        // The lift's columns stand out either side of the tunnel.
+        lift: plan('jet-bridge-lifts', JET_BRIDGE.lift - 0.25, JET_BRIDGE.lift + 0.25, 2),
+        cab: plan('jet-bridge-cabs', JET_BRIDGE.drum - 2, JET_BRIDGE.door, 2),
+      };
+    };
+    const clearOfMasts = (what: string, end: { x0: number; y0: number }, bridge: Record<string, number[]>): void => {
+      for (const m of masts) {
+        if (Math.hypot(m.x - end.x0, m.y - end.y0) > 90) continue;
+        for (const [name, part] of Object.entries(bridge)) if (polygonGap(part, m.square) === 0) faults.push(`${what}: the ${name} through ${m.stand}'s mast`);
+      }
+    };
+    for (const end of bridges().ends) {
+      // Pulled back, with no aircraft at the stand.
+      const idle = new BridgeLayer([end], models);
+      idle.update([], 0);
+      clearOfMasts(`${end.stand} pulled back`, end, parts(idle));
       const usable = sim.usableStands.get(end.stand);
       if (usable === undefined) continue;
       for (const type of Object.values(AIRCRAFT)) {
@@ -102,24 +139,11 @@ describe('the jet bridges', () => {
         const off = Math.hypot(at.x - door.x, -at.z - door.y);
         if (off > 0.05 || Math.abs(at.y - sill) > 0.05) faults.push(`${type.id} at ${end.stand}: the cab's face ${off.toFixed(2)} m from the door, its floor at ${at.y.toFixed(2)} m for a sill at ${sill.toFixed(2)} m`);
         // In plan: the tunnel from the rotunda's wall to the drum's, and the cab, against the outline.
-        const plan = (name: string, x0: number, x1: number, half: number): number[] => {
-          const m = placed(name);
-          return [
-            [x0, -half],
-            [x1, -half],
-            [x1, half],
-            [x0, half],
-          ].flatMap(([x, z]) => {
-            at.set(x, 0, z).applyMatrix4(m);
-            return [at.x, -at.z];
-          });
-        };
-        const tunnel = plan('jet-bridge-tunnels', JET_BRIDGE.rotunda + 2, JET_BRIDGE.drum - 2, 1.45);
-        const cab = plan('jet-bridge-cabs', JET_BRIDGE.drum - 2, JET_BRIDGE.door, 2);
+        const bridge = parts(layer);
+        clearOfMasts(`${type.id} at ${end.stand}`, end, bridge);
         const [, ...rest] = outline(type, plane.x, plane.y, plane.heading);
         for (const [k, part] of rest.entries()) {
-          if (polygonGap(tunnel, part) === 0) faults.push(`${type.id} at ${end.stand}: the tunnel in part ${k + 1} of the aircraft`);
-          if (polygonGap(cab, part) === 0) faults.push(`${type.id} at ${end.stand}: the cab in part ${k + 1} of the aircraft`);
+          for (const [name, piece] of Object.entries(bridge)) if (polygonGap(piece, part) === 0) faults.push(`${type.id} at ${end.stand}: the ${name} in part ${k + 1} of the aircraft`);
         }
         docked += 1;
       }

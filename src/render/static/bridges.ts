@@ -40,6 +40,10 @@ export const JET_BRIDGE = {
   legs: [1.3, 2.28],
 } as const;
 
+/** Metres the end of a bridge pulls back from where it is mapped to, and the shortest it gets with the models (the rotunda and the cab's drum just clear). */
+export const BRIDGE_RETRACT = 6;
+export const BRIDGE_SHORTEST = 4.6;
+
 /** The parts of the bridge, by model id. */
 export const BRIDGE_PARTS = {
   link: 'jet-bridge-link',
@@ -69,13 +73,47 @@ export interface Bridges {
   ends: BridgeEnd[];
 }
 
-interface Length {
+/** One straight length of a mapped bridge, from its end nearer the terminal to the other. */
+export interface Length {
   x0: number;
   y0: number;
   x1: number;
   y1: number;
   length: number;
   heading: number;
+}
+
+/**
+ * Each stand's mapped bridge, from the terminal door out to the aircraft, as straight lengths of at
+ * least half a metre: all but the last are the fixed walkway; the last moves, turning where it
+ * starts, at the rotunda. The map draws some bridges the other way round; without a door, the end
+ * nearer where the nose stops is the aircraft's.
+ */
+export function bridgeLines(airfield: Airfield): { stand: string; fixed: Length[]; end: Length }[] {
+  const out: { stand: string; fixed: Length[]; end: Length }[] = [];
+  for (const stand of airfield.stands) {
+    const mapped = stand.bridge;
+    if (!mapped || mapped.length < 4) continue;
+    const n = mapped.length;
+    const [tx, ty] = stand.door ?? [Number.NaN, Number.NaN];
+    const fromDoor = (k: number): number => Math.hypot(mapped[k] - tx, mapped[k + 1] - ty);
+    const fromStop = (k: number): number => Math.hypot(mapped[k] - stand.x, mapped[k + 1] - stand.y);
+    const reversed = stand.door ? fromDoor(n - 2) < fromDoor(0) : fromStop(0) < fromStop(n - 2);
+    const line: number[] = [];
+    for (let i = 0; i < n; i += 2) {
+      const k = reversed ? n - 2 - i : i;
+      line.push(mapped[k], mapped[k + 1]);
+    }
+    const lengths: Length[] = [];
+    for (let i = 2; i < line.length; i += 2) {
+      const [x0, y0, x1, y1] = [line[i - 2], line[i - 1], line[i], line[i + 1]];
+      const length = Math.hypot(x1 - x0, y1 - y0);
+      if (length >= 0.5) lengths.push({ x0, y0, x1, y1, length, heading: Math.atan2(y1 - y0, x1 - x0) });
+    }
+    const end = lengths.pop();
+    if (end) out.push({ stand: stand.id, fixed: lengths, end });
+  }
+  return out;
 }
 
 /** The angle between two headings, 0 to pi. */
@@ -98,30 +136,8 @@ export function buildBridges(airfield: Airfield, models: Models): Bridges {
   const rotundas: { x: number; y: number; h: number; facing: number }[] = [];
   const [linkBack, linkFront] = JET_BRIDGE.link;
   const tileLength = linkFront - linkBack;
-  for (const stand of airfield.stands) {
-    const mapped = stand.bridge;
-    if (!mapped || mapped.length < 4) continue;
-    // From the terminal door out to the aircraft: the map draws some bridges the other way round.
-    // Without a door, the end nearer where the nose stops is the aircraft's.
-    const n = mapped.length;
-    const [tx, ty] = stand.door ?? [Number.NaN, Number.NaN];
-    const fromDoor = (k: number): number => Math.hypot(mapped[k] - tx, mapped[k + 1] - ty);
-    const fromStop = (k: number): number => Math.hypot(mapped[k] - stand.x, mapped[k + 1] - stand.y);
-    const reversed = stand.door ? fromDoor(n - 2) < fromDoor(0) : fromStop(0) < fromStop(n - 2);
-    const line: number[] = [];
-    for (let i = 0; i < n; i += 2) {
-      const k = reversed ? n - 2 - i : i;
-      line.push(mapped[k], mapped[k + 1]);
-    }
-    const lengths: Length[] = [];
-    for (let i = 2; i < line.length; i += 2) {
-      const [x0, y0, x1, y1] = [line[i - 2], line[i - 1], line[i], line[i + 1]];
-      const length = Math.hypot(x1 - x0, y1 - y0);
-      if (length >= 0.5) lengths.push({ x0, y0, x1, y1, length, heading: Math.atan2(y1 - y0, x1 - x0) });
-    }
-    const end = lengths.pop();
-    if (!end) continue;
-    ends.push({ stand: stand.id, x0: end.x0, y0: end.y0, x1: end.x1, y1: end.y1 });
+  for (const { stand, fixed: lengths, end } of bridgeLines(airfield)) {
+    ends.push({ stand, x0: end.x0, y0: end.y0, x1: end.x1, y1: end.y1 });
     if (!drawn) {
       for (const l of lengths) {
         box(boxes, (l.x0 + l.x1) / 2, (l.y0 + l.y1) / 2, BRIDGE_FLOOR, BRIDGE_ROOF, l.length / 2 + 0.8, 1.55, l.heading, BRIDGE_TUNNEL, BRIDGE_TUNNEL);

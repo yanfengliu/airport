@@ -134,7 +134,11 @@ export class Lights {
   private readonly capacity: number;
   private used = 0;
 
-  constructor(airfield: Airfield, roads: Roads, land: Land, capacity = 24_000) {
+  /**
+   * `floodlights`: where the gates' floodlights are, on their masts or the terminal's roof, when
+   * the airfield's furniture is drawn; without it each hangs ahead of its gate's stop point.
+   */
+  constructor(airfield: Airfield, roads: Roads, land: Land, capacity = 24_000, floodlights: readonly { x: number; y: number; h: number }[] | null = null) {
     this.group.name = 'lights';
     this.capacity = capacity;
     const list = new LightList();
@@ -185,10 +189,13 @@ export class Lights {
     }
     for (const n of airfield.nodes) if (n.hold) for (const k of [-1, 0, 1]) list.add(n.x + k * 3, n.y, 0.3, RED, 2);
 
-    // ---- stands: a floodlight mast behind each stop point ---------------------------------
-    for (const s of airfield.stands) {
-      if (!s.contact) continue;
-      list.add(s.x + Math.cos(s.heading) * 14, s.y + Math.sin(s.heading) * 14, 18, WHITE, 9);
+    // ---- stands: a floodlight on each gate's mast, or ahead of its stop point --------------
+    if (floodlights) for (const f of floodlights) list.add(f.x, f.y, f.h, WHITE, 9);
+    else {
+      for (const s of airfield.stands) {
+        if (!s.contact) continue;
+        list.add(s.x + Math.cos(s.heading) * 14, s.y + Math.sin(s.heading) * 14, 18, WHITE, 9);
+      }
     }
 
     // ---- approach-light piers in the bay --------------------------------------------------

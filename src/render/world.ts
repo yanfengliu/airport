@@ -4,11 +4,12 @@ import * as THREE from 'three';
 import type { Building, Layout } from '../shared/layout.ts';
 import { Lights } from './lights.ts';
 import type { Models } from './models/library.ts';
-import { buildAirfieldProps } from './static/airfield-props.ts';
+import { airfieldFurniture, buildAirfieldProps } from './static/airfield-props.ts';
 import { buildAirfieldGround } from './static/airfield.ts';
 import { buildBridges, type BridgeEnd } from './static/bridges.ts';
 import { buildBuildings, type NightGlow } from './static/buildings.ts';
 import { buildGroundGlow } from './static/glow.ts';
+import { buildKitBuildings, kitBuildings } from './static/kit-buildings.ts';
 import { buildGround } from './static/ground.ts';
 import { buildTower } from './static/landmarks.ts';
 import { buildRail } from './static/rail.ts';
@@ -39,13 +40,13 @@ export interface StaticWorld {
 }
 
 /**
- * Which mapped buildings are drawn: those that stand on their own, and the parts of a terminal
+ * Which mapped buildings are drawn, but for those `replaced` by the kit's: those that stand on their own, and the parts of a terminal
  * mapped as buildings of their own, from the terminal's roof up. Those parts come off with its roof
  * in the cut-away view; below the roof they are inside its walls, where their own walls would lie
  * on the glass and flicker against it. The tower's mapped shaft and cab, which stand on a terminal's
  * roof, are neither: the tower is our model of it (src/render/static/landmarks.ts).
  */
-export function mappedBuildings(layout: Layout): { own: Building[]; aboveRoofs: Building[] } {
+export function mappedBuildings(layout: Layout, replaced: ReadonlySet<Building> = new Set()): { own: Building[]; aboveRoofs: Building[] } {
   const [towerX, towerY] = layout.airfield.tower;
   const mappedTower = (b: Building): boolean => b.height > 40 && Math.hypot(b.poly.outer[0] - towerX, b.poly.outer[1] - towerY) < 40;
   const terminalOf = (outer: number[]): { height: number } | null => {
@@ -60,7 +61,7 @@ export function mappedBuildings(layout: Layout): { own: Building[]; aboveRoofs: 
   const own: Building[] = [];
   const aboveRoofs: Building[] = [];
   for (const b of layout.buildings.buildings) {
-    if (mappedTower(b)) continue;
+    if (mappedTower(b) || replaced.has(b)) continue;
     const terminal = terminalOf(b.poly.outer);
     if (!terminal) own.push(b);
     else if (b.height > terminal.height + 0.3) aboveRoofs.push({ ...b, minHeight: Math.max(b.minHeight ?? 0, terminal.height) });
@@ -80,10 +81,15 @@ export function buildStaticWorld(layout: Layout, models: Models = new Map()): St
   group.add(buildAirfieldGround(layout.airfield));
   group.add(buildRoads(layout.roads));
   group.add(buildRail(layout.rail));
-  group.add(buildAirfieldProps(layout.airfield, layout.roads, models));
+  // The airfield's furniture, drawn with the models: the gates' floodlights are on its masts.
+  const furniture = models.size ? airfieldFurniture(layout) : null;
+  if (furniture) group.add(buildAirfieldProps(furniture, models));
 
   const [towerX, towerY] = layout.airfield.tower;
-  const drawn = mappedBuildings(layout);
+  // The kit's buildings where the map has one of their kind of near their shape, in place of it.
+  const kit = models.size ? kitBuildings(layout, new Map([...models].map(([id, m]) => [id, m.info.box]))) : null;
+  if (kit) group.add(buildKitBuildings(kit.placements, models));
+  const drawn = mappedBuildings(layout, kit?.replaced);
   const buildings = buildBuildings({ ...layout.buildings, buildings: drawn.own }, facades);
   group.add(buildings.group);
   glows.push(...buildings.glows);
@@ -101,7 +107,7 @@ export function buildStaticWorld(layout: Layout, models: Models = new Map()): St
   group.add(tower.group);
   glows.push({ material: tower.glass, strength: 0.5 });
 
-  const lights = new Lights(layout.airfield, layout.roads, layout.land);
+  const lights = new Lights(layout.airfield, layout.roads, layout.land, undefined, furniture?.floodlights ?? null);
   group.add(lights.group);
   const glow = buildGroundGlow(layout.airfield, layout.roads);
   group.add(glow.mesh);
