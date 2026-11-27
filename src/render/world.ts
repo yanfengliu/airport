@@ -10,7 +10,7 @@ import { buildGround } from './static/ground.ts';
 import { buildTower } from './static/landmarks.ts';
 import { buildRail } from './static/rail.ts';
 import { buildRoads } from './static/roads.ts';
-import { buildTerminalShells } from './static/terminals.ts';
+import { buildTerminalShells, type BridgeEnd } from './static/terminals.ts';
 import { facadeTextures } from './textures.ts';
 
 export interface FrameView {
@@ -26,6 +26,8 @@ export interface StaticWorld {
   group: THREE.Group;
   /** Terminal walls and roofs, hidden in cut-away view. */
   terminalShell: THREE.Group;
+  /** The ends of the jet bridges that reach out to the aircraft, drawn as they move. */
+  bridgeEnds: BridgeEnd[];
   /** Fixed lights, and the moving ones other layers add each frame between `begin` and `end`. */
   lights: Lights;
   /** Advance animated parts: `seconds` of running time, `day` from 0 (night) to 1. */
@@ -101,6 +103,7 @@ export function buildStaticWorld(layout: Layout): StaticWorld {
   return {
     group,
     terminalShell: terminals.shell,
+    bridgeEnds: terminals.bridgeEnds,
     lights,
     update(seconds: number, day: number, view: FrameView): void {
       ground.animate(seconds);

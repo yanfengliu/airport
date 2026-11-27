@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { MapCamera } from '../render/camera.ts';
 import { AircraftLayer } from '../render/dynamic/aircraft-layer.ts';
+import { BridgeLayer } from '../render/dynamic/bridge-layer.ts';
 import { GseLayer } from '../render/dynamic/gse-layer.ts';
 import { PeopleLayer } from '../render/dynamic/people-layer.ts';
 import { TrainLayer } from '../render/dynamic/train-layer.ts';
@@ -96,11 +97,12 @@ async function start(): Promise<void> {
   let owed = 0;
   const aircraftLayer = new AircraftLayer();
   const gseLayer = new GseLayer(new Set(layout.airfield.stands.filter((s) => !s.contact).map((s) => s.id)));
+  const bridgeLayer = new BridgeLayer(world.bridgeEnds);
   const vehicleLayer = new VehicleLayer();
   const trainLayer = new TrainLayer();
   const peopleLayer = new PeopleLayer(60_000);
   const interiors = buildInteriors(layout, sim.terminals!);
-  stage.scene.add(aircraftLayer.group, gseLayer.group, vehicleLayer.group, trainLayer.group, peopleLayer.group, interiors.departures, interiors.arrivals);
+  stage.scene.add(aircraftLayer.group, gseLayer.group, bridgeLayer.group, vehicleLayer.group, trainLayer.group, peopleLayer.group, interiors.departures, interiors.arrivals);
   let inside: Inside = 'off';
   /** Lift the terminal roofs and show one level inside, or put them back. */
   const setInside = (next: Inside): void => {
@@ -288,6 +290,7 @@ async function start(): Promise<void> {
     const lamps = stage.day < 0.85 ? world.lights : null;
     aircraftLayer.update(sim.airside.aircraft, owed / CONFIG.dt, lamps);
     gseLayer.update(sim.airside.aircraft, sim.time + owed, owed / CONFIG.dt, camera.distance);
+    bridgeLayer.update(sim.airside.aircraft, sim.time + owed);
     if (sim.roads) vehicleLayer.update(sim.roads.traffic.vehicles, owed / CONFIG.dt, camera.distance, lamps);
     if (sim.transit) trainLayer.update(sim.transit, owed / CONFIG.dt);
     if (sim.terminals && inside !== 'off') {
