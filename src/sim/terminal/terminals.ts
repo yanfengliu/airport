@@ -28,6 +28,7 @@ const LOOKAHEAD = 5 * 3600;
 const HOUSEKEEPING = 5;
 /** At a mid-day start, travellers who came more than this many seconds before are through security. */
 const WARM_THROUGH = 2400;
+const { shiftsFrom: SHIFTS_FROM, shiftHours: SHIFT_HOURS, shopsOpen: SHOPS_OPEN } = CONFIG.staff;
 /** Metres from its gate within which a party can be boarding that gate's flight. */
 const GATE_REACH = 60;
 
@@ -914,7 +915,9 @@ export class Terminals {
         return;
       case EVENT.shop: {
         const shop = this.plan.places[this.claimAt[person]];
-        if (shop) {
+        // Closed at night: nobody there to take the money.
+        const hour = (((this.now / 3600) % 24) + 24) % 24;
+        if (shop && hour > SHOPS_OPEN[0] && hour < SHOPS_OPEN[1]) {
           const spend = shop.kind === 'food' ? this.rng.range(8, 28) : shop.kind === 'shop' ? (this.rng.chance(0.35) ? this.rng.range(12, 90) : 0) : 0;
           const key = shop.area || this.nearestArea(shop);
           this.stats.takings[key] = (this.stats.takings[key] ?? 0) + spend * people.size[person];
@@ -1182,14 +1185,18 @@ export class Terminals {
       });
     }
     const hour = (now / 3600) % 24;
-    if (hour > 5 && hour < 23.5) {
+    if (hour > SHOPS_OPEN[0] && hour < SHOPS_OPEN[1]) {
       for (const shop of this.shops) {
         if (shop.kind === 'lounge') continue;
         wanted.set(`shop:${shop.id}`, { x: shop.x, y: shop.y, floor: shop.floor, role: ROLE.shop });
       }
     }
+    // A new shift: everyone at a post goes home, and others take their places.
+    const shift = Math.floor(((((now / 3600) % 24) - SHIFTS_FROM + 24) % 24) / SHIFT_HOURS);
+    const handover = this.shift >= 0 && shift !== this.shift;
+    this.shift = shift;
     for (const [key, post] of this.posts) {
-      if (wanted.has(key) && this.people.alive[post.person]) continue;
+      if (!handover && wanted.has(key) && this.people.alive[post.person]) continue;
       if (this.people.alive[post.person]) this.leaveBuilding(post.person, this.nearestArea(post), 'garage');
       this.posts.delete(key);
     }
@@ -1210,11 +1217,23 @@ export class Terminals {
   }
 
   private cleaners: number[] = [];
+  /** The shift on now, counted from SHIFTS_FROM; -1 before the first look. */
+  private shift = -1;
+
+  /** Who is at the posts now, by person id: the staff on shift. */
+  onPosts(): number[] {
+    return [...this.posts.values()].map((p) => p.person).filter((id) => this.people.alive[id]);
+  }
 
   private manageCleaners(now: number): void {
     const hour = (now / 3600) % 24;
     const want = hour > 5 && hour < 23 ? 36 : 14;
     this.cleaners = this.cleaners.filter((id) => this.people.alive[id] && this.people.role[id] === ROLE.cleaner);
+    // Fewer at night: those not needed go home.
+    while (this.cleaners.length > want) {
+      const id = this.cleaners.pop()!;
+      this.leaveBuilding(id, this.nearestArea({ x: this.people.x[id], y: this.people.y[id] }), 'garage');
+    }
     while (this.cleaners.length < want) {
       const start = this.rng.pick(this.shops);
       if (!start) break;

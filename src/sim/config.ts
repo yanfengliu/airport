@@ -124,6 +124,14 @@ export const CONFIG = {
     /** Seconds from parking until the jet bridge is on and doors open. */
     bridgeOn: [70, 130] as [number, number],
   },
+
+  staff: {
+    /** Shifts start at this hour of the day and last this many hours: at each start the posts change hands. */
+    shiftsFrom: 6,
+    shiftHours: 8,
+    /** Hours of the day the shops and places to eat are open, staffed and taking money. */
+    shopsOpen: [5, 23.5] as [number, number],
+  },
 } as const;
 
 export type BodyKey = keyof typeof CONFIG.runway.takeoffAccel;

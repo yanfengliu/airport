@@ -838,7 +838,7 @@ IDs are by lane and lens in the order reported: Codex airside F1–F9, people F1
 | F63 | Security lanes sized for two-thirds of the busiest hour | Fixed | d95ad5c: days counted by visit |
 | F64 | A gate change reached only parties standing still | Partly fixed by F10: boarding checks the gate and sends a party on. A party whose new gate cannot be walked to from where it is walks straight there. | Noted |
 | F65 | Cancellations and bags; boarding counted with no aircraft | Bags = F12. Boarding counted unseen for a visit that never had an aircraft at a start: noted, rare. | |
-| F66 | Staff ignore the time of day in places, and do not change with shifts | Noted as a deviation from the plan's scope (see the plan's outcome): posts are staffed by the time of day; nobody hands over at a shift change. | |
+| F66 | Staff ignore the time of day in places, and do not change with shifts | Fixed | Posts change hands at 06:00, 14:00 and 22:00; cleaners beyond the night's number go home; shops take nothing while closed. `test/people.test.ts` 'hands every post to someone else at the shift change' fails without it. New staff appear at their posts rather than walking in: noted. |
 | F67 | No connecting passengers | = F14 | |
 | F68 | The bag balance could not fail; bags are counts, not entities | Balance = F18. Bags as counts per party with ready times, not entities moving through sorting and carts: a deviation from the plan's scope, recorded in its outcome. | |
 | F69 | The tested window was mostly start-up; stuck walkers counted present | Fixed | d95ad5c (F61), 07092f9 (the day in `npm test`), bc37022 (anyone departing still inside an hour after the flight fails the day) |

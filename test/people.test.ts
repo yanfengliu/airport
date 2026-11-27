@@ -108,6 +108,23 @@ describe('a closed checkpoint', () => {
   });
 });
 
+describe('staff through a change of shift', () => {
+  // The 14:00 handover: everyone on the morning shift's posts goes home and others take them over.
+  // Looked at half a minute either side, while those going home are still walking out, so that no
+  // person's number can have been given to someone new.
+  const sim = new Sim(layout, { seed: 4, startTime: 13 * 3600 + 40 * 60, people: true });
+  sim.run(20 * 60 - 30);
+  const before = new Set(sim.terminals!.onPosts());
+  sim.run(60);
+  const after = sim.terminals!.onPosts();
+
+  it('hands every post to someone else at the shift change', () => {
+    expect(before.size).toBeGreaterThan(50);
+    expect(after.length).toBeGreaterThan(50);
+    expect(after.filter((id) => before.has(id)).length).toBe(0);
+  });
+});
+
 describe('departing passengers once the day is running', () => {
   // At the start some are placed where they would be by now; after that, everyone comes in by a
   // door and goes through check-in and security, however close to departure they come.
