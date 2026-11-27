@@ -36,4 +36,8 @@ One repair landed after the target and is not in this round: F66 (877324d, staff
 
 ## Verification
 
+Not yet available: the lane was started at 18:38 on 2026-11-26 and its reports are awaited. What was run on any repair it leads to is recorded here when done.
+
 ## Round outcome
+
+Open: awaiting the lane's reports.
