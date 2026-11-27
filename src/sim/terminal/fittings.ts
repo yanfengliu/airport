@@ -7,7 +7,7 @@
 // carousels, and walkers going elsewhere keep out of the way. The renderer draws it. Only the
 // rooms come from the map; what stands in them is laid out here by rule, the same every time.
 
-import type { AreaKind, Layout, PolygonData } from '../../shared/layout.ts';
+import type { AreaKind, ClosedRoom, IndoorWall, Layout, PolygonData } from '../../shared/layout.ts';
 import type { NavGrid } from './grid.ts';
 import { FLOOR, type Place, type TerminalPlan } from './plan.ts';
 import type { ServiceQueue } from './queue.ts';
@@ -198,6 +198,67 @@ export function insidePolygon(p: PolygonData, x: number, y: number): boolean {
   return insideRing(p.outer, x, y) && !(p.holes ?? []).some((h) => insideRing(h, x, y));
 }
 
+/**
+ * The walls inside the terminals, by level (0 the arrivals floor, 1 the departures floor): those
+ * the map draws, and round the rooms closed to travellers. Whether a rectangle, or a line, would
+ * stand across one.
+ */
+export class InnerWalls {
+  private readonly cells = new Map<string, number[]>();
+
+  constructor(walls: readonly IndoorWall[], closed: readonly ClosedRoom[]) {
+    const add = (level: number, ax: number, ay: number, bx: number, by: number): void => {
+      const [c0, c1, r0, r1] = [Math.floor(Math.min(ax, bx) / WALL_CELL), Math.floor(Math.max(ax, bx) / WALL_CELL), Math.floor(Math.min(ay, by) / WALL_CELL), Math.floor(Math.max(ay, by) / WALL_CELL)];
+      for (let c = c0; c <= c1; c += 1) {
+        for (let r = r0; r <= r1; r += 1) {
+          const key = `${level}:${c}:${r}`;
+          (this.cells.get(key) ?? this.cells.set(key, []).get(key)!).push(ax, ay, bx, by);
+        }
+      }
+    };
+    for (const w of walls) for (let i = 2; i < w.pts.length; i += 2) add(w.floor === 'arrivals' ? 0 : 1, w.pts[i - 2], w.pts[i - 1], w.pts[i], w.pts[i + 1]);
+    for (const room of closed) {
+      const r = room.poly.outer;
+      for (let i = 0, j = r.length - 2; i < r.length; j = i, i += 2) add(room.floor === 'arrivals' ? 0 : 1, r[j], r[j + 1], r[i], r[i + 1]);
+    }
+  }
+
+  /** Whether a wall on a floor's level crosses the rectangle about (x, y), `halfL` along `heading` and `halfW` across, or stands in it. */
+  across(floor: number, x: number, y: number, heading: number, halfL: number, halfW: number): boolean {
+    const level = floor === FLOOR.arrivals ? 0 : 1;
+    const [ux, uy] = [Math.cos(heading), Math.sin(heading)];
+    const reach = Math.hypot(halfL, halfW);
+    const local = (px: number, py: number): [number, number] => [(px - x) * ux + (py - y) * uy, -(px - x) * uy + (py - y) * ux];
+    const seen = new Set<number[]>();
+    for (let c = Math.floor((x - reach) / WALL_CELL); c <= Math.floor((x + reach) / WALL_CELL); c += 1) {
+      for (let r = Math.floor((y - reach) / WALL_CELL); r <= Math.floor((y + reach) / WALL_CELL); r += 1) {
+        const list = this.cells.get(`${level}:${c}:${r}`);
+        if (!list || seen.has(list)) continue;
+        seen.add(list);
+        for (let k = 0; k < list.length; k += 4) {
+          // The segment against the rectangle, in the rectangle's own frame: clipped to it, does any of it remain?
+          const [ax, ay] = local(list[k], list[k + 1]);
+          const [bx, by] = local(list[k + 2], list[k + 3]);
+          let [t0, t1] = [0, 1];
+          const [dx, dy] = [bx - ax, by - ay];
+          const clip = (p: number, q: number): boolean => {
+            if (Math.abs(p) < 1e-12) return q >= 0;
+            const t = q / p;
+            if (p < 0) t0 = Math.max(t0, t);
+            else t1 = Math.min(t1, t);
+            return t0 <= t1;
+          };
+          if (clip(-dx, ax + halfL) && clip(dx, halfL - ax) && clip(-dy, ay + halfW) && clip(dy, halfW - ay)) return true;
+        }
+      }
+    }
+    return false;
+  }
+}
+
+/** Size of the cells the inner walls are indexed by, metres. */
+const WALL_CELL = 10;
+
 /** Whether a point stands within any of some outlines, each first judged by its box. */
 export function withinAny(polys: readonly PolygonData[]): (x: number, y: number) => boolean {
   const boxed = polys.map((poly) => {
@@ -292,10 +353,12 @@ class Layouter {
   private readonly grids: NavGrid[];
   /** The terminals' outside walls, as drawn: nothing stands beyond them. */
   private readonly walls: ((x: number, y: number) => boolean) | null;
+  private readonly inner: InnerWalls | null;
 
-  constructor(grids: NavGrid[], walls: readonly PolygonData[] = []) {
+  constructor(grids: NavGrid[], walls: readonly PolygonData[] = [], inner: InnerWalls | null = null) {
     this.grids = grids;
     this.walls = walls.length ? withinAny(walls) : null;
+    this.inner = inner;
   }
 
   /** Within the terminals' walls (true when they are not given). */
@@ -361,7 +424,9 @@ class Layouter {
   }
 
   /** True when the rectangle is all on open floor of the level and nothing else stands there. */
-  fits(floor: number, x: number, y: number, heading: number, halfL: number, halfW: number, inner: boolean, room?: PolygonData): boolean {
+  fits(floor: number, x: number, y: number, heading: number, halfL: number, halfW: number, inner: boolean, room?: PolygonData, clearOfWalls = true): boolean {
+    // Nothing stands across a wall inside, unless there is nowhere else for it.
+    if (clearOfWalls && this.inner?.across(floor, x, y, heading, halfL, halfW)) return false;
     const pts = this.samples(x, y, heading, halfL, halfW, 0.6);
     for (let i = 0; i < pts.length; i += 2) {
       if (this.taken.has(this.key(floor, pts[i], pts[i + 1]))) return false;
@@ -448,7 +513,7 @@ function at(f: { x: number; y: number; ux: number; uy: number }, along: number, 
 
 /** Everything inside the terminals, laid out from the plan, its queues and the mapped rooms. */
 export function buildFittings(layout: Layout, plan: TerminalPlan, queues: ReadonlyMap<number, ServiceQueue>, brandOf: (place: Place) => number, island: (place: Place) => boolean = () => false): Fittings {
-  const out = new Layouter(plan.grids, layout.terminals.buildings.map((b) => b.poly));
+  const out = new Layouter(plan.grids, layout.terminals.buildings.map((b) => b.poly), new InnerWalls(layout.terminals.walls ?? [], plan.closed));
   const span = new Map(layout.airfield.stands.map((s) => [s.id, s.span] as const));
   const gateSpan = new Map<number, number>();
   for (const [stand, place] of plan.holdroom) gateSpan.set(place.id, Math.max(gateSpan.get(place.id) ?? 0, span.get(stand) ?? 36));
@@ -723,7 +788,7 @@ function podium(out: Layouter, place: Place, queue: ServiceQueue): void {
   const [pl, pw] = SIZE.podium;
   const sides = [[-1.0, 3.4], [-1.0, -3.4], [-2.6, 3.4], [-2.6, -3.4], [-1.0, 5.2], [-1.0, -5.2], [-4.2, 3.4], [-4.2, -3.4], [-5.8, 3.4], [-5.8, -3.4], [-2.6, 6.5], [-2.6, -6.5]].map(([a, side]) => at(f, a, side));
   // Two gates sharing a door share a desk: the second finds no room and has none of its own.
-  const side = sides.find(([x, y]) => out.fits(place.floor, x, y, h + Math.PI / 2, pl / 2, pw / 2, false));
+  const side = sides.find(([x, y]) => out.fits(place.floor, x, y, h + Math.PI / 2, pl / 2, pw / 2, false)) ?? sides.find(([x, y]) => out.fits(place.floor, x, y, h + Math.PI / 2, pl / 2, pw / 2, false, undefined, false));
   if (side) out.put('podium', place.floor, side[0], side[1], h + Math.PI);
 }
 

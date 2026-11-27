@@ -14,7 +14,7 @@ import { describe, expect, it } from 'vitest';
 import { MODEL_OF } from '../src/render/static/interiors.ts';
 import { CONFIG } from '../src/sim/config.ts';
 import { Sim } from '../src/sim/sim.ts';
-import { EDGE, SIZE, insidePolygon, type Fitting, type FittingKind } from '../src/sim/terminal/fittings.ts';
+import { EDGE, InnerWalls, SIZE, insidePolygon, type Fitting, type FittingKind } from '../src/sim/terminal/fittings.ts';
 import { ACT, POSE, ROLE } from '../src/sim/terminal/people.ts';
 import { FLOOR } from '../src/sim/terminal/plan.ts';
 import { ServiceQueue, type LineSpot } from '../src/sim/terminal/queue.ts';
@@ -157,6 +157,28 @@ describe('the terminals, furnished', () => {
       }
     }
     expect(out.slice(0, 10)).toEqual([]);
+  });
+
+  it("keeps the map's indoor walls and closed rooms: nobody walks in a closed room, and nothing set out where there is room stands across a wall", () => {
+    const { t, f } = fitted();
+    const walls = layout.terminals.walls ?? [];
+    expect(walls.filter((w) => w.floor === 'departures').length).toBeGreaterThan(300);
+    expect(walls.filter((w) => w.floor === 'arrivals').length).toBeGreaterThan(20);
+    expect(t.plan.closed.length).toBeGreaterThan(100);
+    const inner = new InnerWalls(walls, t.plan.closed);
+    // The floors people walk leave the closed rooms out.
+    const open: string[] = [];
+    t.plan.grids.forEach((g, floor) => {
+      const rooms = t.plan.closed.filter((r) => (r.floor === 'arrivals') === (floor === FLOOR.arrivals));
+      for (let c = 0; c < g.count; c += 1) if (rooms.some((r) => insidePolygon(r.poly, g.cx[c], g.cy[c]))) open.push(`floor ${floor} at ${g.cx[c]},${g.cy[c]}`);
+    });
+    expect(open.slice(0, 5)).toEqual([]);
+    // Seats, and what is set out where there is room for it, stand clear of every wall; what
+    // stands where its counter, lane, booth or gate says may yet meet one the map has there.
+    const fixed = new Set<FittingKind>(['desk', 'backwall', 'booth', 'podium', 'reader', 'xray', 'bins', 'scanner', 'arch', 'board']);
+    const across = f.items.filter((i) => !fixed.has(i.kind) && inner.across(i.floor, i.x, i.y, i.heading, i.length / 2 - 0.05, i.width / 2 - 0.05)).map((i) => `a ${i.kind} at ${i.x.toFixed(1)},${i.y.toFixed(1)}`);
+    for (const g of f.groups) for (let k = g.first; k < g.first + g.count; k += 1) if (inner.across(g.floor, f.seats[k * 3], f.seats[k * 3 + 1], 0, 0.2, 0.2)) across.push(`a ${g.kind} seat at ${f.seats[k * 3].toFixed(1)},${f.seats[k * 3 + 1].toFixed(1)}`);
+    expect(across.slice(0, 8)).toEqual([]);
   });
 
   it("raises no room's wall or glass through a seat or a piece of furniture", () => {

@@ -9,7 +9,8 @@
 // airside. A concourse's checkpoint is where its walking route from the hall crosses into it.
 // Rooms the map does have are used where they are; the rest are placed by those rules.
 
-import type { Layout, PolygonData } from '../../shared/layout.ts';
+import type { ClosedRoom, IndoorFloor, Layout, PolygonData } from '../../shared/layout.ts';
+import { insidePolygon, withinAny } from './fittings.ts';
 import { NavGrid, UNREACHABLE } from './grid.ts';
 
 /** The walkable floors, by index into `grids`. */
@@ -19,6 +20,48 @@ export const FLOOR_HEIGHT = [0.6, 7.2, 7.2] as const;
 
 /** Size of a grid cell, metres. */
 const CELL = 2.5;
+/**
+ * What a step through a mapped wall adds to the way, in tenths of a cell: going round a wall up
+ * to 30 m is shorter. Kept small enough that a long way through many walls drawn without their
+ * doors still fits the field's sixteen bits.
+ */
+const WALL_THROUGH = 120;
+
+/** The closed rooms that stay closed, by map. */
+const STAY_CLOSED = new WeakMap<Layout, ClosedRoom[]>();
+
+/** Each cell's part of the floor: cells that can be walked between share a number. */
+function components(grid: NavGrid): Int32Array {
+  const label = new Int32Array(grid.count).fill(-1);
+  let next = 0;
+  for (let c = 0; c < grid.count; c += 1) {
+    if (label[c] >= 0) continue;
+    const stack = [c];
+    label[c] = next;
+    while (stack.length) {
+      const id = stack.pop()!;
+      for (let k = 0; k < 8; k += 1) {
+        const n = grid.neighbours[id * 8 + k];
+        if (n >= 0 && label[n] < 0) {
+          label[n] = next;
+          stack.push(n);
+        }
+      }
+    }
+    next += 1;
+  }
+  return label;
+}
+
+/** Whether a point is within `reach` of a ring's edges. */
+function nearRing(ring: readonly number[], x: number, y: number, reach: number): boolean {
+  for (let i = 0, j = ring.length - 2; i < ring.length; j = i, i += 2) {
+    const [ax, ay, dx, dy] = [ring[j], ring[j + 1], ring[i] - ring[j], ring[i + 1] - ring[j + 1]];
+    const t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy || 1)));
+    if (Math.hypot(x - ax - dx * t, y - ay - dy * t) <= reach) return true;
+  }
+  return false;
+}
 /** How far into a building from the departures road the landside hall reaches, metres. */
 const HALL_DEPTH = 95;
 /** A mapped room this close to where a rule would put something is used instead. */
@@ -47,6 +90,8 @@ export interface Place {
 
 export interface TerminalPlan {
   grids: NavGrid[];
+  /** The rooms closed to travellers that stay closed: none of them cuts off floor that could be walked to without it. */
+  closed: ClosedRoom[];
   places: Place[];
   /** Checkpoint, exit lane and customs of each boarding area; holdroom of each contact stand. */
   checkpoint: Map<string, Place>;
@@ -231,10 +276,58 @@ export function buildTerminalPlan(layout: Layout, airlines: readonly { code: str
     doorsByArea.set(s.area, list);
   }
   const connectors = postSecurityConnectors(whole, new NavGrid(buildings, CELL, (x, y) => !landside(x, y)), doorsByArea);
+  // The floors people walk: the halls as mapped, without the rooms closed to travellers in them.
+  // A closed room at a gate's door is open after all, and so is one whose closing would split
+  // floor that could be walked across without it, as a corridor mapped as a room would.
+  const keep = [landside, landside, (x: number, y: number): boolean => !landside(x, y) || connectors.has(whole.cellAt(x, y))];
+  const floorOf = (floor: number): IndoorFloor => (floor === FLOOR.arrivals ? 'arrivals' : 'departures');
+  const doors = layout.airfield.stands.filter((s) => s.contact && s.door).map((s) => s.door!);
+  const known = STAY_CLOSED.get(layout);
+  let closed = known ?? (layout.terminals.closed ?? []).filter((r) => !doors.some(([x, y]) => insidePolygon(r.poly, x, y) || nearRing(r.poly.outer, x, y, 6)));
   const grids: NavGrid[] = [];
-  grids[FLOOR.arrivals] = new NavGrid(buildings, CELL, landside);
-  grids[FLOOR.landside] = new NavGrid(buildings, CELL, landside);
-  grids[FLOOR.airside] = new NavGrid(buildings, CELL, (x, y) => !landside(x, y) || connectors.has(whole.cellAt(x, y)));
+  // Which stay closed is the same for every simulation of a map: worked out for its first.
+  if (known) {
+    for (const floor of [FLOOR.arrivals, FLOOR.landside, FLOOR.airside]) {
+      const inRoom = withinAny(closed.filter((r) => r.floor === floorOf(floor)).map((r) => r.poly));
+      grids[floor] = new NavGrid(buildings, CELL, (x, y) => keep[floor](x, y) && !inRoom(x, y));
+    }
+  }
+  for (let round = 0; round < 6 && !known; round += 1) {
+    const reopen = new Set<ClosedRoom>();
+    for (const floor of [FLOOR.arrivals, FLOOR.landside, FLOOR.airside]) {
+      const rooms = closed.filter((r) => r.floor === floorOf(floor));
+      const inRoom = withinAny(rooms.map((r) => r.poly));
+      const grid = new NavGrid(buildings, CELL, (x, y) => keep[floor](x, y) && !inRoom(x, y));
+      grids[floor] = grid;
+      const open = new NavGrid(buildings, CELL, keep[floor]);
+      const was = components(open);
+      const is = components(grid);
+      // Within each stretch of floor that was one, the parts it now falls into, by size.
+      const parts = new Map<number, Map<number, number>>();
+      for (let c = 0; c < grid.count; c += 1) {
+        const before = was[open.cellAt(grid.cx[c], grid.cy[c])];
+        const m = parts.get(before) ?? parts.set(before, new Map()).get(before)!;
+        m.set(is[c], (m.get(is[c]) ?? 0) + 1);
+      }
+      for (let c = 0; c < grid.count; c += 1) {
+        const m = parts.get(was[open.cellAt(grid.cx[c], grid.cy[c])])!;
+        if (m.size < 2) continue;
+        const biggest = [...m].sort((p, q) => q[1] - p[1])[0][0];
+        if (is[c] === biggest) continue;
+        // Cut off from the rest of what it was part of: open the closed rooms beside it.
+        for (const r of rooms) if (nearRing(r.poly.outer, grid.cx[c], grid.cy[c], CELL * 1.5)) reopen.add(r);
+      }
+    }
+    if (!reopen.size) break;
+    closed = closed.filter((r) => !reopen.has(r));
+  }
+  STAY_CLOSED.set(layout, closed);
+  // The walls drawn inside: a step across one costs a long way round.
+  for (const w of layout.terminals.walls ?? []) {
+    for (const floor of w.floor === 'arrivals' ? [FLOOR.arrivals] : [FLOOR.landside, FLOOR.airside]) {
+      for (let i = 2; i < w.pts.length; i += 2) grids[floor].addWall(w.pts[i - 2], w.pts[i - 1], w.pts[i], w.pts[i + 1], WALL_THROUGH);
+    }
+  }
 
   const places: Place[] = [];
   const add = (kind: PlaceKind, name: string, floor: number, x: number, y: number, extra: Partial<Place> = {}): Place | null => {
@@ -403,6 +496,7 @@ export function buildTerminalPlan(layout: Layout, airlines: readonly { code: str
   const fields = new Map<number, Uint16Array>();
   return {
     grids,
+    closed,
     places,
     checkpoint,
     exit,

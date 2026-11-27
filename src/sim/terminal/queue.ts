@@ -46,7 +46,7 @@ export const SPACING = 0.85;
  * no two share one; and so many places are looked through for the next it may stand in.
  */
 const CROWD_LOOSER = 0.75;
-const CROWD_TRIES = 600;
+const CROWD_TRIES = 3000;
 
 export class ServiceQueue {
   readonly shape: QueueShape;
@@ -66,6 +66,8 @@ export class ServiceQueue {
   private readonly standable: ((x: number, y: number) => boolean) | null;
   /** The whole places of the crowd's spiral it may stand in, in the order it fills them: found as far as needed. */
   private readonly crowd: number[] = [];
+  /** Whether the crowd has every place near enough that it may stand in. */
+  private crowdFull = false;
   totalServed = 0;
   /** Seconds of waiting summed over everyone served. */
   totalWait = 0;
@@ -194,15 +196,20 @@ export class ServiceQueue {
     return [this.shape.x - ux * back - uy * side, this.shape.y - uy * back + ux * side];
   }
 
-  /** The `i`th whole place of the crowd's spiral that it may stand in (or, with none near, the next of any). */
+  /**
+   * The `i`th whole place of the crowd's spiral that it may stand in; with no more near enough, one
+   * of those it has again, and with none at all, the next place of any.
+   */
   private crowdPlace(i: number): number {
-    while (this.crowd.length <= i) {
+    while (this.crowd.length <= i && !this.crowdFull) {
       const after = this.crowd.length ? this.crowd[this.crowd.length - 1] + 1 : 0;
       let j = after;
       while (j < after + CROWD_TRIES && !this.standable!(...this.crowdAt(j))) j += 1;
-      this.crowd.push(j < after + CROWD_TRIES ? j : after);
+      if (j < after + CROWD_TRIES) this.crowd.push(j);
+      else if (this.crowd.length) this.crowdFull = true;
+      else this.crowd.push(after);
     }
-    return this.crowd[i];
+    return this.crowd[i % this.crowd.length];
   }
 
   /**

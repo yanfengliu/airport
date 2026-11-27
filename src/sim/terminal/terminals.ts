@@ -14,7 +14,7 @@ import { NOT_YET, type FlightBook, type Visit } from '../airside/flights.ts';
 import { CONFIG } from '../config.ts';
 import { AIRCRAFT, AIRLINES, AIRLINE_BY_CODE } from '../fleet.ts';
 import type { Rng } from '../rng.ts';
-import { BOOTH_FROM_PASSENGER, BRANDS, DESK_FROM_PASSENGER, LANE, SIZE, buildFittings, insidePolygon, orient, withinAny, type Fittings, type SeatKind } from './fittings.ts';
+import { BOOTH_FROM_PASSENGER, BRANDS, DESK_FROM_PASSENGER, LANE, SIZE, buildFittings, InnerWalls, insidePolygon, orient, withinAny, type Fittings, type SeatKind } from './fittings.ts';
 import { UNREACHABLE } from './grid.ts';
 import { People, POSE, ROLE, STEP } from './people.ts';
 import { FLOOR, FLOOR_HEIGHT, buildTerminalPlan, type Place, type PlaceKind, type TerminalPlan } from './plan.ts';
@@ -39,6 +39,10 @@ const LANE_POINTS: readonly (readonly [number, number])[] = (
   for (let i = 0; i <= na; i += 1) for (let j = 0; j <= nc; j += 1) if (i === 0 || i === na || j === 0 || j === nc) points.push([a - ea + (2 * ea * i) / na, c - ec + (2 * ec * j) / nc]);
   return points;
 });
+
+/** The middle of a security lane's furniture from its server, along and across, and its half length and width. */
+const LANE_MIDDLE = [(LANE_POINTS.reduce((m, p) => Math.min(m, p[0]), Infinity) + LANE_POINTS.reduce((m, p) => Math.max(m, p[0]), -Infinity)) / 2, (LANE_POINTS.reduce((m, p) => Math.min(m, p[1]), Infinity) + LANE_POINTS.reduce((m, p) => Math.max(m, p[1]), -Infinity)) / 2] as const;
+const LANE_HALF = [(LANE_POINTS.reduce((m, p) => Math.max(m, p[0]), -Infinity) - LANE_POINTS.reduce((m, p) => Math.min(m, p[0]), Infinity)) / 2, (LANE_POINTS.reduce((m, p) => Math.max(m, p[1]), -Infinity) - LANE_POINTS.reduce((m, p) => Math.min(m, p[1]), Infinity)) / 2] as const;
 
 /** Metres behind a security lane's server its mouth is: behind the bins, a body's width clear of them. */
 const LANE_MOUTH = 1.75 + SIZE.bins[1] / 2 + 0.35;
@@ -208,6 +212,8 @@ export class Terminals {
   /** Where someone can stand at each place clear of its furniture, by place id (see freeSpot). */
   private readonly freeSpots = new Map<number, [number, number]>();
   private readonly freePoints = new Map<number, number>();
+  /** The walls inside, the map's and round the rooms closed to travellers: no line or lane stands across one. */
+  private readonly innerWalls: InnerWalls;
   /** Whether a point stands within the terminals' walls, as drawn. */
   private readonly withinWalls: (x: number, y: number) => boolean;
   private readonly nearShops = new Map<number, Place[]>();
@@ -266,6 +272,7 @@ export class Terminals {
     this.now = now;
     this.startedAt = now;
     this.plan = buildTerminalPlan(layout, AIRLINES);
+    this.innerWalls = new InnerWalls(layout.terminals.walls ?? [], this.plan.closed);
     for (const way of this.plan.ways) {
       if (way.kind !== 'airtrain' && way.kind !== 'bart') continue;
       const station: Station = { way, signal: STATION_SIGNALS + this.stationList.length, trains: [], coming: [], lastDoors: now };
@@ -644,7 +651,9 @@ export class Terminals {
       const point = (a: number, b: number): [number, number] => [cx - uy * (across + b) + ux * a, cy + ux * (across + b) + uy * a];
       for (const a of [-2, 0, 3, 6, 8]) for (const b of [-1.3, 0, 1.3]) if (!onFloor(...point(a, b))) return false;
       for (const [a, b] of LANE_POINTS) if (!withinWalls(...point(a, b))) return false;
-      return true;
+      // Nor across a wall inside: the lane from its bins to the far end of its belt, the belt's side to the scanner's.
+      const [mx, my] = point(LANE_MIDDLE[0], LANE_MIDDLE[1]);
+      return !this.innerWalls.across(place.floor, mx, my, heading, LANE_HALF[0], LANE_HALF[1]);
     };
     const floors = [this.plan.grids[FLOOR.landside], this.plan.grids[FLOOR.airside]];
     const onFloor = (x: number, y: number): boolean => floors.some((g) => g.cellAt(x, y) >= 0);
@@ -688,6 +697,10 @@ export class Terminals {
       const [back, aside] = found ?? [0, 0];
       [rowX, rowY] = [rowX - ux * back - uy * aside, rowY - uy * back + ux * aside];
     }
+    // A checkpoint's lanes, bins to belts' ends and side to side, are furniture other lines keep out of.
+    if (place.kind === 'checkpoint') {
+      this.deskRows.push({ x: rowX + ux * LANE_MIDDLE[0], y: rowY + uy * LANE_MIDDLE[0], heading, halfL: LANE_HALF[0], halfW: ((servers - 1) / 2) * spacing + LANE_HALF[1] });
+    }
     const front: { x: number; y: number; exitX?: number; exitY?: number; approachX?: number; approachY?: number }[] = [];
     // A checkpoint keeps only the lanes that fit where its row stands (all of them, if none does).
     const keep = place.kind === 'checkpoint' ? Array.from({ length: servers }, (_, i) => laneFits(rowX, rowY, i)) : [];
@@ -728,34 +741,67 @@ export class Terminals {
     // Nor in a row of another hall's check-in desks.
     const inDesks = (x: number, y: number): boolean =>
       this.deskRows.some((r) => Math.abs((x - r.x) * Math.cos(r.heading) + (y - r.y) * Math.sin(r.heading)) <= r.halfL && Math.abs(-(x - r.x) * Math.sin(r.heading) + (y - r.y) * Math.cos(r.heading)) <= r.halfW);
-    const covers = (cx: number, cy: number, len: number, wide: number): boolean => {
+    let clearOfWalls = true;
+    /** How much of an area people could stand in, as a share; -1 where any of it is beyond the building's walls. */
+    const share = (cx: number, cy: number, len: number, wide: number, h = heading): number => {
       const [na, nb] = [Math.max(1, Math.ceil(len / 1.5)), Math.max(1, Math.ceil(wide / 1.5))];
+      const [hx, hy] = [Math.cos(h), Math.sin(h)];
+      let good = 0;
       for (let i = 0; i <= na; i += 1) {
         for (let j = 0; j <= nb; j += 1) {
           const a = -len / 2 + 0.05 + ((len - 0.1) * i) / na;
           const b = -wide / 2 + 0.05 + ((wide - 0.1) * j) / nb;
-          if (!standable(cx + ux * a - uy * b, cy + uy * a + ux * b) || inDesks(cx + ux * a - uy * b, cy + uy * a + ux * b)) return false;
+          const [x, y] = [cx + hx * a - hy * b, cy + hy * a + hx * b];
+          if (!withinWalls(x, y)) return -1;
+          if (standable(x, y) && !inDesks(x, y)) good += 1;
         }
       }
-      return true;
+      return good / ((na + 1) * (nb + 1));
     };
-    let area = { x: rowX - ux * (length / 2 + 2), y: rowY - uy * (length / 2 + 2), length, width };
-    if (!covers(area.x, area.y, length, width)) {
+    const covers = (cx: number, cy: number, len: number, wide: number): boolean => share(cx, cy, len, wide) === 1 && (!clearOfWalls || !this.innerWalls.across(place.floor, cx, cy, heading, len / 2, wide / 2));
+    let area = { x: rowX - ux * (length / 2 + 2), y: rowY - uy * (length / 2 + 2), length, width, heading };
+    // Clear of the walls inside if it can be; if not, within the building anyway.
+    for (const walls of [true, false]) {
+      clearOfWalls = walls;
+      if (covers(area.x, area.y, length, width)) break;
       const sizes = [[1, 1], [1, 0.75], [0.75, 1], [0.75, 0.75], [0.5, 1], [1, 0.5], [0.5, 0.5]].map(([l, w]) => [length * l, Math.max(width * w, Math.min(width, 1.3))]);
+      let found = false;
       search: for (const [len, wide] of sizes) {
         for (const back of [0, 1.5, 3, 4.5, 6]) {
           for (const side of [0, 1.3, -1.3, 2.6, -2.6, 3.9, -3.9, 5.2, -5.2, 6.5, -6.5]) {
             const cx = rowX - ux * (len / 2 + 2 + back) - uy * side;
             const cy = rowY - uy * (len / 2 + 2 + back) + ux * side;
             if (!covers(cx, cy, len, wide)) continue;
-            area = { x: cx, y: cy, length: len, width: wide };
+            area = { x: cx, y: cy, length: len, width: wide, heading };
+            found = true;
             break search;
           }
         }
       }
+      if (found) break;
+      // Nowhere wholly on the floor: the most of it that is, within the building at least, and
+      // turned another way from the row if it must be.
+      if (!walls) {
+        let best = share(area.x, area.y, length, width);
+        for (const turn of [0, Math.PI / 2, -Math.PI / 2, Math.PI]) {
+          const h = heading + turn;
+          const [hx, hy] = [Math.cos(h), Math.sin(h)];
+          for (const [len, wide] of sizes) {
+            for (const back of [0, 1.5, 3, 4.5, 6]) {
+              for (const side of [0, 1.3, -1.3, 2.6, -2.6, 3.9, -3.9, 5.2, -5.2, 6.5, -6.5]) {
+                const cx = rowX - hx * (len / 2 + 2 + back) - hy * side;
+                const cy = rowY - hy * (len / 2 + 2 + back) + hx * side;
+                // A little less for turning, so the way the row faces wins a tie.
+                const got = share(cx, cy, len, wide, h) - (turn ? 0.01 : 0);
+                if (got > best + 1e-9) [best, area] = [got, { x: cx, y: cy, length: len, width: wide, heading: h }];
+              }
+            }
+          }
+        }
+      }
     }
-    const queue = new ServiceQueue({ ...area, heading }, front, (x, y) => standable(x, y) && !inDesks(x, y));
-    this.lineAreas.push({ x: area.x, y: area.y, heading, halfL: area.length / 2, halfW: area.width / 2 });
+    const queue = new ServiceQueue(area, front, (x, y) => standable(x, y) && !inDesks(x, y));
+    this.lineAreas.push({ x: area.x, y: area.y, heading: area.heading, halfL: area.length / 2, halfW: area.width / 2 });
     queue.setOpen(place.kind === 'holdroom' ? front.length : Math.min(2, front.length));
     id = this.people.addQueue(queue);
     this.queueId.set(place.id, id);

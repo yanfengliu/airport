@@ -39,6 +39,41 @@ const WALL: Partial<Record<AreaKind, RGB>> = {
   lounge: rgb(0x8c7f94),
 };
 const CUT: RGB = rgb(0x3b3f45);
+/** The walls the map draws inside, those round rooms closed to travellers, and those rooms' floors. */
+const INNER_WALL: RGB = rgb(0xd9d6cf);
+const BACK_WALL: RGB = rgb(0xc4c0b8);
+const BACK_OF_HOUSE: RGB = rgb(0x9c9a94);
+/** Half a door's width where a closed room's door opens in its wall, metres. */
+const DOOR_HALF = 0.6;
+
+/** How near a point comes to the segment at `k` in a list of x0, y0, x1, y1 segments. */
+function nearSegment(x: number, y: number, segments: readonly number[], k: number): number {
+  const [ax, ay, dx, dy] = [segments[k], segments[k + 1], segments[k + 2] - segments[k], segments[k + 3] - segments[k + 1]];
+  const t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy || 1)));
+  return Math.hypot(x - ax - dx * t, y - ay - dy * t);
+}
+
+/** A wall from (x0, y0) to (x1, y1) in pieces, with a gap a door wide at each door on it. */
+function withDoors(x0: number, y0: number, x1: number, y1: number, doors: readonly number[]): [number, number, number, number][] {
+  const length = Math.hypot(x1 - x0, y1 - y0);
+  if (length < 0.01) return [];
+  const [ux, uy] = [(x1 - x0) / length, (y1 - y0) / length];
+  const gaps: [number, number][] = [];
+  for (let k = 0; k < doors.length; k += 2) {
+    const along = (doors[k] - x0) * ux + (doors[k + 1] - y0) * uy;
+    const off = Math.abs(-(doors[k] - x0) * uy + (doors[k + 1] - y0) * ux);
+    if (off < 0.3 && along > -DOOR_HALF && along < length + DOOR_HALF) gaps.push([along - DOOR_HALF, along + DOOR_HALF]);
+  }
+  gaps.sort((a, b) => a[0] - b[0]);
+  const pieces: [number, number, number, number][] = [];
+  let from = 0;
+  for (const [a, b] of gaps) {
+    if (a > from) pieces.push([x0 + ux * from, y0 + uy * from, x0 + ux * a, y0 + uy * a]);
+    from = Math.max(from, b);
+  }
+  if (from < length) pieces.push([x0 + ux * from, y0 + uy * from, x1, y1]);
+  return pieces;
+}
 const MULLION: RGB = rgb(0x5d646c);
 /** Fascia colours over the shop fronts. */
 const FASCIA = [0x3a4d6b, 0xb94c34, 0x497aa2, 0x658049, 0x836047, 0x282f3f, 0xae6051, 0x3e6495].map(rgb);
@@ -289,6 +324,38 @@ export function buildInteriors(layout: Layout, terminals: Terminals, models: Mod
             for (let k = 0; k <= bays; k += 1) box(frame, x0 + ((x1 - x0) * k) / bays, y0 + ((y1 - y0) * k) / bays, h, h + ROOM_WALL - 0.45, 0.04, 0.05, Math.atan2(y1 - y0, x1 - x0), MULLION, MULLION);
           }
         }
+      }
+    }
+    // The walls the map draws inside, and the rooms closed to travellers: a plain floor in each and
+    // walls round it, open where its doors are. Where a wall runs along a shop's own, or along
+    // another of the map's, it is drawn once.
+    const floorName = lv === 'up' ? 'departures' : 'arrivals';
+    const drawn: number[] = [];
+    if (lv === 'up') {
+      for (const room of fittings.rooms) {
+        const r = layout.terminals.areas[room.room].poly.outer;
+        for (let i = 0, j = r.length - 2; i < r.length; j = i, i += 2) drawn.push(r[j], r[j + 1], r[i], r[i + 1]);
+      }
+    }
+    const alongDrawn = (x0: number, y0: number, x1: number, y1: number): boolean => {
+      for (let k = 0; k < drawn.length; k += 4) if (nearSegment(x0, y0, drawn, k) < 0.35 && nearSegment(x1, y1, drawn, k) < 0.35) return true;
+      return false;
+    };
+    const wall = (x0: number, y0: number, x1: number, y1: number, colour: RGB): void => {
+      if (Math.hypot(x1 - x0, y1 - y0) < 0.2 || alongDrawn(x0, y0, x1, y1)) return;
+      wallAlong(frame, x0, y0, x1, y1, h, h + ROOM_WALL, 0.16, colour, CUT);
+      drawn.push(x0, y0, x1, y1);
+    };
+    for (const w of layout.terminals.walls ?? []) {
+      if (w.floor !== floorName) continue;
+      for (let i = 2; i < w.pts.length; i += 2) wall(w.pts[i - 2], w.pts[i - 1], w.pts[i], w.pts[i + 1], INNER_WALL);
+    }
+    for (const room of terminals.plan.closed) {
+      if (room.floor !== floorName) continue;
+      fillPolygon(frame, room.poly, h + 0.02, BACK_OF_HOUSE);
+      const r = room.poly.outer;
+      for (let i = 0, j = r.length - 2; i < r.length; j = i, i += 2) {
+        for (const [x0, y0, x1, y1] of withDoors(r[j], r[j + 1], r[i], r[i + 1], room.doors)) wall(x0, y0, x1, y1, BACK_WALL);
       }
     }
     groups[lv].add(solidMesh(frame, material, `interior-${lv}-walls`, false));

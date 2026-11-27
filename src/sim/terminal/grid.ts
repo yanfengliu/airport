@@ -38,6 +38,12 @@ export class NavGrid {
    * walkers go round it where they can. It never cuts a way off, only makes it dearer.
    */
   readonly extra: Uint8Array;
+  /**
+   * Extra cost of each step from a cell to each of its neighbours (cell * 8 + k) that crosses a
+   * wall: walkers go round a mapped wall where there is a way round, and through it only where
+   * the map left out its door. It never cuts a way off.
+   */
+  readonly through: Uint16Array;
 
   /** `keep`, when given, leaves out cells whose centre it rejects, to cut one floor into parts. */
   constructor(polygons: readonly PolygonData[], cell: number, keep?: (x: number, y: number) => boolean) {
@@ -95,6 +101,7 @@ export class NavGrid {
     this.edge = new Uint8Array(count);
     this.occupancy = new Uint16Array(count);
     this.extra = new Uint8Array(count);
+    this.through = new Uint16Array(count * 8);
     for (let row = 0; row < this.rows; row += 1) {
       for (let col = 0; col < this.cols; col += 1) {
         const id = this.index[row * this.cols + col];
@@ -115,6 +122,49 @@ export class NavGrid {
         }
       }
     }
+  }
+
+  /** Make every step between neighbouring cells that crosses the wall from (ax, ay) to (bx, by) cost `cost` more, both ways. */
+  addWall(ax: number, ay: number, bx: number, by: number, cost: number): void {
+    const [c0, c1] = [Math.floor((Math.min(ax, bx) - this.x0) / this.cell) - 1, Math.floor((Math.max(ax, bx) - this.x0) / this.cell) + 1];
+    const [r0, r1] = [Math.floor((Math.min(ay, by) - this.y0) / this.cell) - 1, Math.floor((Math.max(ay, by) - this.y0) / this.cell) + 1];
+    const crosses = (px: number, py: number, qx: number, qy: number): boolean => {
+      const d1 = (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+      const d2 = (bx - ax) * (qy - ay) - (by - ay) * (qx - ax);
+      const d3 = (qx - px) * (ay - py) - (qy - py) * (ax - px);
+      const d4 = (qx - px) * (by - py) - (qy - py) * (bx - px);
+      return d1 * d2 < 0 && d3 * d4 < 0;
+    };
+    for (let r = Math.max(0, r0); r <= Math.min(this.rows - 1, r1); r += 1) {
+      for (let c = Math.max(0, c0); c <= Math.min(this.cols - 1, c1); c += 1) {
+        const id = this.index[r * this.cols + c];
+        if (id < 0) continue;
+        for (let k = 0; k < 8; k += 1) {
+          const n = this.neighbours[id * 8 + k];
+          if (n < 0 || !crosses(this.cx[id], this.cy[id], this.cx[n], this.cy[n])) continue;
+          this.through[id * 8 + k] = Math.max(this.through[id * 8 + k], cost);
+        }
+      }
+    }
+  }
+
+  /** The cells reachable from `start` by walking, as a mask. */
+  reachable(start: number): Uint8Array {
+    const seen = new Uint8Array(this.count);
+    if (start < 0) return seen;
+    const stack = [start];
+    seen[start] = 1;
+    while (stack.length) {
+      const id = stack.pop()!;
+      for (let k = 0; k < 8; k += 1) {
+        const n = this.neighbours[id * 8 + k];
+        if (n >= 0 && !seen[n]) {
+          seen[n] = 1;
+          stack.push(n);
+        }
+      }
+    }
+    return seen;
   }
 
   /** Walkable cell containing a point, or -1. */
@@ -179,7 +229,7 @@ export class NavGrid {
         for (let k = 0; k < 8; k += 1) {
           const n = this.neighbours[id * 8 + k];
           if (n < 0) continue;
-          const next = cost + (k < 4 ? STRAIGHT : DIAGONAL) + (this.edge[n] ? WALL_COST : 0) + this.extra[n];
+          const next = cost + (k < 4 ? STRAIGHT : DIAGONAL) + (this.edge[n] ? WALL_COST : 0) + this.extra[n] + this.through[id * 8 + k];
           if (next < distance[n] && next < UNREACHABLE) {
             distance[n] = next;
             push(next, n);

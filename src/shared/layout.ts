@@ -141,10 +141,30 @@ export interface Poi {
   to?: number;
 }
 
+/** Which of its building's floors something mapped inside stands on: departures (with the airside beyond security) or arrivals. */
+export type IndoorFloor = 'departures' | 'arrivals';
+
+/** An indoor wall as mapped: a polyline of x, y pairs, split where a door opens in it. */
+export interface IndoorWall {
+  floor: IndoorFloor;
+  pts: number[];
+}
+
+/** A room travellers do not go into, as mapped: an office, a storeroom, a room of the airport's own; and where its doors are. */
+export interface ClosedRoom {
+  floor: IndoorFloor;
+  poly: PolygonData;
+  /** Doors in its walls: x, y pairs. */
+  doors: number[];
+}
+
 export interface Terminals {
   buildings: TerminalBuilding[];
   areas: IndoorArea[];
   pois: Poi[];
+  /** The indoor walls on the departures and arrivals floors, and the rooms closed to travellers there. */
+  walls?: IndoorWall[];
+  closed?: ClosedRoom[];
 }
 
 // ---------------------------------------------------------------------------------------------
