@@ -26,7 +26,9 @@ export function buildRail(osm: OsmData, log: (line: string) => void): Rail {
     if (service && service !== 'crossover') continue;
     ways.push({ way, kind });
   }
-  const heights = solveHeights(osm, ways.map((w) => w.way), () => false);
+  // One line over another clears a train on the lower one with its guideway: about six metres,
+  // rail to rail, where the tracks are within a train's width of each other in plan.
+  const heights = solveHeights(osm, ways.map((w) => w.way), () => false, { near: 3.5, height: 6 }, log);
 
   const lines: RailLine[] = [];
   const perKind: Record<string, number> = {};

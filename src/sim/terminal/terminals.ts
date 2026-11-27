@@ -10,7 +10,7 @@
 // by then has missed the flight and goes home.
 
 import type { Layout } from '../../shared/layout.ts';
-import type { FlightBook, Visit } from '../airside/flights.ts';
+import { NOT_YET, type FlightBook, type Visit } from '../airside/flights.ts';
 import { CONFIG } from '../config.ts';
 import { AIRCRAFT, AIRLINES, AIRLINE_BY_CODE } from '../fleet.ts';
 import type { Rng } from '../rng.ts';
@@ -20,7 +20,6 @@ import { FLOOR, FLOOR_HEIGHT, buildTerminalPlan, type Place, type PlaceKind, typ
 import { ServiceQueue } from './queue.ts';
 
 /** The flight book's value for a time that has not happened yet. */
-const NOT_YET = -1;
 /** Most walkers at once: parties and staff. */
 export const CAPACITY = 40_000;
 /** How far ahead departing parties are planned, seconds. */
@@ -632,7 +631,6 @@ export class Terminals {
 
   private startDeplaning(now: number, first: boolean): void {
     for (const visit of this.book.visits.values()) {
-      // -1 means not yet; a real time can be negative, for an aircraft that arrived the day before.
       if (visit.onBlockAt === NOT_YET || visit.deplaned >= visit.rotation.paxIn || this.deplaning.has(visit.id)) continue;
       // Already off and away before the simulation started.
       if (first && now - visit.onBlockAt > 1800) {

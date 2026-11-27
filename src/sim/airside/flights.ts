@@ -16,10 +16,10 @@ export interface Visit {
   etd: number;
   /**
    * For the boards: when an arrival still waiting for a landing slot is likely to reach its stand,
-   * from its place in the arrival queue; -1 when it has a slot. Not used to plan anything.
+   * from its place in the arrival queue; NOT_YET when it has a slot. Not used to plan anything.
    */
   queuedEta: number;
-  /** Actual times, once they have happened. */
+  /** Actual times, once they have happened; NOT_YET until then. */
   landedAt: number;
   onBlockAt: number;
   offBlockAt: number;
@@ -39,6 +39,15 @@ export interface Visit {
   /** Go-arounds flown on this arrival. */
   goArounds: number;
 }
+
+/**
+ * An actual time that has not happened yet. Not -1 or any other number a clock can read: the
+ * simulation can start before midnight, and the book holds the day before, so times can be negative.
+ */
+export const NOT_YET = -Infinity;
+
+/** Seconds of the day of a simulation time, which may be negative. */
+const clock = (t: number): number => ((t % DAY) + DAY) % DAY;
 
 /** Minutes a flight may run behind schedule before the board calls it delayed. */
 const DELAY_SHOWN = 10 * 60;
@@ -82,11 +91,11 @@ export class FlightBook {
           std,
           eta: sta,
           etd: std,
-          queuedEta: -1,
-          landedAt: -1,
-          onBlockAt: -1,
-          offBlockAt: -1,
-          airborneAt: -1,
+          queuedEta: NOT_YET,
+          landedAt: NOT_YET,
+          onBlockAt: NOT_YET,
+          offBlockAt: NOT_YET,
+          airborneAt: NOT_YET,
           stand: rotation.stand,
           state: 'scheduled',
           arrivalRunway: '',
@@ -106,7 +115,7 @@ export class FlightBook {
 
   /** Forget visits that ended long ago. */
   prune(now: number): void {
-    for (const [id, v] of this.visits) if (v.state === 'done' && v.airborneAt >= 0 && now - v.airborneAt > 2 * 3600) this.visits.delete(id);
+    for (const [id, v] of this.visits) if (v.state === 'done' && v.airborneAt !== NOT_YET && now - v.airborneAt > 2 * 3600) this.visits.delete(id);
   }
 
   /** Visits already at their stands at `time`, for starting the simulation in mid-day. */
@@ -126,8 +135,8 @@ export class FlightBook {
     const rows: BoardRow[] = [];
     for (const v of this.visits.values()) {
       // Flights that had been and gone before the simulation started are not shown.
-      if (v.state === 'done' && v.onBlockAt < 0) continue;
-      const shownUntil = v.onBlockAt >= 0 ? v.onBlockAt + 25 * 60 : Infinity;
+      if (v.state === 'done' && v.onBlockAt === NOT_YET) continue;
+      const shownUntil = v.onBlockAt !== NOT_YET ? v.onBlockAt + 25 * 60 : Infinity;
       const eta = Math.max(v.eta, v.queuedEta);
       if (now > shownUntil || eta > now + 3 * 3600 || v.sta < now - 6 * 3600) continue;
       if (v.state === 'scheduled' && eta < now - 3600) continue;
@@ -136,11 +145,11 @@ export class FlightBook {
       let tone: BoardRow['tone'] = late > DELAY_SHOWN ? 'late' : 'ok';
       if (v.state === 'approach') status = v.goArounds ? 'Going around' : 'On approach';
       if (v.state === 'landed') status = 'Landed';
-      if (v.onBlockAt >= 0) {
+      if (v.onBlockAt !== NOT_YET) {
         status = v.deplaned < v.rotation.paxIn ? 'At gate' : 'Arrived';
         tone = 'done';
       }
-      rows.push({ visit: v.id, flight: v.rotation.arrFlight, airline: v.rotation.airline, city: DESTINATIONS[v.rotation.from].city, scheduled: v.sta % DAY, estimated: (v.onBlockAt >= 0 ? v.onBlockAt : eta) % DAY, gate: v.stand, status, tone });
+      rows.push({ visit: v.id, flight: v.rotation.arrFlight, airline: v.rotation.airline, city: DESTINATIONS[v.rotation.from].city, scheduled: clock(v.sta), estimated: clock(v.onBlockAt !== NOT_YET ? v.onBlockAt : eta), gate: v.stand, status, tone });
     }
     const shown = (id: number): number => {
       const v = this.visits.get(id)!;
@@ -153,8 +162,8 @@ export class FlightBook {
   departuresBoard(now: number, limit: number): BoardRow[] {
     const rows: BoardRow[] = [];
     for (const v of this.visits.values()) {
-      if (v.state === 'done' && v.airborneAt < 0) continue;
-      const shownUntil = v.airborneAt >= 0 ? v.airborneAt + 10 * 60 : Infinity;
+      if (v.state === 'done' && v.airborneAt === NOT_YET) continue;
+      const shownUntil = v.airborneAt !== NOT_YET ? v.airborneAt + 10 * 60 : Infinity;
       if (now > shownUntil || v.etd > now + 3 * 3600 || v.std < now - 6 * 3600) continue;
       const late = v.etd - v.std;
       let status = late > DELAY_SHOWN ? 'Delayed' : 'On time';
@@ -165,11 +174,11 @@ export class FlightBook {
       }
       if (v.doorsClosed) status = 'Gate closed';
       if (v.state === 'pushback' || v.state === 'taxiOut') status = 'Taxiing';
-      if (v.airborneAt >= 0) {
+      if (v.airborneAt !== NOT_YET) {
         status = 'Departed';
         tone = 'done';
       }
-      rows.push({ visit: v.id, flight: v.rotation.depFlight, airline: v.rotation.airline, city: DESTINATIONS[v.rotation.to].city, scheduled: v.std % DAY, estimated: (v.offBlockAt >= 0 ? v.offBlockAt : v.etd) % DAY, gate: v.stand, status, tone });
+      rows.push({ visit: v.id, flight: v.rotation.depFlight, airline: v.rotation.airline, city: DESTINATIONS[v.rotation.to].city, scheduled: clock(v.std), estimated: clock(v.offBlockAt !== NOT_YET ? v.offBlockAt : v.etd), gate: v.stand, status, tone });
     }
     rows.sort((a, b) => this.visits.get(a.visit)!.etd - this.visits.get(b.visit)!.etd);
     return rows.slice(0, limit);

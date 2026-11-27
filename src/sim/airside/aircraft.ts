@@ -6,7 +6,7 @@ import { newMover, type Mover, type Traffic } from '../airfield/traffic.ts';
 import { CONFIG } from '../config.ts';
 import type { AircraftType, Airline } from '../fleet.ts';
 import type { Rng } from '../rng.ts';
-import type { Visit } from './flights.ts';
+import { NOT_YET, type Visit } from './flights.ts';
 import { pushPieces, pushbackOptions, type PushbackOption } from './pushback.ts';
 import type { Tower } from './tower.ts';
 
@@ -430,7 +430,7 @@ export class Aircraft {
     this.reversing = false;
     this.visit.state = 'atStand';
     this.visit.aircraft = this.id;
-    if (this.visit.onBlockAt < 0) this.visit.onBlockAt = this.visit.sta;
+    if (this.visit.onBlockAt === NOT_YET) this.visit.onBlockAt = this.visit.sta;
     this.speed = 0;
     this.poseOnPath();
     this.snapPose();

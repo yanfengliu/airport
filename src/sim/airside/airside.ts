@@ -9,7 +9,7 @@ import { AIRCRAFT, AIRLINE_BY_CODE, type AircraftType } from '../fleet.ts';
 import type { Rng } from '../rng.ts';
 import type { Rotation } from '../schedule.ts';
 import { Aircraft, approachSeconds, leadInPath, pushPlansFor, standPath, wayInPath, waysIn, type AirsideServices } from './aircraft.ts';
-import { FlightBook, TAXI_IN_NOMINAL, type Visit } from './flights.ts';
+import { FlightBook, NOT_YET, TAXI_IN_NOMINAL, type Visit } from './flights.ts';
 import { flowCosts } from './flows.ts';
 import { CLEAR_WEST, pairedApproaches, planFor, type Weather } from '../weather.ts';
 import type { UsableStands } from './stands.ts';
@@ -368,7 +368,7 @@ export class Airside {
       }
       this.pending.push({ visit, end: slot.end, threshold: slot.threshold });
       visit.eta = Math.max(visit.eta, slot.threshold + TAXI_IN_NOMINAL);
-      visit.queuedEta = -1;
+      visit.queuedEta = NOT_YET;
       if (slot.threshold - wantThreshold > 600 && !visit.delayNote) visit.delayNote = 'Arrival flow';
     }
   }

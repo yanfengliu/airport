@@ -1,7 +1,7 @@
 // What the operations panel shows, read from the simulation: plain numbers and words, so that the
 // panel itself knows nothing of how the airport works. Cheap enough to take once a second.
 
-import { TAXI_IN_NOMINAL } from '../sim/airside/flights.ts';
+import { NOT_YET, TAXI_IN_NOMINAL } from '../sim/airside/flights.ts';
 import { DAY } from '../sim/schedule.ts';
 import type { Sim } from '../sim/sim.ts';
 import { tailwindOn28 } from '../sim/weather.ts';
@@ -38,7 +38,7 @@ export function opsSnapshot(sim: Sim): OpsSnapshot {
       offBlock += 1;
       departureLate += Math.max(0, v.offBlockAt - v.std);
     }
-    if (v.state === 'scheduled' && v.queuedEta > 0) waitingToLand += 1;
+    if (v.state === 'scheduled' && v.queuedEta !== NOT_YET) waitingToLand += 1;
   }
   let approaching = 0;
   let taxiing = 0;

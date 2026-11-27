@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import { CONFIG } from '../src/sim/config.ts';
 import { buildTransit } from '../src/sim/transit/routes.ts';
+import type { Transit } from '../src/sim/transit/trains.ts';
 import { loadLayoutFromDisk } from './helpers/layout.ts';
 
 const layout = loadLayoutFromDisk();
@@ -35,6 +36,46 @@ describe('train routes', () => {
   });
 });
 
+/**
+ * Pairs of trains whose bodies are inside each other, wherever they are: points every few metres
+ * along every visible car, compared with every other train's within a body's width and height.
+ */
+function trainsInsideEachOther(transit: Transit): number {
+  const pose = { x: 0, y: 0, z: 0, heading: 0, visible: false };
+  const CELL = 6;
+  const grid = new Map<string, { train: number; x: number; y: number; z: number }[]>();
+  const points: { train: number; x: number; y: number; z: number }[] = [];
+  for (const train of transit.trains) {
+    const route = transit.routes[train.route];
+    for (let car = 0; car < route.cars; car += 1) {
+      transit.carPose(train, car, pose);
+      if (!pose.visible) continue;
+      for (let along = -route.carLength / 2; along <= route.carLength / 2; along += 3) {
+        const p = { train: train.id, x: pose.x + Math.cos(pose.heading) * along, y: pose.y + Math.sin(pose.heading) * along, z: pose.z };
+        points.push(p);
+        const key = `${Math.floor(p.x / CELL)},${Math.floor(p.y / CELL)}`;
+        let list = grid.get(key);
+        if (!list) grid.set(key, (list = []));
+        list.push(p);
+      }
+    }
+  }
+  const pairs = new Set<string>();
+  for (const p of points) {
+    const cx = Math.floor(p.x / CELL);
+    const cy = Math.floor(p.y / CELL);
+    for (let dx = -1; dx <= 1; dx += 1) {
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (const q of grid.get(`${cx + dx},${cy + dy}`) ?? []) {
+          if (q.train <= p.train) continue;
+          if (Math.hypot(p.x - q.x, p.y - q.y) < 2.4 && Math.abs(p.z - q.z) < 3) pairs.add(`${p.train}-${q.train}`);
+        }
+      }
+    }
+  }
+  return pairs.size;
+}
+
 describe('an hour of trains', () => {
   const transit = buildTransit(layout.rail);
   const calls = new Map<string, number>();
@@ -43,10 +84,26 @@ describe('an hour of trains', () => {
     calls.set(key, (calls.get(key) ?? 0) + 1);
   };
   let closest = Infinity;
+  let collisions = 0;
+  let vanished = 0;
+  const pose = { x: 0, y: 0, z: 0, heading: 0, visible: false };
+  const seen = (train: Transit['trains'][number]): number => {
+    let n = 0;
+    for (let car = 0; car < transit.routes[train.route].cars; car += 1) {
+      transit.carPose(train, car, pose);
+      if (pose.visible) n += 1;
+    }
+    return n;
+  };
   let now = 8 * 3600;
-  for (let i = 0; i < 3600 / CONFIG.dt; i += 1) {
+  // Two hours: BART's two services share their track into the airport, and meet within the first.
+  for (let i = 0; i < 7200 / CONFIG.dt; i += 1) {
+    const standing = transit.trains.filter((t) => t.doorsUntil >= 0).map((t) => ({ train: t, cars: seen(t) }));
     now += CONFIG.dt;
     transit.step(CONFIG.dt, now);
+    // A train that has just closed its doors, turning round or not, is still all there.
+    for (const { train, cars } of standing) if (train.doorsUntil < 0 && seen(train) < cars) vanished += 1;
+    if (i % 4 === 0) collisions += trainsInsideEachOther(transit);
     // On a loop, the gap from each train to the next one round the line, front to front.
     for (let r = 0; r < transit.routes.length; r += 1) {
       const route = transit.routes[r];
@@ -72,5 +129,14 @@ describe('an hour of trains', () => {
 
   it('never lets one train run into the one ahead', () => {
     expect(closest).toBeGreaterThan(0);
+  });
+
+  it('works shared track as blocks, and never has two trains inside each other on any line', () => {
+    expect(transit.blockCount).toBeGreaterThanOrEqual(2);
+    expect(collisions).toBe(0);
+  });
+
+  it('keeps a train in view as it turns round at the end of its line', () => {
+    expect(vanished).toBe(0);
   });
 });

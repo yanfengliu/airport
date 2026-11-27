@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { formatClock } from '../shared/sun.ts';
 import type { Aircraft } from '../sim/airside/aircraft.ts';
+import { NOT_YET } from '../sim/airside/flights.ts';
 import { AIRCRAFT, AIRLINE_BY_CODE, DESTINATIONS } from '../sim/fleet.ts';
 import { DAY } from '../sim/schedule.ts';
 import type { Sim } from '../sim/sim.ts';
@@ -66,8 +67,8 @@ export function describeAircraft(sim: Sim, a: Aircraft, following: boolean): Ins
     ['Now', doing],
     ['Gate', v.stand || '—'],
     ['Runway', (departing ? v.departureRunway : v.arrivalRunway) || a.runwayEnd || '—'],
-    ['Arrival', `${r.arrFlight} from ${from.city}: due ${clock(v.sta)}, ${v.onBlockAt >= 0 ? `on stand ${clock(v.onBlockAt)}` : `expected ${clock(Math.max(v.eta, v.queuedEta))}`}`],
-    ['Departure', `${r.depFlight} to ${to.city}: due ${clock(v.std)}, ${v.offBlockAt >= 0 ? `off stand ${clock(v.offBlockAt)}` : `expected ${clock(v.etd)}`}`],
+    ['Arrival', `${r.arrFlight} from ${from.city}: due ${clock(v.sta)}, ${v.onBlockAt !== NOT_YET ? `on stand ${clock(v.onBlockAt)}` : `expected ${clock(Math.max(v.eta, v.queuedEta))}`}`],
+    ['Departure', `${r.depFlight} to ${to.city}: due ${clock(v.std)}, ${v.offBlockAt !== NOT_YET ? `off stand ${clock(v.offBlockAt)}` : `expected ${clock(v.etd)}`}`],
     ['Passengers', `${Math.round(v.deplaned)} of ${r.paxIn} off, ${Math.round(v.boarded)} of ${r.paxOut} on`],
     ['Speed', a.speed > 0.5 ? `${Math.round(a.speed * 1.944)} kt${a.alt > 3 ? `, ${Math.round(a.alt * 3.281).toLocaleString('en-US')} ft` : ''}` : 'Standing'],
   ];

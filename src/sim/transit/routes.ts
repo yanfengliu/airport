@@ -301,6 +301,7 @@ export function buildTransit(rail: Rail): Transit {
     const route = makeRoute(`Caltrain ${transit.routes.length}`, 'caltrain', far.path.pts, false, stops, 27, 6, 26);
     transit.addTrains(transit.addRoute(route), 1);
   }
+  transit.findSharedTrack();
   return transit;
 }
 

@@ -38,6 +38,7 @@ import { fileURLToPath } from 'node:url';
 import { bodyClearance, parkedClearance, type Parked } from '../../src/shared/footprint.ts';
 import { LAYOUT_FILES, type Layout } from '../../src/shared/layout.ts';
 import type { Aircraft } from '../../src/sim/airside/aircraft.ts';
+import { NOT_YET } from '../../src/sim/airside/flights.ts';
 import { Sim } from '../../src/sim/sim.ts';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -176,7 +177,7 @@ function run(seed: number): Result {
   const runStart = sim.time;
   const visits = new Map<number, { sta: number; std: number; landed: boolean; airborne: boolean }>();
   const noteVisits = (): void => {
-    for (const v of sim.airside.book.visits.values()) visits.set(v.id, { sta: v.sta, std: v.std, landed: v.landedAt >= 0, airborne: v.airborneAt >= 0 });
+    for (const v of sim.airside.book.visits.values()) visits.set(v.id, { sta: v.sta, std: v.std, landed: v.landedAt !== NOT_YET, airborne: v.airborneAt !== NOT_YET });
   };
   while (sim.time < end) {
     sim.step();

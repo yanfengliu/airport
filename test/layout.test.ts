@@ -34,10 +34,13 @@ function reachable(nodeCount: number, edges: readonly { a: number; b: number }[]
 describe('airfield', () => {
   const { airfield } = layout;
 
-  it('has the four runways at their published lengths, within 1%', () => {
+  it('has the four runways at their published lengths, within 1%, measured end to end', () => {
     expect(airfield.runways.map((r) => r.id).sort()).toEqual(Object.keys(PUBLISHED).sort());
     for (const r of airfield.runways) {
-      expect(Math.abs(r.length - PUBLISHED[r.id]) / PUBLISHED[r.id], r.id).toBeLessThan(0.01);
+      // The length drawn and flown is the distance between the ends, not the number written down.
+      const measured = Math.hypot(r.ends[0].x - r.ends[1].x, r.ends[0].y - r.ends[1].y);
+      expect(Math.abs(measured - PUBLISHED[r.id]) / PUBLISHED[r.id], `${r.id} measured`).toBeLessThan(0.01);
+      expect(Math.abs(measured - r.length), `${r.id} recorded length`).toBeLessThan(0.5);
       expect(r.ends.map((e) => e.name).sort().join('/'), r.id).toBe(r.id.split('/').sort().join('/'));
     }
   });
@@ -117,6 +120,94 @@ describe('roads and rail', () => {
       expect(e.pts.length % 3).toBe(0);
     }
     expect(roads.nodes.filter((n) => n.signal).length, 'traffic signals').toBeGreaterThan(10);
+  });
+
+  it('can be driven, the way the lanes run, from the freeways to both curbs and back out', () => {
+    // One way along an edge unless it has lanes back; a vehicle can only go the way traffic does.
+    const out: number[][] = Array.from({ length: roads.nodes.length }, () => []);
+    for (const e of roads.edges) {
+      if (e.cls === 'airside') continue;
+      out[e.a].push(e.b);
+      if (e.back > 0) out[e.b].push(e.a);
+    }
+    const from = (starts: number[]): Uint8Array => {
+      const seen = new Uint8Array(roads.nodes.length);
+      const stack = [...starts];
+      for (const s of starts) seen[s] = 1;
+      while (stack.length) {
+        for (const next of out[stack.pop()!]) {
+          if (!seen[next]) {
+            seen[next] = 1;
+            stack.push(next);
+          }
+        }
+      }
+      return seen;
+    };
+    const [west, south, east, north] = layout.land.bounds;
+    const atEdge = (n: number): boolean => {
+      const { x, y } = roads.nodes[n];
+      return x < west + 150 || x > east - 150 || y < south + 150 || y > north - 150;
+    };
+    const freeway = roads.edges.filter((e) => (e.name === 'US 101' || e.name === 'I 380') && atEdge(e.a)).map((e) => e.a);
+    expect(freeway.length).toBeGreaterThan(0);
+    const reached = from(freeway);
+    for (const level of ['Departures', 'Arrivals']) {
+      const curbs = roads.edges.filter((e) => e.name === level && e.len >= 45);
+      expect(curbs.some((e) => reached[e.a] && reached[e.b]), `${level} curb reached from the freeways`).toBe(true);
+      const away = from(curbs.map((e) => e.b));
+      const exits = roads.edges.filter((e) => (e.name === 'US 101' || e.name === 'I 380') && atEdge(e.b)).map((e) => e.b);
+      expect(exits.some((n) => away[n]), `out to a freeway from the ${level} curb`).toBe(true);
+    }
+  });
+
+  it('passes one road or track over another with room for the traffic beneath', () => {
+    /** Places where lines cross in plan, away from their ends, closer above each other than `need` but not level. */
+    const tooClose = (lines: readonly (readonly number[])[], need: number): { x: number; y: number }[] => {
+      const segments: { line: number; a: number[]; b: number[] }[] = [];
+      lines.forEach((pts, line) => {
+        for (let k = 3; k < pts.length; k += 3) segments.push({ line, a: [pts[k - 3], pts[k - 2], pts[k - 1]], b: [pts[k], pts[k + 1], pts[k + 2]] });
+      });
+      const CELL = 30;
+      const grid = new Map<string, number[]>();
+      segments.forEach((s, i) => {
+        for (let x = Math.floor(Math.min(s.a[0], s.b[0]) / CELL); x <= Math.floor(Math.max(s.a[0], s.b[0]) / CELL); x += 1) {
+          for (let y = Math.floor(Math.min(s.a[1], s.b[1]) / CELL); y <= Math.floor(Math.max(s.a[1], s.b[1]) / CELL); y += 1) {
+            const key = `${x},${y}`;
+            let list = grid.get(key);
+            if (!list) grid.set(key, (list = []));
+            list.push(i);
+          }
+        }
+      });
+      const found: { x: number; y: number }[] = [];
+      const seen = new Set<string>();
+      for (const list of grid.values()) {
+        for (let i = 0; i < list.length; i += 1) {
+          for (let j = i + 1; j < list.length; j += 1) {
+            const p = segments[list[i]];
+            const q = segments[list[j]];
+            const key = `${Math.min(list[i], list[j])}:${Math.max(list[i], list[j])}`;
+            if (p.line === q.line || seen.has(key)) continue;
+            seen.add(key);
+            const d = (p.b[0] - p.a[0]) * (q.b[1] - q.a[1]) - (p.b[1] - p.a[1]) * (q.b[0] - q.a[0]);
+            if (Math.abs(d) < 1e-9) continue;
+            const s = ((q.a[0] - p.a[0]) * (q.b[1] - q.a[1]) - (q.a[1] - p.a[1]) * (q.b[0] - q.a[0])) / d;
+            const t = ((q.a[0] - p.a[0]) * (p.b[1] - p.a[1]) - (q.a[1] - p.a[1]) * (p.b[0] - p.a[0])) / d;
+            if (s <= 0.001 || s >= 0.999 || t <= 0.001 || t >= 0.999) continue;
+            const dz = Math.abs(p.a[2] + (p.b[2] - p.a[2]) * s - (q.a[2] + (q.b[2] - q.a[2]) * t));
+            if (dz >= 0.3 && dz < need - 0.15) found.push({ x: p.a[0] + (p.b[0] - p.a[0]) * s, y: p.a[1] + (p.b[1] - p.a[1]) * s });
+          }
+        }
+      }
+      return found;
+    };
+    // Tracks clear a train on the line beneath by six metres, everywhere.
+    expect(tooClose(rail.lines.map((l) => l.pts), 6)).toEqual([]);
+    // Roads clear the traffic beneath by five, except at the US-101 and I-380 interchange, where
+    // the map stacks three levels of ramps closer than that, as the build reports.
+    const interchange = (p: { x: number; y: number }): boolean => Math.hypot(p.x + 2530, p.y - 1920) < 60;
+    expect(tooClose(roads.edges.map((e) => e.pts), 5).filter((p) => !interchange(p))).toEqual([]);
   });
 
   it('has the AirTrain stations, BART at the airport and Caltrain', () => {
