@@ -1248,7 +1248,7 @@
    "role": "character",
    "credit": "Traveller by Polyfork (https://polyfork.dev/asset/traveller-92f20c), CC BY 4.0",
    "page": "https://polyfork.dev/asset/traveller-92f20c",
-   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); the suitcase held in the hand removed; posed in 8 frames of its walk, standing, and sitting (the sitting pose made here)",
+   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); the suitcase held in the hand removed; its built-in Walk, Idle and Run clips sampled as 16, 12 and 12 frames, and a sitting pose made here from its standing one",
    "size": [
     2.33,
     1.75,
@@ -1337,17 +1337,27 @@
    "poses": {
     "walk": [
      0,
-     8
+     16
+    ],
+    "idle": [
+     16,
+     12
+    ],
+    "run": [
+     28,
+     12
     ],
     "stand": [
-     8,
+     16,
      1
     ],
     "sit": [
-     9,
+     40,
      1
     ]
-   }
+   },
+   "stride": 1.095,
+   "runStride": 4.255
   },
   {
    "id": "family-traveller-9af47e",
@@ -1355,7 +1365,7 @@
    "role": "character",
    "credit": "Family Traveller by Polyfork (https://polyfork.dev/asset/family-traveller-9af47e), CC BY 4.0",
    "page": "https://polyfork.dev/asset/family-traveller-9af47e",
-   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); what it held in its hand removed; posed in 8 frames of its walk, standing, and sitting (the sitting pose made here)",
+   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); what it held in its hand removed; its built-in Walk, Idle and Run clips sampled as 16, 12 and 12 frames, and a sitting pose made here from its standing one",
    "size": [
     1.71,
     1.75,
@@ -1472,17 +1482,27 @@
    "poses": {
     "walk": [
      0,
-     8
+     16
+    ],
+    "idle": [
+     16,
+     12
+    ],
+    "run": [
+     28,
+     12
     ],
     "stand": [
-     8,
+     16,
      1
     ],
     "sit": [
-     9,
+     40,
      1
     ]
-   }
+   },
+   "stride": 1.095,
+   "runStride": 4.255
   },
   {
    "id": "passenger-ac425a",
@@ -1490,7 +1510,7 @@
    "role": "character",
    "credit": "Passenger by Polyfork (https://polyfork.dev/asset/passenger-ac425a), CC BY 4.0",
    "page": "https://polyfork.dev/asset/passenger-ac425a",
-   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); what it held in its hand removed; posed in 8 frames of its walk, standing, and sitting (the sitting pose made here)",
+   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); what it held in its hand removed; its built-in Walk, Idle and Run clips sampled as 16, 12 and 12 frames, and a sitting pose made here from its standing one",
    "size": [
     2.02,
     1.79,
@@ -1595,17 +1615,27 @@
    "poses": {
     "walk": [
      0,
-     8
+     16
+    ],
+    "idle": [
+     16,
+     12
+    ],
+    "run": [
+     28,
+     12
     ],
     "stand": [
-     8,
+     16,
      1
     ],
     "sit": [
-     9,
+     40,
      1
     ]
-   }
+   },
+   "stride": 1.095,
+   "runStride": 4.255
   },
   {
    "id": "backpacker-f56207",
@@ -1613,7 +1643,7 @@
    "role": "character",
    "credit": "Backpacker by Polyfork (https://polyfork.dev/asset/backpacker-f56207), CC BY 4.0",
    "page": "https://polyfork.dev/asset/backpacker-f56207",
-   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); posed in 8 frames of its walk, standing, and sitting (the sitting pose made here)",
+   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); its built-in Walk, Idle and Run clips sampled as 16, 12 and 12 frames, and a sitting pose made here from its standing one",
    "size": [
     1.67,
     1.74,
@@ -1722,17 +1752,27 @@
    "poses": {
     "walk": [
      0,
-     8
+     16
+    ],
+    "idle": [
+     16,
+     12
+    ],
+    "run": [
+     28,
+     12
     ],
     "stand": [
-     8,
+     16,
      1
     ],
     "sit": [
-     9,
+     40,
      1
     ]
-   }
+   },
+   "stride": 1.095,
+   "runStride": 4.255
   },
   {
    "id": "cafe-customer-ca7e8e",
@@ -1740,7 +1780,7 @@
    "role": "character",
    "credit": "Cafe Customer by Polyfork (https://polyfork.dev/asset/cafe-customer-ca7e8e), CC BY 4.0",
    "page": "https://polyfork.dev/asset/cafe-customer-ca7e8e",
-   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); posed in 8 frames of its walk, standing, and sitting (the sitting pose made here)",
+   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); its built-in Walk, Idle and Run clips sampled as 16, 12 and 12 frames, and a sitting pose made here from its standing one",
    "size": [
     1.63,
     1.72,
@@ -1829,17 +1869,27 @@
    "poses": {
     "walk": [
      0,
-     8
+     16
+    ],
+    "idle": [
+     16,
+     12
+    ],
+    "run": [
+     28,
+     12
     ],
     "stand": [
-     8,
+     16,
      1
     ],
     "sit": [
-     9,
+     40,
      1
     ]
-   }
+   },
+   "stride": 1.095,
+   "runStride": 4.255
   },
   {
    "id": "neighborhood-child-8cc5ac",
@@ -1847,7 +1897,7 @@
    "role": "character",
    "credit": "Neighborhood Child by Polyfork (https://polyfork.dev/asset/neighborhood-child-8cc5ac), CC BY 4.0",
    "page": "https://polyfork.dev/asset/neighborhood-child-8cc5ac",
-   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); posed in 8 frames of its walk, standing, and sitting (the sitting pose made here)",
+   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); its built-in Walk, Idle and Run clips sampled as 16, 12 and 12 frames, and a sitting pose made here from its standing one",
    "size": [
     1.04,
     1.17,
@@ -1904,17 +1954,27 @@
    "poses": {
     "walk": [
      0,
-     8
+     16
+    ],
+    "idle": [
+     16,
+     12
+    ],
+    "run": [
+     28,
+     12
     ],
     "stand": [
-     8,
+     16,
      1
     ],
     "sit": [
-     9,
+     40,
      1
     ]
-   }
+   },
+   "stride": 0.507,
+   "runStride": 2.756
   },
   {
    "id": "check-in-agent-229fce",
@@ -1922,7 +1982,7 @@
    "role": "character",
    "credit": "Check-In Agent by Polyfork (https://polyfork.dev/asset/check-in-agent-229fce), CC BY 4.0",
    "page": "https://polyfork.dev/asset/check-in-agent-229fce",
-   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); what it held in its hand removed; posed in 8 frames of its walk, standing, and sitting (the sitting pose made here)",
+   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); what it held in its hand removed; its built-in Walk, Idle and Run clips sampled as 16, 12 and 12 frames, and a sitting pose made here from its standing one",
    "size": [
     1.71,
     1.7,
@@ -2051,17 +2111,27 @@
    "poses": {
     "walk": [
      0,
-     8
+     16
+    ],
+    "idle": [
+     16,
+     12
+    ],
+    "run": [
+     28,
+     12
     ],
     "stand": [
-     8,
+     16,
      1
     ],
     "sit": [
-     9,
+     40,
      1
     ]
-   }
+   },
+   "stride": 1.095,
+   "runStride": 4.255
   },
   {
    "id": "airport-security-officer-8fd38a",
@@ -2069,7 +2139,7 @@
    "role": "character",
    "credit": "Airport Security Officer by Polyfork (https://polyfork.dev/asset/airport-security-officer-8fd38a), CC BY 4.0",
    "page": "https://polyfork.dev/asset/airport-security-officer-8fd38a",
-   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); what it held in its hand removed; posed in 8 frames of its walk, standing, and sitting (the sitting pose made here)",
+   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); what it held in its hand removed; its built-in Walk, Idle and Run clips sampled as 16, 12 and 12 frames, and a sitting pose made here from its standing one",
    "size": [
     1.75,
     1.71,
@@ -2178,17 +2248,27 @@
    "poses": {
     "walk": [
      0,
-     8
+     16
+    ],
+    "idle": [
+     16,
+     12
+    ],
+    "run": [
+     28,
+     12
     ],
     "stand": [
-     8,
+     16,
      1
     ],
     "sit": [
-     9,
+     40,
      1
     ]
-   }
+   },
+   "stride": 1.095,
+   "runStride": 4.255
   },
   {
    "id": "airline-pilot-63226a",
@@ -2196,7 +2276,7 @@
    "role": "character",
    "credit": "Airline Pilot by Polyfork (https://polyfork.dev/asset/airline-pilot-63226a), CC BY 4.0",
    "page": "https://polyfork.dev/asset/airline-pilot-63226a",
-   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); what it held in its hand removed; posed in 8 frames of its walk, standing, and sitting (the sitting pose made here)",
+   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); what it held in its hand removed; its built-in Walk, Idle and Run clips sampled as 16, 12 and 12 frames, and a sitting pose made here from its standing one",
    "size": [
     2,
     1.79,
@@ -2301,17 +2381,27 @@
    "poses": {
     "walk": [
      0,
-     8
+     16
+    ],
+    "idle": [
+     16,
+     12
+    ],
+    "run": [
+     28,
+     12
     ],
     "stand": [
-     8,
+     16,
      1
     ],
     "sit": [
-     9,
+     40,
      1
     ]
-   }
+   },
+   "stride": 1.095,
+   "runStride": 4.255
   },
   {
    "id": "flight-attendant-befaf4",
@@ -2319,7 +2409,7 @@
    "role": "character",
    "credit": "Flight Attendant by Polyfork (https://polyfork.dev/asset/flight-attendant-befaf4), CC BY 4.0",
    "page": "https://polyfork.dev/asset/flight-attendant-befaf4",
-   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); what it held in its hand removed; posed in 8 frames of its walk, standing, and sitting (the sitting pose made here)",
+   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); what it held in its hand removed; its built-in Walk, Idle and Run clips sampled as 16, 12 and 12 frames, and a sitting pose made here from its standing one",
    "size": [
     2.22,
     1.83,
@@ -2404,17 +2494,27 @@
    "poses": {
     "walk": [
      0,
-     8
+     16
+    ],
+    "idle": [
+     16,
+     12
+    ],
+    "run": [
+     28,
+     12
     ],
     "stand": [
-     8,
+     16,
      1
     ],
     "sit": [
-     9,
+     40,
      1
     ]
-   }
+   },
+   "stride": 1.095,
+   "runStride": 4.255
   },
   {
    "id": "baggage-handler-0823f5",
@@ -2422,7 +2522,7 @@
    "role": "character",
    "credit": "Baggage Handler by Polyfork (https://polyfork.dev/asset/baggage-handler-0823f5), CC BY 4.0",
    "page": "https://polyfork.dev/asset/baggage-handler-0823f5",
-   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); posed in 8 frames of its walk, standing, and sitting (the sitting pose made here)",
+   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); its built-in Walk, Idle and Run clips sampled as 16, 12 and 12 frames, and a sitting pose made here from its standing one",
    "size": [
     1.65,
     1.75,
@@ -2535,17 +2635,27 @@
    "poses": {
     "walk": [
      0,
-     8
+     16
+    ],
+    "idle": [
+     16,
+     12
+    ],
+    "run": [
+     28,
+     12
     ],
     "stand": [
-     8,
+     16,
      1
     ],
     "sit": [
-     9,
+     40,
      1
     ]
-   }
+   },
+   "stride": 1.095,
+   "runStride": 4.255
   },
   {
    "id": "police-officer-1cc379",
@@ -2553,7 +2663,7 @@
    "role": "character",
    "credit": "Police Officer by Polyfork (https://polyfork.dev/asset/police-officer-1cc379), CC BY 4.0",
    "page": "https://polyfork.dev/asset/police-officer-1cc379",
-   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); posed in 8 frames of its walk, standing, and sitting (the sitting pose made here)",
+   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); its built-in Walk, Idle and Run clips sampled as 16, 12 and 12 frames, and a sitting pose made here from its standing one",
    "size": [
     1.67,
     1.79,
@@ -2654,17 +2764,27 @@
    "poses": {
     "walk": [
      0,
-     8
+     16
+    ],
+    "idle": [
+     16,
+     12
+    ],
+    "run": [
+     28,
+     12
     ],
     "stand": [
-     8,
+     16,
      1
     ],
     "sit": [
-     9,
+     40,
      1
     ]
-   }
+   },
+   "stride": 1.095,
+   "runStride": 4.255
   },
   {
    "id": "salaryman-commuter-4170c1",
@@ -2672,7 +2792,7 @@
    "role": "character",
    "credit": "Salaryman Commuter by Polyfork (https://polyfork.dev/asset/salaryman-commuter-4170c1), CC BY 4.0",
    "page": "https://polyfork.dev/asset/salaryman-commuter-4170c1",
-   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); posed in 8 frames of its walk, standing, and sitting (the sitting pose made here)",
+   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); its built-in Walk, Idle and Run clips sampled as 16, 12 and 12 frames, and a sitting pose made here from its standing one",
    "size": [
     1.63,
     1.71,
@@ -2757,17 +2877,27 @@
    "poses": {
     "walk": [
      0,
-     8
+     16
+    ],
+    "idle": [
+     16,
+     12
+    ],
+    "run": [
+     28,
+     12
     ],
     "stand": [
-     8,
+     16,
      1
     ],
     "sit": [
-     9,
+     40,
      1
     ]
-   }
+   },
+   "stride": 1.095,
+   "runStride": 4.255
   },
   {
    "id": "city-commuter-52a53f",
@@ -2775,7 +2905,7 @@
    "role": "character",
    "credit": "City Commuter by Polyfork (https://polyfork.dev/asset/city-commuter-52a53f), CC BY 4.0",
    "page": "https://polyfork.dev/asset/city-commuter-52a53f",
-   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); posed in 8 frames of its walk, standing, and sitting (the sitting pose made here)",
+   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); its built-in Walk, Idle and Run clips sampled as 16, 12 and 12 frames, and a sitting pose made here from its standing one",
    "size": [
     1.67,
     1.87,
@@ -2848,17 +2978,27 @@
    "poses": {
     "walk": [
      0,
-     8
+     16
+    ],
+    "idle": [
+     16,
+     12
+    ],
+    "run": [
+     28,
+     12
     ],
     "stand": [
-     8,
+     16,
      1
     ],
     "sit": [
-     9,
+     40,
      1
     ]
-   }
+   },
+   "stride": 1.095,
+   "runStride": 4.255
   },
   {
    "id": "commuter-381e7f",
@@ -2866,7 +3006,7 @@
    "role": "character",
    "credit": "Commuter by Polyfork (https://polyfork.dev/asset/commuter-381e7f), CC BY 4.0",
    "page": "https://polyfork.dev/asset/commuter-381e7f",
-   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); what it held in its hand removed; posed in 8 frames of its walk, standing, and sitting (the sitting pose made here)",
+   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); what it held in its hand removed; its built-in Walk, Idle and Run clips sampled as 16, 12 and 12 frames, and a sitting pose made here from its standing one",
    "size": [
     2.03,
     1.73,
@@ -2955,17 +3095,27 @@
    "poses": {
     "walk": [
      0,
-     8
+     16
+    ],
+    "idle": [
+     16,
+     12
+    ],
+    "run": [
+     28,
+     12
     ],
     "stand": [
-     8,
+     16,
      1
     ],
     "sit": [
-     9,
+     40,
      1
     ]
-   }
+   },
+   "stride": 1.095,
+   "runStride": 4.255
   },
   {
    "id": "student-with-backpack-65d2b4",
@@ -2973,7 +3123,7 @@
    "role": "character",
    "credit": "Student with Backpack by Polyfork (https://polyfork.dev/asset/student-with-backpack-65d2b4), CC BY 4.0",
    "page": "https://polyfork.dev/asset/student-with-backpack-65d2b4",
-   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); posed in 8 frames of its walk, standing, and sitting (the sitting pose made here)",
+   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); its built-in Walk, Idle and Run clips sampled as 16, 12 and 12 frames, and a sitting pose made here from its standing one",
    "size": [
     1.67,
     1.73,
@@ -3066,17 +3216,27 @@
    "poses": {
     "walk": [
      0,
-     8
+     16
+    ],
+    "idle": [
+     16,
+     12
+    ],
+    "run": [
+     28,
+     12
     ],
     "stand": [
-     8,
+     16,
      1
     ],
     "sit": [
-     9,
+     40,
      1
     ]
-   }
+   },
+   "stride": 1.095,
+   "runStride": 4.255
   },
   {
    "id": "student-in-a-hoodie-7c8223",
@@ -3084,7 +3244,7 @@
    "role": "character",
    "credit": "Student in a Hoodie by Polyfork (https://polyfork.dev/asset/student-in-a-hoodie-7c8223), CC BY 4.0",
    "page": "https://polyfork.dev/asset/student-in-a-hoodie-7c8223",
-   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); what it held in its hand removed; posed in 8 frames of its walk, standing, and sitting (the sitting pose made here)",
+   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); what it held in its hand removed; its built-in Walk, Idle and Run clips sampled as 16, 12 and 12 frames, and a sitting pose made here from its standing one",
    "size": [
     1.7,
     1.74,
@@ -3165,17 +3325,27 @@
    "poses": {
     "walk": [
      0,
-     8
+     16
+    ],
+    "idle": [
+     16,
+     12
+    ],
+    "run": [
+     28,
+     12
     ],
     "stand": [
-     8,
+     16,
      1
     ],
     "sit": [
-     9,
+     40,
      1
     ]
-   }
+   },
+   "stride": 1.095,
+   "runStride": 4.255
   },
   {
    "id": "visitor-with-badge-1005a3",
@@ -3183,7 +3353,7 @@
    "role": "character",
    "credit": "Visitor With Badge by Polyfork (https://polyfork.dev/asset/visitor-with-badge-1005a3), CC BY 4.0",
    "page": "https://polyfork.dev/asset/visitor-with-badge-1005a3",
-   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); what it held in its hand removed; posed in 8 frames of its walk, standing, and sitting (the sitting pose made here)",
+   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); what it held in its hand removed; its built-in Walk, Idle and Run clips sampled as 16, 12 and 12 frames, and a sitting pose made here from its standing one",
    "size": [
     1.97,
     1.72,
@@ -3280,17 +3450,27 @@
    "poses": {
     "walk": [
      0,
-     8
+     16
+    ],
+    "idle": [
+     16,
+     12
+    ],
+    "run": [
+     28,
+     12
     ],
     "stand": [
-     8,
+     16,
      1
     ],
     "sit": [
-     9,
+     40,
      1
     ]
-   }
+   },
+   "stride": 1.095,
+   "runStride": 4.255
   },
   {
    "id": "spectator-d086fe",
@@ -3298,7 +3478,7 @@
    "role": "character",
    "credit": "Spectator by Polyfork (https://polyfork.dev/asset/spectator-d086fe), CC BY 4.0",
    "page": "https://polyfork.dev/asset/spectator-d086fe",
-   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); posed in 8 frames of its walk, standing, and sitting (the sitting pose made here)",
+   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); its built-in Walk, Idle and Run clips sampled as 16, 12 and 12 frames, and a sitting pose made here from its standing one",
    "size": [
     1.45,
     1.69,
@@ -3383,17 +3563,27 @@
    "poses": {
     "walk": [
      0,
-     8
+     16
+    ],
+    "idle": [
+     16,
+     12
+    ],
+    "run": [
+     28,
+     12
     ],
     "stand": [
-     8,
+     16,
      1
     ],
     "sit": [
-     9,
+     40,
      1
     ]
-   }
+   },
+   "stride": 0.908,
+   "runStride": 3.606
   },
   {
    "id": "barista-505240",
@@ -3401,7 +3591,7 @@
    "role": "character",
    "credit": "Barista by Polyfork (https://polyfork.dev/asset/barista-505240), CC BY 4.0",
    "page": "https://polyfork.dev/asset/barista-505240",
-   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); posed in 8 frames of its walk, standing, and sitting (the sitting pose made here)",
+   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); its built-in Walk, Idle and Run clips sampled as 16, 12 and 12 frames, and a sitting pose made here from its standing one",
    "size": [
     1.63,
     1.75,
@@ -3478,17 +3668,27 @@
    "poses": {
     "walk": [
      0,
-     8
+     16
+    ],
+    "idle": [
+     16,
+     12
+    ],
+    "run": [
+     28,
+     12
     ],
     "stand": [
-     8,
+     16,
      1
     ],
     "sit": [
-     9,
+     40,
      1
     ]
-   }
+   },
+   "stride": 1.095,
+   "runStride": 4.255
   },
   {
    "id": "shopkeeper-be5547",
@@ -3496,7 +3696,7 @@
    "role": "character",
    "credit": "Shopkeeper by Polyfork (https://polyfork.dev/asset/shopkeeper-be5547), CC BY 4.0",
    "page": "https://polyfork.dev/asset/shopkeeper-be5547",
-   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); posed in 8 frames of its walk, standing, and sitting (the sitting pose made here)",
+   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); its built-in Walk, Idle and Run clips sampled as 16, 12 and 12 frames, and a sitting pose made here from its standing one",
    "size": [
     1.6,
     1.67,
@@ -3573,17 +3773,27 @@
    "poses": {
     "walk": [
      0,
-     8
+     16
+    ],
+    "idle": [
+     16,
+     12
+    ],
+    "run": [
+     28,
+     12
     ],
     "stand": [
-     8,
+     16,
      1
     ],
     "sit": [
-     9,
+     40,
      1
     ]
-   }
+   },
+   "stride": 1.045,
+   "runStride": 4.061
   }
  ]
 }

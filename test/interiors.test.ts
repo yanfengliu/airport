@@ -12,6 +12,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { MODEL_OF } from '../src/render/static/interiors.ts';
+import { CONFIG } from '../src/sim/config.ts';
 import { Sim } from '../src/sim/sim.ts';
 import { SIZE, insidePolygon, type Fitting, type FittingKind } from '../src/sim/terminal/fittings.ts';
 import { ACT, POSE, ROLE } from '../src/sim/terminal/people.ts';
@@ -185,9 +186,19 @@ describe('crowds that are not machine-made', () => {
   const t = sim.terminals!;
   const p = t.people;
   let longestBoarding = 0;
+  /** Passengers seen going faster than anyone walks, and of them those whose doors were not about to close. */
+  let hurrying = 0;
+  let early = 0;
+  const { doorsClose, hurryFrom } = CONFIG.turnaround;
   for (let k = 0; k < 75; k += 1) {
     sim.run(60);
     for (const [id, q] of t.queues) if (t.plan.places[id].kind === 'holdroom') longestBoarding = Math.max(longestBoarding, q.line.length);
+    for (let id = 0; id < p.high; id += 1) {
+      if (!p.alive[id] || p.role[id] !== ROLE.passenger || p.speed[id] <= 1.46) continue;
+      hurrying += 1;
+      const visit = sim.airside.book.visits.get(p.visit[id]);
+      if (!visit || sim.time < visit.etd - (doorsClose + hurryFrom) * 60) early += 1;
+    }
   }
 
   it('keeps no line to one spacing, one centreline or one way of facing', () => {
@@ -262,6 +273,14 @@ describe('crowds that are not machine-made', () => {
     expect(longestBoarding).toBeGreaterThan(0);
     // A boarding group of a wide-body is some forty parties; everyone at once was seventy and more.
     expect(longestBoarding).toBeLessThanOrEqual(55);
+  });
+
+  it('has passengers run for gates whose doors are about to close, and nobody else', () => {
+    // Walking is 1.1 to 1.45 m/s; hurrying is a run, or with children a brisk walk.
+    expect(hurrying).toBeGreaterThan(0);
+    expect(early).toBe(0);
+    expect(t.stats.departing.hurried).toBeGreaterThan(0);
+    expect(t.stats.departing.hurried).toBeLessThan(0.1 * t.stats.departing.boarded);
   });
 
   it('has travellers pull their bags until they check them in, and after they collect them', () => {

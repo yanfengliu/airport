@@ -5,6 +5,7 @@
 // so that a whole terminal's crowd stays cheap to draw.
 
 import * as THREE from 'three';
+import { CONFIG } from '../../sim/config.ts';
 import type { Fittings } from '../../sim/terminal/fittings.ts';
 import { ACT, POSE, ROLE, type People } from '../../sim/terminal/people.ts';
 import { MeshBuilder, box, type RGB } from '../builder.ts';
@@ -28,8 +29,12 @@ const NEAR_REACH_MOST = 260;
 const NEAR_MOST = 3000;
 /** Characters drawn at most, of each model. */
 const PER_MODEL = 2500;
-/** Metres walked in one cycle of the walk. */
+/** Metres one cycle of the walk carries a character, where the model does not say. */
 const STRIDE = 1.55;
+/** Seconds of one cycle of Polyfork's built-in Idle clip, which every character has. */
+const IDLE_SECONDS = 2.5;
+/** Faster than this, metres a second, a person runs. */
+const RUNNING = 2.2;
 
 /** Travellers' characters, and how often each is chosen. */
 const TRAVELLERS: [string, number][] = [
@@ -104,12 +109,17 @@ export class PeopleLayer {
   private travellerWeight = 0;
   private readonly bags: THREE.InstancedMesh | null;
   private bagCount = 0;
-  /** Per person, drawn: how far into the walk cycle, where last drawn, and whose that was. */
-  private readonly phase: Float32Array;
+  /**
+   * Per person, drawn: metres walked (which times the walk and run cycles to the ground covered),
+   * where last drawn, and whose that was.
+   */
+  private readonly walked: Float32Array;
   private readonly lastX: Float32Array;
   private readonly lastY: Float32Array;
   private readonly lastSerial: Float64Array;
   private readonly matrix = new THREE.Matrix4();
+  /** Seconds of real time, for the idle clip. */
+  private time = 0;
   /** What the camera looks at, and the square of how far round it people are characters (negative: nobody). */
   private nearX = 0;
   private nearY = 0;
@@ -136,7 +146,7 @@ export class PeopleLayer {
     this.bodies.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.palette = CLOTHING.map((c) => new THREE.Color(c));
     this.skin = SKIN.map((c) => new THREE.Color(c));
-    this.phase = new Float32Array(capacity);
+    this.walked = new Float32Array(capacity);
     this.lastX = new Float32Array(capacity);
     this.lastY = new Float32Array(capacity);
     this.lastSerial = new Float64Array(capacity).fill(-1);
@@ -192,7 +202,8 @@ export class PeopleLayer {
    * is the point on the map the camera looks at. People near it are drawn as characters, the rest
    * as figures.
    */
-  update(people: People, alpha: number, cameraDistance: number, focusX = 0, focusY = 0): void {
+  update(people: People, alpha: number, cameraDistance: number, focusX = 0, focusY = 0, time = 0): void {
+    this.time = time;
     const visible = this.group.visible && cameraDistance <= this.maxDistance;
     const near = visible && this.crowds.size > 0 && cameraDistance <= NEAR;
     const reach = near ? Math.min(NEAR_REACH_MOST, cameraDistance * NEAR_REACH) : -1;
@@ -231,10 +242,10 @@ export class PeopleLayer {
         this.lastSerial[id] = serial;
         this.lastX[id] = x;
         this.lastY[id] = y;
-        this.phase[id] = (mix(serial, 7) % 100) / 100;
+        this.walked[id] = (mix(serial, 7) % 1000) / 100;
       }
       const moved = Math.hypot(x - this.lastX[id], y - this.lastY[id]);
-      if (moved < 5) this.phase[id] = (this.phase[id] + moved / STRIDE) % 1;
+      if (moved < 5) this.walked[id] = (this.walked[id] + moved) % 10000;
       this.lastX[id] = x;
       this.lastY[id] = y;
       const dx = people.x[id] - people.px[id];
@@ -246,6 +257,10 @@ export class PeopleLayer {
       const size = Math.max(1, people.size[id]);
       const sitting = people.pose[id] === POSE.sitting && people.seat[id] >= 0 && seats;
       const queued = people.act[id] === ACT.queued || people.act[id] === ACT.served;
+      // Metres a second over the last step: on the move faster than anyone walks, not stepping up
+      // in a line, is a run (a jump of more than a few metres is a change of floor, not a pace).
+      const pace = Math.sqrt(dx * dx + dy * dy) / CONFIG.dt;
+      const running = walking && !queued && pace > RUNNING && pace < 8;
       const luggage = people.luggage[id];
       for (let member = 0; member < size; member += 1) {
         const crowd = this.crowdOf(people, id, member);
@@ -282,9 +297,17 @@ export class PeopleLayer {
           mx = x + c * ahead - s * left;
           my = y + s * ahead + c * left;
           if (walking) {
-            const [first, count] = crowd.pose('walk');
-            frame = first + (Math.floor(((this.phase[id] + member * 0.37) % 1) * count) % count);
-          } else frame = crowd.pose('stand')[0];
+            // The built-in walk, or run when faster than walking, timed to the ground covered so
+            // that a planted foot stays planted: one cycle for every stride the model takes.
+            const run = running && crowd.pose('run')[1] > 1;
+            const [first, count] = crowd.pose(run ? 'run' : 'walk');
+            const stride = ((run ? crowd.model.info.runStride : crowd.model.info.stride) ?? STRIDE) * tall;
+            frame = first + (Math.floor((((this.walked[id] / stride + member * 0.37) % 1) + 1) % 1 * count) % count);
+          } else {
+            // The built-in idle, each person at their own point in it: breathing, shifting their weight.
+            const [first, count] = crowd.pose('idle');
+            frame = first + (Math.floor((((this.time / IDLE_SECONDS + (mix(serial, 53 + member) % 1000) / 1000) % 1) + 1) % 1 * count) % count);
+          }
         }
         crowd.add(mx, my, h, face, frame, outfit, member >= 2 && size >= 3 ? 1 : tall);
         // A suitcase each, for as many members as the party has bags, pulled behind or stood beside.

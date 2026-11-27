@@ -25,6 +25,9 @@ export interface ModelInfo {
   parts?: string[];
   bones?: number;
   poses?: Record<string, [number, number]>;
+  /** For characters: metres one cycle of the walk, and of the run, carries them. */
+  stride?: number;
+  runStride?: number;
 }
 
 export interface Model {

@@ -30,6 +30,7 @@ const HOUSEKEEPING = 5;
 /** At a mid-day start, travellers who came more than this many seconds before are through security. */
 const WARM_THROUGH = 2400;
 const { shiftsFrom: SHIFTS_FROM, shiftHours: SHIFT_HOURS, shopsOpen: SHOPS_OPEN } = CONFIG.staff;
+const { lateShare: LATE_SHARE, lateLead: LATE_LEAD } = CONFIG.travellers;
 /** Metres from its gate within which a party can be boarding that gate's flight. */
 const GATE_REACH = 60;
 
@@ -58,6 +59,8 @@ const MISSED = 1 << 3;
 const LEAVING = 1 << 4;
 /** A departing party that came in on another flight and changed here, never leaving the airside. */
 const CONNECTING = 1 << 5;
+/** Flag: a passenger who has started to hurry for a gate whose doors are about to close. */
+const HURRIED = 1 << 6;
 /** Seconds between an arrival and an onward flight that a connection may have, at least and at most. */
 const CONNECT_SHORTEST = 45 * 60;
 const CONNECT_LONGEST = 4 * 3600;
@@ -96,7 +99,7 @@ export function percentile(stats: WaitStats, share: number): number {
 
 export interface TerminalStats {
   /** People, not parties. */
-  departing: { created: number; boarded: number; missed: number; cancelled: number; placed: number };
+  departing: { created: number; boarded: number; missed: number; cancelled: number; placed: number; hurried: number };
   arriving: { created: number; left: number; alreadyGone: number };
   /**
    * Passengers who change here from one flight to another without leaving the airside: counted
@@ -242,7 +245,7 @@ export class Terminals {
     }
     this.people = new People(CAPACITY, this.plan.grids, (floor) => FLOOR_HEIGHT[floor] ?? 0, STATION_SIGNALS + this.stationList.length);
     this.stats = {
-      departing: { created: 0, boarded: 0, missed: 0, cancelled: 0, placed: 0 },
+      departing: { created: 0, boarded: 0, missed: 0, cancelled: 0, placed: 0, hurried: 0 },
       arriving: { created: 0, left: 0, alreadyGone: 0 },
       connecting: { created: 0, boarded: 0, missed: 0 },
       bags: { checked: 0, loaded: 0, leftBehind: 0, misrouted: 0, returned: 0, arrived: 0, delivered: 0, collected: 0, lost: 0 },
@@ -795,9 +798,13 @@ export class Terminals {
       while (left > 0) {
         const size = Math.min(left, this.partySize());
         left -= size;
-        // How early people come: earlier for flights abroad, never later than the bag cut-off.
-        const lead = international ? this.rng.bounded(9600, 1800, 5400, 15000) : this.rng.bounded(6300, 1500, 3000, 12000);
+        // How early people come: earlier for flights abroad, never later than the bag cut-off if
+        // they have bags to check; of those with none, a few cut it fine, and some of them run.
         const hasBags = this.rng.chance(international ? 0.85 : 0.55);
+        const late = !hasBags && this.rng.chance(LATE_SHARE);
+        const lead = late
+          ? this.rng.range(LATE_LEAD[0], LATE_LEAD[1]) * 60 * (international ? 1.5 : 1)
+          : international ? this.rng.bounded(9600, 1800, 5400, 15000) : this.rng.bounded(6300, 1500, 3000, 12000);
         const bags = hasBags ? Math.max(1, Math.round(size * this.rng.range(0.6, 1.2))) : 0;
         this.pending.push({ at: visit.std - lead, visit: visit.id, size, bags });
         added = true;
@@ -1490,6 +1497,8 @@ export class Terminals {
       }
       const remaining = this.partiesOf.get(visit.id);
       const closeAt = visit.etd - CONFIG.turnaround.doorsClose * 60;
+      // The doors about to close: anyone of the flight not yet at its gate hurries.
+      if (remaining && now >= closeAt - CONFIG.turnaround.hurryFrom * 60) this.hurry(visit, remaining);
       const everyone = !remaining || remaining.size === 0;
       if (now >= closeAt && (everyone || now >= visit.etd - 120)) {
         visit.doorsClosed = true;
@@ -1501,6 +1510,23 @@ export class Terminals {
         // Its bags are aboard and gone with it.
         this.bagsOnFlight.delete(visit.id);
       }
+    }
+  }
+
+  /**
+   * Those of a flight whose doors are about to close who are not yet at its gate run for it, or,
+   * with children, walk briskly: once each, never slower than they were.
+   */
+  private hurry(visit: Visit, remaining: Set<number>): void {
+    const people = this.people;
+    const gate = this.holdroomOf(visit);
+    for (const person of remaining) {
+      if (!people.alive[person] || people.flags[person] & HURRIED) continue;
+      if (gate && people.floor[person] === FLOOR.airside && Math.hypot(people.x[person] - gate.x, people.y[person] - gate.y) <= GATE_REACH) continue;
+      people.flags[person] |= HURRIED;
+      const [slow, fast] = people.size[person] >= 3 ? CONFIG.turnaround.brisk : CONFIG.turnaround.run;
+      people.speed[person] = Math.max(people.speed[person], this.rng.range(slow, fast));
+      this.stats.departing.hurried += people.size[person];
     }
   }
 

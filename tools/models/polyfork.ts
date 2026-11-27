@@ -1,18 +1,23 @@
 #!/usr/bin/env node
-// Fetch the Polyfork models the app draws and convert each to the compact form it loads.
+// Convert the Polyfork models the app draws to the compact form it loads.
 //
-//   node tools/models/polyfork.ts [--refetch]
+//   node tools/models/polyfork.ts [--dataset <dir>] [--refetch]
 //
 // Polyfork (https://polyfork.dev) publishes free low-poly models whose mesh files are under
 // CC BY 4.0: free to share and change with a credit line, which public/models/CREDITS.md carries
 // for every model here, with what was changed. Only the GLB mesh files are used; the source
 // modules are under Polyfork's own licence and are not fetched.
 //
-// The GLBs are fetched once into artifacts/models/polyfork/ (not tracked) and converted into
+// What each model is (its title, page and real size) comes from the owner's local Polyfork
+// dataset, an index of the catalogue (`--dataset`, by default ../3d-maker/dataset/polyfork, its
+// free-assets.json). A GLB the dataset holds is used from there; any other is fetched once from
+// the link the index gives into artifacts/models/polyfork/ (not tracked). Each is converted into
 // public/models/: per model a binary of quantized positions, a colour slot per vertex and the
 // triangles, and for characters the bone each vertex follows and the bone matrices of each pose
-// the app draws (a walk cycle, standing, sitting). public/models/index.json lists them all with
-// their palettes, sizes and credits. Vertices are welded, as the app shades every face flat.
+// the app draws: frames of the built-in Walk, Idle and Run clips, and sitting, made from the
+// standing pose. public/models/index.json lists them all with their palettes, sizes, credits and,
+// for characters, how far a walk or a run cycle carries them. Vertices are welded, as the app
+// shades every face flat.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -22,6 +27,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const cache = join(root, 'artifacts', 'models', 'polyfork');
 const out = join(root, 'public', 'models');
 const refetch = process.argv.includes('--refetch');
+const dataset = process.argv.includes('--dataset') ? resolve(process.argv[process.argv.indexOf('--dataset') + 1]) : resolve(root, '..', '3d-maker', 'dataset', 'polyfork');
 const AGENT = 'sfo-airport-sim/0.1 (open-source airport simulation; fetches each model once)';
 
 type Role = 'prop' | 'character';
@@ -87,8 +93,10 @@ const MODELS: Wanted[] = [
   { id: 'shopkeeper-be5547', role: 'character', drop: HELD, dropped: 'what it held in its hand removed' },
 ];
 
-/** Frames sampled from each character's walk, and the seat height the sitting pose is made for, metres. */
-const WALK_FRAMES = 8;
+/** Frames sampled from each character's built-in clips, and the seat height the sitting pose is made for, metres. */
+const WALK_FRAMES = 16;
+const IDLE_FRAMES = 12;
+const RUN_FRAMES = 12;
 const SEAT_HEIGHT = 0.46;
 
 // ---- fetching ----------------------------------------------------------------------------------
@@ -113,25 +121,47 @@ interface Meta {
   size: [number, number, number];
 }
 
+/** A row of the dataset's index of free models. */
+interface Row {
+  id: string;
+  title: string;
+  free: boolean;
+  page: string;
+  triangles: number;
+  size_m: { x: number; y: number; z: number };
+  download?: { glb?: string };
+}
+
+let rows: Map<string, Row> | null = null;
+
+/** The dataset's index of the free models, by id. */
+function indexed(): Map<string, Row> {
+  if (!rows) {
+    const file = join(dataset, 'free-assets.json');
+    if (!existsSync(file)) throw new Error(`No Polyfork dataset at ${dataset}: pass --dataset <dir> holding free-assets.json`);
+    rows = new Map((JSON.parse(readFileSync(file, 'utf8')) as Row[]).map((r) => [r.id, r]));
+  }
+  return rows;
+}
+
 async function fetchModel(m: Wanted): Promise<{ glb: Buffer; meta: Meta }> {
+  const row = indexed().get(m.id);
+  if (!row) throw new Error(`${m.id}: not in the dataset's index at ${dataset}`);
+  // Every free model's mesh files are offered under CC BY 4.0 (the dataset's INDEX-LICENSE.md and
+  // https://polyfork.dev/licensing); the credit line is the one Polyfork gives each model.
+  if (!row.free) throw new Error(`${m.id}: not a free model, so not under CC BY 4.0`);
+  const meta: Meta = { id: m.id, name: row.title, credit: `${row.title} by Polyfork (${row.page}), CC BY 4.0`, page: row.page, triangles: row.triangles, size: [row.size_m.x, row.size_m.y, row.size_m.z] };
+  const local = join(dataset, `${m.id}.glb`);
+  if (existsSync(local) && !refetch) return { glb: readFileSync(local), meta };
   mkdirSync(cache, { recursive: true });
   const glbFile = join(cache, `${m.id}.glb`);
-  const metaFile = join(cache, `${m.id}.json`);
-  if (refetch || !existsSync(glbFile) || !existsSync(metaFile)) {
-    const info = await get(`https://polyfork.dev/api/assets/${m.id}`);
-    if (!info.ok) throw new Error(`${m.id}: details ${info.status}`);
-    const row = (await info.json()) as Record<string, unknown>;
-    const a = (row.asset ?? row) as Record<string, unknown>;
-    const size = a.size_m as { x: number; y: number; z: number };
-    const meta: Meta = { id: m.id, name: String(a.title ?? a.name ?? m.id), credit: String(a.credit), page: String(a.page ?? `https://polyfork.dev/asset/${m.id}`), triangles: Number(a.triangles), size: [size.x, size.y, size.z] };
-    if (!/CC BY 4\.0/.test(meta.credit)) throw new Error(`${m.id}: not offered under CC BY 4.0 (${meta.credit})`);
-    const file = await get(`https://polyfork.dev/cdn/${m.id}.glb`);
+  if (refetch || !existsSync(glbFile)) {
+    const file = await get(row.download?.glb ?? `https://polyfork.dev/cdn/${m.id}.glb`);
     if (!file.ok) throw new Error(`${m.id}: GLB ${file.status}`);
     writeFileSync(glbFile, Buffer.from(await file.arrayBuffer()));
-    writeFileSync(metaFile, JSON.stringify(meta, null, 1));
     console.log(`fetched ${m.id} (${(readFileSync(glbFile).length / 1024).toFixed(0)} KiB)`);
   }
-  return { glb: readFileSync(glbFile), meta: JSON.parse(readFileSync(metaFile, 'utf8')) as Meta };
+  return { glb: readFileSync(glbFile), meta };
 }
 
 // ---- reading a GLB ---------------------------------------------------------------------------
@@ -404,6 +434,27 @@ function sample(g: Gltf, clip: Clip, time: number, base: Pose, hips: number): Po
   return pose;
 }
 
+/**
+ * How far one cycle of a clip played on the spot carries a character: while a foot is planted it
+ * moves back under the body as far as the body moves forward, so the stride is that backward
+ * travel over the share of the cycle the foot is down. Characters face +z.
+ */
+function strideOf(g: Gltf, c: Clip, length: number, rest: Pose, hips: number, parent: Int32Array, named: (name: string) => number): number | undefined {
+  const foot = named('LeftFoot');
+  if (foot < 0 || length <= 0) return undefined;
+  const steps = 60;
+  const at: { y: number; z: number }[] = [];
+  for (let f = 0; f < steps; f += 1) {
+    const w = worlds(g, sample(g, c, (f / steps) * length, rest, hips), parent);
+    at.push({ y: w[foot][13], z: w[foot][14] });
+  }
+  const lowest = Math.min(...at.map((p) => p.y));
+  const down = at.filter((p) => p.y < lowest + 0.02);
+  if (down.length < 3) return undefined;
+  const travel = Math.max(...down.map((p) => p.z)) - Math.min(...down.map((p) => p.z));
+  return travel / (down.length / steps);
+}
+
 // ---- converting --------------------------------------------------------------------------------
 
 interface Entry {
@@ -425,6 +476,9 @@ interface Entry {
   parts?: string[];
   bones?: number;
   poses?: Record<string, [number, number]>;
+  /** For characters: metres one cycle of the walk, and of the run, carries them, from how far a planted foot moves back. */
+  stride?: number;
+  runStride?: number;
 }
 
 function convert(m: Wanted, glb: Buffer, meta: Meta, borrowed: Clip[]): Entry {
@@ -540,6 +594,8 @@ function convert(m: Wanted, glb: Buffer, meta: Meta, borrowed: Clip[]): Entry {
 
   // Poses: the bone matrices (bind space to model space) of each frame the app draws.
   let poses: Record<string, [number, number]> | undefined;
+  let stride: number | undefined;
+  let runStride: number | undefined;
   const matrices: number[] = [];
   if (m.role === 'character') {
     if (!joints.length) throw new Error(`${m.id}: a character with no skin`);
@@ -554,16 +610,25 @@ function convert(m: Wanted, glb: Buffer, meta: Meta, borrowed: Clip[]): Entry {
     poses = {};
     const walk = clip('Walk');
     const idle = clip('Idle');
+    const run = clip('Run');
     if (!walk || !idle) throw new Error(`${m.id}: no walk or idle clip, here or borrowed`);
     const standing = sample(g, idle, 0, rest, hips);
-    {
-      const times = read(walk.g, walk.bin, walk.animation.samplers[0].input).values;
-      const length = times[times.length - 1];
-      poses.walk = [frames.length, WALK_FRAMES];
-      for (let f = 0; f < WALK_FRAMES; f += 1) frames.push(sample(g, walk, (f / WALK_FRAMES) * length, rest, hips));
-    }
-    poses.stand = [frames.length, 1];
-    frames.push(standing);
+    const lengthOf = (c: Clip): number => {
+      const times = read(c.g, c.bin, c.animation.samplers[0].input).values;
+      return times[times.length - 1];
+    };
+    // Each built-in clip as frames over one cycle, as made: walking, standing idle, running.
+    const take = (name: string, c: Clip, count: number): void => {
+      poses![name] = [frames.length, count];
+      for (let f = 0; f < count; f += 1) frames.push(sample(g, c, (f / count) * lengthOf(c), rest, hips));
+    };
+    take('walk', walk, WALK_FRAMES);
+    take('idle', idle, IDLE_FRAMES);
+    if (run) take('run', run, RUN_FRAMES);
+    // Standing still is the idle clip's first frame.
+    poses.stand = [poses.idle[0], 1];
+    stride = strideOf(g, walk, lengthOf(walk), rest, hips, parent, named);
+    if (run) runStride = strideOf(g, run, lengthOf(run), rest, hips, parent, named);
     // Sitting, made from standing: thighs forward, shins down, and the hips lowered onto a seat.
     {
       const sit: Pose = { t: standing.t.map((v) => [...v]), r: standing.r.map((v) => [...v]), s: standing.s.map((v) => [...v]) };
@@ -643,7 +708,7 @@ function convert(m: Wanted, glb: Buffer, meta: Meta, borrowed: Clip[]): Entry {
   writeFileSync(join(out, file), data);
   const changes = ['converted to a compact form for this app (vertices welded and quantized, colours as slots)'];
   if (m.dropped && skipped) changes.push(m.dropped);
-  if (m.role === 'character') changes.push(`posed in ${WALK_FRAMES} frames of its walk, standing, and sitting (the sitting pose made here)`);
+  if (m.role === 'character') changes.push(`its built-in Walk, Idle and Run clips sampled as ${WALK_FRAMES}, ${IDLE_FRAMES} and ${RUN_FRAMES} frames, and a sitting pose made here from its standing one`);
   console.log(`${m.id}: ${vertexCount} vertices, ${tris.length / 3} triangles, ${palette.length / 3} colours${m.role === 'character' ? `, ${joints.length} bones, ${matrices.length / 12 / joints.length} poses` : ''}${skipped ? `, ${skipped} parts left out` : ''}; ${(data.length / 1024).toFixed(0)} KiB`);
   return {
     id: m.id,
@@ -661,6 +726,8 @@ function convert(m: Wanted, glb: Buffer, meta: Meta, borrowed: Clip[]): Entry {
     parts: m.role === 'character' ? slotParts : undefined,
     bones: m.role === 'character' ? joints.length : undefined,
     poses,
+    stride: stride === undefined ? undefined : Math.round(stride * 1000) / 1000,
+    runStride: runStride === undefined ? undefined : Math.round(runStride * 1000) / 1000,
   };
 }
 

@@ -121,6 +121,14 @@ export const CONFIG = {
     /** Minutes before departure at which boarding starts and at which doors close. */
     boardingStarts: { regional: 28, narrow: 36, wide: 50, super: 60 },
     doorsClose: 7,
+    /**
+     * Minutes before the doors close from which a passenger not yet at the gate runs for it, and
+     * how fast, metres a second: about the pace of the characters' built-in run, which carries
+     * them some 4.3 m a cycle. A party of three or more, with children in it, walks briskly instead.
+     */
+    hurryFrom: 12,
+    run: [3.2, 4.0] as [number, number],
+    brisk: [1.5, 1.7] as [number, number],
     /** Seconds from parking until the jet bridge is on and doors open. */
     bridgeOn: [70, 130] as [number, number],
   },
@@ -138,6 +146,16 @@ export const CONFIG = {
     },
     /** Room kept between the bodies of two trains on tracks side by side; any closer, and the track there is one block. */
     passingClearance: 0.3,
+  },
+
+  travellers: {
+    /**
+     * Of departing travellers with no bags to check, the share who cut it fine, and how fine:
+     * minutes before departure they come, at random between these (half as much again for a
+     * flight abroad). Some of them run for the gate.
+     */
+    lateShare: 0.12,
+    lateLead: [20, 45] as [number, number],
   },
 
   staff: {
