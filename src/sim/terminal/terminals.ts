@@ -14,7 +14,7 @@ import { NOT_YET, type FlightBook, type Visit } from '../airside/flights.ts';
 import { CONFIG } from '../config.ts';
 import { AIRCRAFT, AIRLINES, AIRLINE_BY_CODE } from '../fleet.ts';
 import type { Rng } from '../rng.ts';
-import { BOOTH_FROM_PASSENGER, BRANDS, DESK_FROM_PASSENGER, LANE, SIZE, buildFittings, orient, withinAny, type Fittings, type SeatKind } from './fittings.ts';
+import { BOOTH_FROM_PASSENGER, BRANDS, DESK_FROM_PASSENGER, LANE, SIZE, buildFittings, insidePolygon, orient, withinAny, type Fittings, type SeatKind } from './fittings.ts';
 import { UNREACHABLE } from './grid.ts';
 import { People, POSE, ROLE, STEP } from './people.ts';
 import { FLOOR, FLOOR_HEIGHT, buildTerminalPlan, type Place, type PlaceKind, type TerminalPlan } from './plan.ts';
@@ -39,6 +39,9 @@ const LANE_POINTS: readonly (readonly [number, number])[] = (
   for (let i = 0; i <= na; i += 1) for (let j = 0; j <= nc; j += 1) if (i === 0 || i === na || j === 0 || j === nc) points.push([a - ea + (2 * ea * i) / na, c - ec + (2 * ec * j) / nc]);
   return points;
 });
+
+/** Metres behind a security lane's server its mouth is: behind the bins, a body's width clear of them. */
+const LANE_MOUTH = 1.75 + SIZE.bins[1] / 2 + 0.35;
 
 /** Most walkers at once: parties and staff. */
 export const CAPACITY = 40_000;
@@ -202,6 +205,9 @@ export class Terminals {
   private readonly fieldId = new Map<number, number>();
   private readonly pointsAround = new Map<number, number[]>();
   private readonly holdroomOfStand = new Map<string, Place>();
+  /** Where someone can stand at each place clear of its furniture, by place id (see freeSpot). */
+  private readonly freeSpots = new Map<number, [number, number]>();
+  private readonly freePoints = new Map<number, number>();
   /** Whether a point stands within the terminals' walls, as drawn. */
   private readonly withinWalls: (x: number, y: number) => boolean;
   private readonly nearShops = new Map<number, Place[]>();
@@ -340,6 +346,55 @@ export class Terminals {
    * Standing places near a place: on its floor, within `radius`, so a crowd spreads out; facing
    * `facing` give or take, or any way when it is NaN.
    */
+  /**
+   * Where someone can stand at a place without standing in its furniture: the nearest point to it,
+   * on its floor and in its room, at least a body's width from every fitting and seat. Worked out
+   * once for each place.
+   */
+  private freeSpot(place: Place): [number, number] {
+    let spot = this.freeSpots.get(place.id);
+    if (spot) return spot;
+    const level = (floor: number): number => (floor === FLOOR.arrivals ? 0 : 1);
+    const near = this.fittings.items.filter((i) => level(i.floor) === level(place.floor) && Math.hypot(i.x - place.x, i.y - place.y) < 14);
+    const seats: number[] = [];
+    for (let k = 0; k < this.fittings.seats.length; k += 3) {
+      if (Math.hypot(this.fittings.seats[k] - place.x, this.fittings.seats[k + 1] - place.y) < 10) seats.push(this.fittings.seats[k], this.fittings.seats[k + 1]);
+    }
+    const room = place.room >= 0 ? this.layout.terminals.areas[place.room].poly : null;
+    const grid = this.plan.grids[place.floor];
+    const clear = (x: number, y: number): boolean => {
+      if (grid.cellAt(x, y) < 0 || !this.withinWalls(x, y) || (room && !insidePolygon(room, x, y))) return false;
+      for (const i of near) {
+        const [c, sn] = [Math.cos(i.heading), Math.sin(i.heading)];
+        const a = Math.abs((x - i.x) * c + (y - i.y) * sn) - i.length / 2;
+        const b = Math.abs(-(x - i.x) * sn + (y - i.y) * c) - i.width / 2;
+        if (Math.hypot(Math.max(a, 0), Math.max(b, 0)) < 0.4) return false;
+      }
+      for (let k = 0; k < seats.length; k += 2) if (Math.hypot(seats[k] - x, seats[k + 1] - y) < 0.6) return false;
+      return true;
+    };
+    spot = [place.x, place.y];
+    let best = Infinity;
+    for (let u = -8; u <= 8; u += 0.5) {
+      for (let v = -8; v <= 8; v += 0.5) {
+        const d = Math.hypot(u, v);
+        if (d < best && clear(place.x + u, place.y + v)) [best, spot] = [d, [place.x + u, place.y + v]];
+      }
+    }
+    this.freeSpots.set(place.id, spot);
+    return spot;
+  }
+
+  /** The free spot at a place as a point people can be sent to. */
+  private freePoint(place: Place): number {
+    let id = this.freePoints.get(place.id);
+    if (id === undefined) {
+      id = this.people.addPoint(...this.freeSpot(place));
+      this.freePoints.set(place.id, id);
+    }
+    return id;
+  }
+
   private around(place: Place, radius: number, count: number, facing = NaN): number[] {
     let list = this.pointsAround.get(place.id);
     if (!list) {
@@ -633,7 +688,7 @@ export class Terminals {
       const [back, aside] = found ?? [0, 0];
       [rowX, rowY] = [rowX - ux * back - uy * aside, rowY - uy * back + ux * aside];
     }
-    const front: { x: number; y: number; exitX?: number; exitY?: number }[] = [];
+    const front: { x: number; y: number; exitX?: number; exitY?: number; approachX?: number; approachY?: number }[] = [];
     // A checkpoint keeps only the lanes that fit where its row stands (all of them, if none does).
     const keep = place.kind === 'checkpoint' ? Array.from({ length: servers }, (_, i) => laneFits(rowX, rowY, i)) : [];
     const keepAll = !keep.some(Boolean);
@@ -659,7 +714,10 @@ export class Terminals {
         along = BOOTH_FROM_PASSENGER + SIZE.booth[1] / 2 + 0.5;
         aside = alone ? beside : side * (beside - spacing / 2);
       }
-      front.push(Number.isNaN(along) ? { x, y } : { x, y, exitX: x + ux * along - uy * aside, exitY: y + uy * along + ux * aside });
+      const served: { x: number; y: number; exitX?: number; exitY?: number; approachX?: number; approachY?: number } = Number.isNaN(along) ? { x, y } : { x, y, exitX: x + ux * along - uy * aside, exitY: y + uy * along + ux * aside };
+      // Into a security lane from its mouth, behind its bins, not across the lanes beside it.
+      if (place.kind === 'checkpoint') [served.approachX, served.approachY] = [x - ux * LANE_MOUTH, y - uy * LANE_MOUTH];
+      front.push(served);
     }
     // The waiting area, and the crowd past its ropes, stand on the floor, within the walls and clear
     // of other halls' desks: where the area behind the row does not, the nearest that does, back
@@ -1683,7 +1741,8 @@ export class Terminals {
     if (hour > SHOPS_OPEN[0] && hour < SHOPS_OPEN[1]) {
       for (const shop of this.shops) {
         if (shop.kind === 'lounge') continue;
-        wanted.set(`shop:${shop.id}`, { x: shop.x, y: shop.y, floor: shop.floor, role: ROLE.shop });
+        const [x, y] = this.freeSpot(shop);
+        wanted.set(`shop:${shop.id}`, { x, y, floor: shop.floor, role: ROLE.shop });
       }
     }
     // A new shift: everyone at a post goes home, and others take their places.
@@ -1752,7 +1811,8 @@ export class Terminals {
       return;
     }
     const to = this.rng.pick(options);
-    this.people.setScript(person, [STEP.walk, this.field(to), STEP.wait, Math.round(this.rng.range(40, 200)), STEP.notify, EVENT.roam]);
+    // Up to the shop, and then to where they can stand clear of its counters and shelves.
+    this.people.setScript(person, [STEP.walk, this.field(to), STEP.point, this.freePoint(to), STEP.wait, Math.round(this.rng.range(40, 200)), STEP.notify, EVENT.roam]);
   }
 
   // ---- what the panel and the tests read ---------------------------------------------------------

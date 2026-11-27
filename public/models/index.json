@@ -7648,15 +7648,15 @@
    "category": "building",
    "credit": "Jet Bridge by Polyfork (https://polyfork.dev/asset/jet-bridge-4f39c0), CC BY 4.0",
    "page": "https://polyfork.dev/asset/jet-bridge-4f39c0",
-   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); its fixed link from the terminal only, without the canopy at the terminal, cut from the whole bridge",
+   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); its fixed link from the terminal only, without the canopy at the terminal, cut from the whole bridge; its windows copied onto the other side",
    "size": [
     6.7,
     2.9,
     2.6
    ],
    "file": "jet-bridge-link.bin",
-   "vertices": 76,
-   "triangles": 66,
+   "vertices": 84,
+   "triangles": 70,
    "box": [
     -16,
     3.75,
@@ -7804,15 +7804,15 @@
    "category": "building",
    "credit": "Jet Bridge by Polyfork (https://polyfork.dev/asset/jet-bridge-4f39c0), CC BY 4.0",
    "page": "https://polyfork.dev/asset/jet-bridge-4f39c0",
-   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); its telescoping tunnel only, cut from the whole bridge",
+   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); its telescoping tunnel only, cut from the whole bridge; its windows copied onto the other side",
    "size": [
     18.43,
     4.39,
     2.88
    ],
    "file": "jet-bridge-tunnel.bin",
-   "vertices": 310,
-   "triangles": 380,
+   "vertices": 334,
+   "triangles": 392,
    "box": [
     -6.615225791931152,
     2.1139495372772217,
@@ -7856,15 +7856,15 @@
    "category": "building",
    "credit": "Jet Bridge by Polyfork (https://polyfork.dev/asset/jet-bridge-4f39c0), CC BY 4.0",
    "page": "https://polyfork.dev/asset/jet-bridge-4f39c0",
-   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); its cab and the drum it turns on only, cut from the whole bridge",
+   "changed": "converted to a compact form for this app (vertices welded and quantized, colours as slots); its cab and the drum it turns on only, cut from the whole bridge; its windows copied onto the other side",
    "size": [
     5.18,
     3.98,
     4
    ],
    "file": "jet-bridge-cab.bin",
-   "vertices": 268,
-   "triangles": 342,
+   "vertices": 276,
+   "triangles": 346,
    "box": [
     10.819852828979492,
     2.5,

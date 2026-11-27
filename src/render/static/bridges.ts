@@ -44,6 +44,16 @@ export const JET_BRIDGE = {
 /** Metres the end of a bridge pulls back from where it is mapped to, and the shortest it gets with the models (the rotunda and the cab's drum just clear). */
 export const BRIDGE_RETRACT = 6;
 export const BRIDGE_SHORTEST = 4.6;
+/** Of its mapped length, how far a bridge's end reaches parked, with no aircraft at its stand. */
+export const BRIDGE_PARKED = 0.5;
+
+/**
+ * How far along its mapped line the end of a bridge `mapped` metres long reaches when parked: half
+ * of it, and at least BRIDGE_RETRACT short of where it is mapped to, but no shorter than `shortest`.
+ */
+export function parkedReach(mapped: number, shortest: number): number {
+  return Math.min(mapped, Math.max(shortest, Math.min(mapped - BRIDGE_RETRACT, mapped * BRIDGE_PARKED)));
+}
 /** Metres between the rotunda and the terminal's glass. */
 export const ROTUNDA_GAP = 0.3;
 

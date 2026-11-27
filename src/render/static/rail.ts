@@ -2,41 +2,80 @@
 
 import * as THREE from 'three';
 import type { Rail, RailLine, RailStation } from '../../shared/layout.ts';
-import { MeshBuilder, box, ribbon, rgb } from '../builder.ts';
+import { MeshBuilder, box, ribbon, rgb, type RGB } from '../builder.ts';
 import { ORDER, PALETTE, decalMaterial, decalMesh, solidMesh } from './common.ts';
 import { deck, piers } from './structures.ts';
 
 const WIDTH: Record<RailLine['kind'], number> = { airtrain: 3.1, bart: 4, caltrain: 4.4 };
 const ELEVATED_FROM = 0.6;
 const BURIED_BELOW = -0.4;
+/** A tunnel mouth's headwall, metres above the ground, and the dark of the tunnel in it. */
+const PORTAL_HEIGHT = 5.4;
+const TUNNEL_DARK = rgb(0x1b1d20);
+
+/** Where a run of track goes into the ground: the tunnel's mouth, and the way into it. */
+export interface Portal {
+  x: number;
+  y: number;
+  ux: number;
+  uy: number;
+}
 
 /**
  * Split a line into the runs that are above ground, dropping what is in tunnel. A run ends where
  * the track goes into the ground, between its points if need be, so that a viaduct comes down to
- * its tunnel mouth rather than stopping in the air at its last point above ground.
+ * its tunnel mouth rather than stopping in the air at its last point above ground; and each such
+ * end is a tunnel's mouth.
  */
-export function visibleRuns(pts: readonly number[]): number[][] {
-  const runs: number[][] = [];
+export function visibleRuns(pts: readonly number[]): { pts: number[]; portals: Portal[] }[] {
+  const runs: { pts: number[]; portals: Portal[] }[] = [];
   let current: number[] = [];
-  /** Where the track between points `a` and `b` (indices) is at the ground. */
-  const portal = (a: number, b: number): number[] => {
+  let portals: Portal[] = [];
+  /** Where the track between points `a` and `b` (indices) is at the ground, facing from `a` to `b`. */
+  const portal = (a: number, b: number, into: number): Portal => {
     const t = (BURIED_BELOW - pts[a + 2]) / (pts[b + 2] - pts[a + 2]);
-    return [pts[a] + (pts[b] - pts[a]) * t, pts[a + 1] + (pts[b + 1] - pts[a + 1]) * t, BURIED_BELOW];
+    const length = Math.hypot(pts[b] - pts[a], pts[b + 1] - pts[a + 1]) || 1;
+    return { x: pts[a] + (pts[b] - pts[a]) * t, y: pts[a + 1] + (pts[b + 1] - pts[a + 1]) * t, ux: (into * (pts[b] - pts[a])) / length, uy: (into * (pts[b + 1] - pts[a + 1])) / length };
   };
   for (let i = 0; i < pts.length; i += 3) {
     const buried = pts[i + 2] < BURIED_BELOW;
     const before = i >= 3 ? pts[i - 1] < BURIED_BELOW : buried;
     if (buried) {
-      if (!before && current.length) current.push(...portal(i - 3, i));
-      if (current.length >= 6) runs.push(current);
+      if (!before && current.length) {
+        const p = portal(i - 3, i, 1);
+        const n = current.length;
+        if (Math.hypot(p.x - current[n - 3], p.y - current[n - 2]) > 0.01) current.push(p.x, p.y, BURIED_BELOW);
+        portals.push(p);
+      }
+      if (current.length >= 6) runs.push({ pts: current, portals });
       current = [];
+      portals = [];
     } else {
-      if (before && i >= 3) current.push(...portal(i - 3, i));
+      if (before && i >= 3) {
+        const p = portal(i - 3, i, -1);
+        if (Math.hypot(p.x - pts[i], p.y - pts[i + 1]) > 0.01) current.push(p.x, p.y, BURIED_BELOW);
+        portals.push(p);
+      }
       current.push(pts[i], pts[i + 1], pts[i + 2]);
     }
   }
-  if (current.length >= 6) runs.push(current);
+  if (current.length >= 6) runs.push({ pts: current, portals });
   return runs;
+}
+
+/**
+ * A tunnel's mouth where track goes into the ground: a concrete headwall across it with the dark
+ * of the tunnel in it, and wing walls either side of the track coming down to it.
+ */
+function portalAt(builder: MeshBuilder, p: Portal, width: number, concrete: RGB): void {
+  const heading = Math.atan2(p.uy, p.ux);
+  const [nx, ny] = [-p.uy, p.ux];
+  box(builder, p.x + p.ux * 0.7, p.y + p.uy * 0.7, BURIED_BELOW, PORTAL_HEIGHT, 0.6, width / 2 + 1.8, heading, concrete, concrete);
+  box(builder, p.x + p.ux * 0.06, p.y + p.uy * 0.06, BURIED_BELOW, PORTAL_HEIGHT - 1.1, 0.03, width / 2 + 0.3, heading, TUNNEL_DARK, TUNNEL_DARK);
+  for (const side of [-1, 1]) {
+    const across = side * (width / 2 + 1.2);
+    box(builder, p.x - p.ux * 3.5 + nx * across, p.y - p.uy * 3.5 + ny * across, BURIED_BELOW, 1.6, 3.5, 0.3, heading, concrete, concrete);
+  }
 }
 
 /** Direction of the nearest piece of track of a station's own kind. */
@@ -72,7 +111,8 @@ export function buildRail(rail: Rail): THREE.Group {
 
   for (const line of rail.lines) {
     const width = WIDTH[line.kind];
-    for (const run of visibleRuns(line.pts)) {
+    for (const { pts: run, portals } of visibleRuns(line.pts)) {
+      for (const p of portals) portalAt(structure, p, width, concrete);
       let top = 0;
       for (let i = 2; i < run.length; i += 3) top = Math.max(top, run[i]);
       if (top > ELEVATED_FROM) {

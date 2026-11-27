@@ -120,8 +120,8 @@ export interface Carousel {
   width: number;
 }
 
-/** Edges of a walled room: a solid wall, a glass front, or the way in. */
-export const EDGE = { solid: 0, glass: 1, door: 2 } as const;
+/** Edges of a walled room: a solid wall, a glass front, the way in, or open where something already stands across its line. */
+export const EDGE = { solid: 0, glass: 1, door: 2, open: 3 } as const;
 
 /** A mapped room drawn with walls. */
 export interface WalledRoom {
@@ -306,6 +306,11 @@ class Layouter {
   /** The grids of the level a floor is on: the arrivals level, or both halves of the departures level. */
   private gridsOf(floor: number): NavGrid[] {
     return floor === FLOOR.arrivals ? [this.grids[FLOOR.arrivals]] : [this.grids[FLOOR.landside], this.grids[FLOOR.airside]];
+  }
+
+  /** Whether something already stands at a point. */
+  isTaken(floor: number, x: number, y: number): boolean {
+    return this.taken.has(this.key(floor, x, y));
   }
 
   private key(floor: number, x: number, y: number): number {
@@ -582,8 +587,11 @@ function walls(out: Layouter, poly: PolygonData, floor: number): number[] {
     const mx = (r[i * 2] + r[j * 2]) / 2 + ox * 1.6;
     const my = (r[i * 2 + 1] + r[j * 2 + 1]) / 2 + oy * 1.6;
     const open = out.walkable(floor, mx, my) && !insidePolygon(poly, mx, my);
-    edges.push(open ? EDGE.glass : EDGE.solid);
-    if (open && len > doorLength && len >= 2.4) {
+    // No wall through what stands there already: seats, a desk or a booth across the line.
+    let across = false;
+    for (let s = 0; s <= len && !across; s += 0.25) across = out.isTaken(floor, r[i * 2] + (dx / len) * s, r[i * 2 + 1] + (dy / len) * s);
+    edges.push(across ? EDGE.open : open ? EDGE.glass : EDGE.solid);
+    if (open && !across && len > doorLength && len >= 2.4) {
       doorLength = len;
       door = i;
     }

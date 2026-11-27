@@ -23,7 +23,7 @@ import { SOUTHEAST_PLAN, WEST_PLAN } from '../../sim/airside/tower.ts';
 import { AIRCRAFT, type AircraftType } from '../../sim/fleet.ts';
 import type { AirfieldLamps } from '../lights.ts';
 import { flatMaterial, propInstances, type Models } from '../models/library.ts';
-import { BRIDGE_RETRACT, BRIDGE_SHORTEST, JET_BRIDGE, bridgeLines } from './bridges.ts';
+import { BRIDGE_SHORTEST, JET_BRIDGE, bridgeLines, parkedReach } from './bridges.ts';
 
 /** Metres into the runway from the landing threshold, and out from its edge, of each kind: the windsock's the first of these with room. */
 const WINDSOCK_IN = 300;
@@ -352,13 +352,13 @@ export function airfieldFurniture(layout: Pick<Layout, 'airfield' | 'roads' | 'r
   };
   // The paths every bridge's moving tunnel and cab take: from its rotunda to a cab's length off the
   // fuselage at the front door of each type its stand takes (src/render/dynamic/bridge-layer.ts),
-  // and pulled back along the mapped line, its cab reaching a cab's length beyond the tunnel's end.
+  // and parked along the mapped line, its cab reaching a cab's length beyond the tunnel's end.
   const tunnels: number[][] = [];
   const reach = JET_BRIDGE.door - JET_BRIDGE.drum;
   for (const line of lines) {
     const stand = airfield.stands.find((o) => o.id === line.stand)!;
     const { x0, y0, x1, y1, length } = line.end;
-    const back = Math.min(length, Math.max(BRIDGE_SHORTEST, length - BRIDGE_RETRACT)) + reach;
+    const back = parkedReach(length, BRIDGE_SHORTEST) + reach;
     tunnels.push([x0, y0, x0 + ((x1 - x0) / length) * Math.max(length, back), y0 + ((y1 - y0) / length) * Math.max(length, back)]);
     for (const type of fits(stand)) {
       const at = poseAt(stand, type);

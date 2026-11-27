@@ -3,16 +3,16 @@
 // each mapped bridge (src/render/static/bridges.ts), and the tunnel, the cab and the lift move to
 // the door of each aircraft that parks (src/render/dynamic/bridge-layer.ts), both by where
 // JET_BRIDGE says each part is in the model. Bound: those measures, held to the converted parts;
-// every rotunda clear of the terminal's glass; and at every stand with a bridge, for every type the
-// stand takes, the cab's face at the front door with its floor at the sill, and nothing of the
-// bridge (tunnel, lift or cab) in the wings, engines or tail, or in a floodlight mast, there or
-// pulled back.
+// every rotunda clear of the terminal's glass; every bridge parked well back; and at every stand
+// with a bridge, for every type the stand takes, the cab's face at the front door with its floor at
+// the sill, and nothing of the bridge (tunnel, lift or cab) in the wings, engines or tail, or in a
+// floodlight mast, there or parked.
 
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import { BridgeLayer, doorFor } from '../src/render/dynamic/bridge-layer.ts';
 import { airfieldFurniture } from '../src/render/static/airfield-props.ts';
-import { BRIDGE_PARTS, JET_BRIDGE, ROTUNDA_GAP, buildBridges } from '../src/render/static/bridges.ts';
+import { BRIDGE_PARTS, BRIDGE_SHORTEST, JET_BRIDGE, ROTUNDA_GAP, buildBridges } from '../src/render/static/bridges.ts';
 import { airframe } from '../src/shared/airframe.ts';
 import { outline, polygonGap } from '../src/shared/footprint.ts';
 import { fuselageAt, newFuselage } from '../src/sim/airfield/path.ts';
@@ -88,6 +88,28 @@ describe('the jet bridge model', () => {
   });
 });
 
+describe("the jet bridge model's glazing", () => {
+  it('has as much glass on one side of its link, tunnel and cab as on the other', () => {
+    for (const id of [BRIDGE_PARTS.link, BRIDGE_PARTS.tunnel, BRIDGE_PARTS.cab]) {
+      const model = models.get(id)!;
+      const palette = model.info.palette;
+      // The glass: its dark blue.
+      const glass = new Set(Array.from({ length: palette.length / 3 }, (_, k) => k).filter((k) => palette[k * 3 + 2] > 0.1 && palette[k * 3 + 2] > 2 * palette[k * 3]));
+      const position = model.geometry.getAttribute('position');
+      const slot = model.geometry.getAttribute('slot');
+      const index = model.geometry.index!;
+      const sides = [0, 0];
+      for (let t = 0; t < index.count; t += 3) {
+        const corners = [index.getX(t), index.getX(t + 1), index.getX(t + 2)];
+        if (!glass.has(slot.getX(corners[0]))) continue;
+        sides[corners.reduce((z, v) => z + position.getZ(v), 0) > 0 ? 0 : 1] += 1;
+      }
+      expect(sides[0], `${id}: glass`).toBeGreaterThan(0);
+      expect(sides[1], `${id}: as much glass on its other side`).toBe(sides[0]);
+    }
+  });
+});
+
 describe('the jet bridges', () => {
   const layout = loadLayoutFromDisk();
   const bridges = once(() => buildBridges(layout, models));
@@ -98,6 +120,26 @@ describe('the jet bridges', () => {
     const names = group.children.map((m) => m.name).sort();
     expect(names).toEqual(['jet-bridge-links', 'jet-bridge-posts', 'jet-bridge-rotundas']);
     expect((group.children.find((m) => m.name === 'jet-bridge-rotundas') as THREE.InstancedMesh).count).toBe(ends.length);
+  });
+
+  it('park, with no aircraft at the stand, pulled well back: the cab no further out than half the mapped length, or the shortest the bridge gets', () => {
+    const matrix = new THREE.Matrix4();
+    const at = new THREE.Vector3();
+    const faults: string[] = [];
+    for (const end of bridges().ends) {
+      const idle = new BridgeLayer([end], models);
+      idle.update([], 0);
+      (idle.group.children.find((m) => m.name === 'jet-bridge-cabs') as THREE.InstancedMesh).getMatrixAt(0, matrix);
+      // The cab's face, as far out as the bridge reaches.
+      let far = 0;
+      for (const z of [-2, 2]) {
+        at.set(JET_BRIDGE.door, 0, z).applyMatrix4(matrix);
+        far = Math.max(far, Math.hypot(at.x - end.x0, -at.z - end.y0));
+      }
+      const mapped = Math.hypot(end.x1 - end.x0, end.y1 - end.y0);
+      if (far > Math.hypot(Math.max(BRIDGE_SHORTEST, mapped / 2) + JET_BRIDGE.door - JET_BRIDGE.drum, 2) + 0.1) faults.push(`${end.stand}: parked ${far.toFixed(1)} m out of ${mapped.toFixed(1)} m`);
+    }
+    expect(faults).toEqual([]);
   });
 
   it("turn on rotundas that stand clear of the terminal's glass", () => {

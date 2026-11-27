@@ -103,6 +103,9 @@ export class People {
   private aim: Int32Array;
   /** The cell a walker is stepping to, downhill on the field it follows; -1 for none chosen yet. */
   private toward: Int32Array;
+  /** A point someone called to a server goes by on the way there: the mouth of a lane; NaN for none. */
+  private viaX: Float32Array;
+  private viaY: Float32Array;
   private script: Int32Array;
   private pc: Uint8Array;
   private length: Uint8Array;
@@ -158,6 +161,8 @@ export class People {
     this.serial = new Float64Array(capacity);
     this.aim = new Int32Array(capacity).fill(-1);
     this.toward = new Int32Array(capacity).fill(-1);
+    this.viaX = new Float32Array(capacity).fill(NaN);
+    this.viaY = new Float32Array(capacity).fill(NaN);
     this.script = new Int32Array(capacity * STEPS * 2);
     this.pc = new Uint8Array(capacity);
     this.length = new Uint8Array(capacity);
@@ -237,6 +242,7 @@ export class People {
     this.seat[id] = -1;
     this.luggage[id] = 0;
     this.aim[id] = -1;
+    this.viaX[id] = NaN;
     this.pc[id] = 0;
     this.length[id] = 0;
     // A fixed offset from the low bits of `jitter`, up to about a metre each way.
@@ -329,7 +335,9 @@ export class People {
           this.moveTowards(id, this.tx[id], this.ty[id], this.speed[id] * 1.2 * dt);
           break;
         case ACT.served:
-          this.moveTowards(id, this.tx[id], this.ty[id], this.speed[id] * dt);
+          // By way of the lane's mouth, where there is one, so as not to cut through the next lanes.
+          if (Number.isNaN(this.viaX[id])) this.moveTowards(id, this.tx[id], this.ty[id], this.speed[id] * dt);
+          else if (this.moveTowards(id, this.viaX[id], this.viaY[id], this.speed[id] * dt)) this.viaX[id] = NaN;
           break;
         case ACT.wait:
           if (now >= this.until[id]) this.next(id);
@@ -535,6 +543,8 @@ export class People {
           this.act[person] = ACT.served;
           this.tx[person] = queue.servers[server].x;
           this.ty[person] = queue.servers[server].y;
+          this.viaX[person] = queue.servers[server].approachX;
+          this.viaY[person] = queue.servers[server].approachY;
           this.events?.called(person, q, server, waited);
         },
         (person, server) => {

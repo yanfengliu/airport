@@ -18,6 +18,9 @@ export interface Server {
   /** Where someone served here walks to before going on: through the lane, past the booth; NaN for nowhere. */
   exitX: number;
   exitY: number;
+  /** Where someone called here comes by on the way: the mouth of a lane, behind its bins; NaN for straight there. */
+  approachX: number;
+  approachY: number;
   open: boolean;
   /** Person being served, or -1, and when their turn ends. */
   serving: number;
@@ -68,10 +71,10 @@ export class ServiceQueue {
   totalWait = 0;
   longestWait = 0;
 
-  constructor(shape: QueueShape, servers: readonly { x: number; y: number; exitX?: number; exitY?: number }[], standable: ((x: number, y: number) => boolean) | null = null) {
+  constructor(shape: QueueShape, servers: readonly { x: number; y: number; exitX?: number; exitY?: number; approachX?: number; approachY?: number }[], standable: ((x: number, y: number) => boolean) | null = null) {
     this.shape = shape;
     this.standable = standable;
-    for (const s of servers) this.servers.push({ x: s.x, y: s.y, exitX: s.exitX ?? NaN, exitY: s.exitY ?? NaN, open: false, serving: -1, until: 0, served: 0 });
+    for (const s of servers) this.servers.push({ x: s.x, y: s.y, exitX: s.exitX ?? NaN, exitY: s.exitY ?? NaN, approachX: s.approachX ?? NaN, approachY: s.approachY ?? NaN, open: false, serving: -1, until: 0, served: 0 });
     // The head of the line is at the front edge; lanes run back and forth behind it.
     const ux = Math.cos(shape.heading);
     const uy = Math.sin(shape.heading);

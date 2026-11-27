@@ -14,7 +14,7 @@ import { describe, expect, it } from 'vitest';
 import { MODEL_OF } from '../src/render/static/interiors.ts';
 import { CONFIG } from '../src/sim/config.ts';
 import { Sim } from '../src/sim/sim.ts';
-import { SIZE, insidePolygon, type Fitting, type FittingKind } from '../src/sim/terminal/fittings.ts';
+import { EDGE, SIZE, insidePolygon, type Fitting, type FittingKind } from '../src/sim/terminal/fittings.ts';
 import { ACT, POSE, ROLE } from '../src/sim/terminal/people.ts';
 import { FLOOR } from '../src/sim/terminal/plan.ts';
 import { ServiceQueue, type LineSpot } from '../src/sim/terminal/queue.ts';
@@ -159,6 +159,53 @@ describe('the terminals, furnished', () => {
     expect(out.slice(0, 10)).toEqual([]);
   });
 
+  it("raises no room's wall or glass through a seat or a piece of furniture", () => {
+    const { f } = fitted();
+    const level = (floor: number): number => (floor === FLOOR.arrivals ? 0 : 1);
+    const toSegment = (px: number, py: number, ax: number, ay: number, bx: number, by: number): number => {
+      const [dx, dy] = [bx - ax, by - ay];
+      const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy || 1)));
+      return Math.hypot(px - ax - dx * t, py - ay - dy * t);
+    };
+    const walls: { ax: number; ay: number; bx: number; by: number; level: number }[] = [];
+    for (const room of f.rooms) {
+      const area = layout.terminals.areas[room.room];
+      const ring = area.poly.outer;
+      const n = ring.length / 2;
+      room.edges.forEach((edge, i) => {
+        if (edge !== EDGE.solid && edge !== EDGE.glass) return;
+        const j = (i + 1) % n;
+        walls.push({ ax: ring[i * 2], ay: ring[i * 2 + 1], bx: ring[j * 2], by: ring[j * 2 + 1], level: area.kind === 'claim' ? 0 : 1 });
+      });
+    }
+    expect(walls.length).toBeGreaterThan(300);
+    const through: string[] = [];
+    for (const g of f.groups) {
+      for (let k = g.first; k < g.first + g.count; k += 1) {
+        const [x, y] = [f.seats[k * 3], f.seats[k * 3 + 1]];
+        if (walls.some((w) => w.level === level(g.floor) && toSegment(x, y, w.ax, w.ay, w.bx, w.by) < 0.3)) through.push(`a ${g.kind} seat at ${x.toFixed(1)},${y.toFixed(1)}`);
+      }
+    }
+    for (const i of f.items) {
+      const box = corners(i, 0.08);
+      const inBox = (x: number, y: number): boolean => {
+        const [c, s] = [Math.cos(i.heading), Math.sin(i.heading)];
+        return Math.abs((x - i.x) * c + (y - i.y) * s) < i.length / 2 - 0.08 && Math.abs(-(x - i.x) * s + (y - i.y) * c) < i.width / 2 - 0.08;
+      };
+      for (const w of walls) {
+        if (w.level !== level(i.floor) || box.every(([x, y]) => toSegment(x, y, w.ax, w.ay, w.bx, w.by) > Math.hypot(i.length, i.width))) continue;
+        const steps = Math.max(2, Math.ceil(Math.hypot(w.bx - w.ax, w.by - w.ay) / 0.2));
+        let crosses = false;
+        for (let k = 0; k <= steps && !crosses; k += 1) crosses = inBox(w.ax + ((w.bx - w.ax) * k) / steps, w.ay + ((w.by - w.ay) * k) / steps);
+        if (crosses) {
+          through.push(`a ${i.kind} at ${i.x.toFixed(1)},${i.y.toFixed(1)}`);
+          break;
+        }
+      }
+    }
+    expect(through.slice(0, 8)).toEqual([]);
+  });
+
   it("stands nothing between a line's ropes: no seat, no furniture", () => {
     const { t, f } = fitted();
     const level = (floor: number): number => (floor === FLOOR.arrivals ? 0 : 1);
@@ -251,8 +298,37 @@ describe('crowds that are not machine-made', () => {
     let hurrying = 0;
     let early = 0;
     const { doorsClose, hurryFrom } = CONFIG.turnaround;
+    // Who stands inside a piece of furniture they have no business in: a traveller called to a
+    // security lane in another lane's bins or belt, shop staff or a cleaner in a shelf or counter.
+    const level = (floor: number): number => (floor === FLOOR.arrivals ? 0 : 1);
+    const cells = new Map<string, Fitting[]>();
+    const cellOf = (lv: number, x: number, y: number): string => `${lv}:${Math.floor(x / 10)},${Math.floor(y / 10)}`;
+    for (const i of t.fittings.items) {
+      const key = cellOf(level(i.floor), i.x, i.y);
+      cells.set(key, [...(cells.get(key) ?? []), i]);
+    }
+    const standingIn = (floor: number, x: number, y: number): Fitting | null => {
+      for (let dx = -10; dx <= 10; dx += 10) {
+        for (let dy = -10; dy <= 10; dy += 10) {
+          for (const i of cells.get(cellOf(level(floor), x + dx, y + dy)) ?? []) {
+            const [c, sn] = [Math.cos(i.heading), Math.sin(i.heading)];
+            if (Math.abs((x - i.x) * c + (y - i.y) * sn) < i.length / 2 - 0.1 && Math.abs(-(x - i.x) * sn + (y - i.y) * c) < i.width / 2 - 0.1) return i;
+          }
+        }
+      }
+      return null;
+    };
+    const misplaced: string[] = [];
     for (let k = 0; k < 75; k += 1) {
       sim.run(60);
+      for (let id = 0; id < p.high; id += 1) {
+        if (!p.alive[id]) continue;
+        const served = p.role[id] === ROLE.passenger && p.act[id] === ACT.served;
+        const working = (p.role[id] === ROLE.shop || p.role[id] === ROLE.cleaner) && p.act[id] === ACT.wait;
+        if (!served && !working) continue;
+        const i = standingIn(p.floor[id], p.x[id], p.y[id]);
+        if (i && (served ? i.kind === 'xray' || i.kind === 'bins' : i.kind !== 'board')) misplaced.push(`${served ? 'a traveller called to a lane' : 'staff at a shop'} in a ${i.kind} at ${p.x[id].toFixed(1)},${p.y[id].toFixed(1)}`);
+      }
       for (const [id, q] of t.queues) if (t.plan.places[id].kind === 'holdroom') longestBoarding = Math.max(longestBoarding, q.line.length);
       for (let id = 0; id < p.high; id += 1) {
         if (!p.alive[id] || p.role[id] !== ROLE.passenger || p.speed[id] <= 1.46) continue;
@@ -261,7 +337,11 @@ describe('crowds that are not machine-made', () => {
         if (!visit || sim.time < visit.etd - (doorsClose + hurryFrom) * 60) early += 1;
       }
     }
-    return { t, p, longestBoarding, hurrying, early };
+    return { t, p, longestBoarding, hurrying, early, misplaced };
+  });
+
+  it("puts nobody where they have no business: a traveller called to a lane not through the lanes beside it, nor shop staff or cleaners in the shelves", () => {
+    expect(crowds().misplaced.slice(0, 8)).toEqual([]);
   });
 
   it('keeps no line to one spacing, one centreline or one way of facing', () => {

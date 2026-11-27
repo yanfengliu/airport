@@ -13,10 +13,9 @@ import { airframe } from '../../shared/airframe.ts';
 import type { Aircraft } from '../../sim/airside/aircraft.ts';
 import { MeshBuilder, box } from '../builder.ts';
 import { flatMaterial, type Model, type Models } from '../models/library.ts';
-import { BRIDGE_FLOOR, BRIDGE_PARTS, BRIDGE_RETRACT, BRIDGE_ROOF, BRIDGE_SHORTEST, BRIDGE_STEEL, BRIDGE_TUNNEL, JET_BRIDGE, type BridgeEnd } from '../static/bridges.ts';
+import { BRIDGE_FLOOR, BRIDGE_PARTS, BRIDGE_ROOF, BRIDGE_SHORTEST, BRIDGE_STEEL, BRIDGE_TUNNEL, JET_BRIDGE, parkedReach, type BridgeEnd } from '../static/bridges.ts';
 
-/** Metres the end of a bridge pulls back, and the shortest it gets without the models (with them, BRIDGE_SHORTEST). */
-const RETRACT = BRIDGE_RETRACT;
+/** The shortest a bridge's end gets without the models (with them, BRIDGE_SHORTEST). */
 const SHORTEST = 1.5;
 const SHORTEST_DRAWN = BRIDGE_SHORTEST;
 /** Simulated seconds to reach out to the door or to pull back. */
@@ -155,12 +154,12 @@ export class BridgeLayer {
       }
       const target = at ? 1 : 0;
       this.out[i] = target > this.out[i] ? Math.min(target, this.out[i] + step) : Math.max(target, this.out[i] - step);
-      // Pulled back, the end lies along the mapped line, short of where it reaches; out, it swings
+      // Parked, the end lies along the mapped line, well short of where it reaches; out, it swings
       // round on its pivot to the door of the aircraft at the stand.
       const mx = end.x1 - end.x0;
       const my = end.y1 - end.y0;
       const mapped = Math.hypot(mx, my);
-      const back = Math.min(mapped, Math.max(shortest, mapped - RETRACT));
+      const back = parkedReach(mapped, shortest);
       const restX = end.x0 + (mx / mapped) * back;
       const restY = end.y0 + (my / mapped) * back;
       // Out, the tunnel's tip (with the models, the middle of the cab's drum) is a cab's length off

@@ -53,7 +53,16 @@ interface Wanted {
   keep?: RegExp;
   take?: (t: Triangle) => boolean;
   cut?: string;
+  /**
+   * Glass of the colour this picks out on one side only (its +z), copied onto the other mirrored
+   * and a little proud of that side's wall; and how that is said in the credits.
+   */
+  glaze?: (colour: readonly number[]) => boolean;
+  glazed?: string;
 }
+
+/** Metres out from its wall a pane mirrored onto the other side stands, so the two do not flicker. */
+const GLAZE_PROUD = 0.02;
 
 /**
  * A triangle of a model, for choosing the ones a part cut from it keeps: the name of its node, its
@@ -79,6 +88,9 @@ const HELD = /^attach-(left|right)hand$/i;
  * columns that rise with the tunnel. The tunnel is one long tube through all of them, cut across
  * where the parts meet; its other pieces go with the part they stand in.
  */
+/** The jet bridge's window glass: its dark blue. */
+const BRIDGE_GLASS = (c: readonly number[]): boolean => c[2] > 0.1 && c[2] > 2 * c[0] && c[2] > 1.4 * c[1];
+
 const JET_BRIDGE: [string, (t: Triangle) => boolean, string][] = (() => {
   const bridge = (t: Triangle): boolean => /^bridge/.test(t.name);
   const tube = (t: Triangle): boolean => t.hi[0] - t.lo[0] > 25;
@@ -202,7 +214,15 @@ const MODELS: Wanted[] = [
   { id: 'multi-storey-car-park-021465', role: 'prop' },
   // Outside: Polyfork's jet bridge, cut into the parts that are placed or moved apart (see
   // JET_BRIDGE below).
-  ...JET_BRIDGE.map(([as, take, cut]): Wanted => ({ id: 'jet-bridge-4f39c0', as, role: 'prop', take, cut: `${cut}, cut from the whole bridge` })),
+  ...JET_BRIDGE.map(([as, take, cut]): Wanted => ({
+    id: 'jet-bridge-4f39c0',
+    as,
+    role: 'prop',
+    take,
+    cut: `${cut}, cut from the whole bridge`,
+    // The model's walkway is glazed on one side only; a real one, on both.
+    ...(['jet-bridge-link', 'jet-bridge-tunnel', 'jet-bridge-cab'].includes(as) ? { glaze: BRIDGE_GLASS, glazed: 'its windows copied onto the other side' } : {}),
+  })),
 ];
 
 /** Frames sampled from each character's built-in clips, and the seat height the sitting pose is made for, metres. */
@@ -729,6 +749,28 @@ function convert(m: Wanted, glb: Buffer, meta: Meta, borrowed: Clip[]): Entry {
   });
   if (m.drop && !skipped && m.role === 'prop') console.warn(`${m.id}: no part named like ${m.drop}; kept whole (${g.nodes.map((n) => n.name).filter(Boolean).slice(0, 12).join(', ')})`);
 
+  // Glazed on both sides: each pane on the +z side copied onto the other, mirrored (its corners in
+  // the other order, so it faces out), a little proud of the wall there.
+  let glazed = 0;
+  if (m.glaze) {
+    const boned = bones.length > 0;
+    const count = triangles.length;
+    for (let t = 0; t < count; t += 3) {
+      const [a, b, c] = [triangles[t], triangles[t + 1], triangles[t + 2]];
+      if (!m.glaze(colours.slice(a * 3, a * 3 + 3))) continue;
+      if (positions[a * 3 + 2] + positions[b * 3 + 2] + positions[c * 3 + 2] <= 0) continue;
+      const base = positions.length / 3;
+      for (const v of [a, c, b]) {
+        positions.push(positions[v * 3], positions[v * 3 + 1], -positions[v * 3 + 2] - GLAZE_PROUD);
+        colours.push(colours[v * 3], colours[v * 3 + 1], colours[v * 3 + 2]);
+        partOf.push(partOf[v]);
+        if (boned) bones.push(bones[v]);
+      }
+      triangles.push(base, base + 1, base + 2);
+      glazed += 1;
+    }
+  }
+
   // Colour slots: each distinct colour once on each part, so the app can recolour part by part.
   const palette: number[] = [];
   const slotParts: string[] = [];
@@ -866,6 +908,7 @@ function convert(m: Wanted, glb: Buffer, meta: Meta, borrowed: Clip[]): Entry {
   const changes = ['converted to a compact form for this app (vertices welded and quantized, colours as slots)'];
   if (m.dropped && skipped) changes.push(m.dropped);
   if (m.cut) changes.push(m.cut);
+  if (m.glazed && glazed) changes.push(m.glazed);
   if (m.role === 'character') changes.push(`its built-in Walk, Idle and Run clips sampled as ${WALK_FRAMES}, ${IDLE_FRAMES} and ${RUN_FRAMES} frames, and a sitting pose made here from its standing one`);
   console.log(`${id}: ${vertexCount} vertices, ${tris.length / 3} triangles, ${palette.length / 3} colours${m.role === 'character' ? `, ${joints.length} bones, ${matrices.length / 12 / joints.length} poses` : ''}${skipped ? `, ${skipped} parts left out` : ''}; ${(written.bytes / 1024).toFixed(0)} KiB`);
   return {
