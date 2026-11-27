@@ -83,11 +83,7 @@ async function start(): Promise<void> {
     const fresh = new Sim(layout, { seed, startTime: at - WARM_UP, roads: true, people: true, weather: weatherOf(operator.weather) });
     for (const id of operator.runways) fresh.setRunwayClosed(id, true);
     for (const id of operator.checkpoints) fresh.setCheckpointClosed(id, true);
-    // The roads fill in a few minutes; the airfield needs longer to get its aircraft into place.
-    fresh.roadsRunning = false;
-    fresh.run(WARM_UP - ROAD_WARM_UP);
-    fresh.roadsRunning = true;
-    fresh.run(ROAD_WARM_UP);
+    fresh.warmUp(WARM_UP, ROAD_WARM_UP);
     return fresh;
   };
   progress(0.85, 'Starting the day…');

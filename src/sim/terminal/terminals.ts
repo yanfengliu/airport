@@ -18,8 +18,8 @@ import { UNREACHABLE } from './grid.ts';
 import { ACT, People, ROLE, STEP } from './people.ts';
 import { FLOOR, FLOOR_HEIGHT, buildTerminalPlan, type Place, type PlaceKind, type TerminalPlan } from './plan.ts';
 import { ServiceQueue } from './queue.ts';
+import type { Transit } from '../transit/trains.ts';
 
-/** The flight book's value for a time that has not happened yet. */
 /** Most walkers at once: parties and staff. */
 export const CAPACITY = 40_000;
 /** How far ahead departing parties are planned, seconds. */
@@ -31,7 +31,11 @@ const WARM_THROUGH = 2400;
 /** Metres from its gate within which a party can be boarding that gate's flight. */
 const GATE_REACH = 60;
 
-const EVENT = { airside: 1, board: 2, atClaim: 3, leave: 4, shop: 5, roam: 6 } as const;
+const EVENT = { airside: 1, board: 2, atClaim: 3, leave: 4, shop: 5, roam: 6, aboard: 7 } as const;
+/** Signals from here on are stations': raised while a train stands there with its doors open. Below are flights'. */
+const STATION_SIGNALS = 4096;
+/** Longest a station waits for a train before its door works as a plain door again, seconds. */
+const TRAIN_LONGEST = 30 * 60;
 /** What a walker is, in the low bits of `people.flags`. */
 const KIND = { departing: 1, arriving: 2, staff: 3 } as const;
 const KIND_MASK = 3;
@@ -97,6 +101,8 @@ export interface TerminalStats {
   customs: WaitStats;
   /** Money spent in shops and places to eat, dollars, by boarding area or hall. */
   takings: Record<string, number>;
+  /** People who came into the terminals off a train, and who left on one. */
+  byTrain: { off: number; on: number };
 }
 
 interface Pending {
@@ -104,6 +110,27 @@ interface Pending {
   visit: number;
   size: number;
   bags: number;
+}
+
+/** A party coming to the airport by train: it steps off the next one to open its doors at the station. */
+interface Rider {
+  visit: number;
+  size: number;
+  bags: number;
+  /** The check-in hall it is making for, by place id; -1 for none. */
+  checkin: number;
+}
+
+/** A station the trains call at with a way into the terminals. */
+interface Station {
+  way: Place;
+  signal: number;
+  /** Trains standing there with their doors open. */
+  trains: { load: number }[];
+  /** Departing parties on their way here by train. */
+  coming: Rider[];
+  /** When a train last opened its doors here. */
+  lastDoors: number;
 }
 
 interface Post {
@@ -155,6 +182,14 @@ export class Terminals {
   private readonly bagReady = new Float64Array(CAPACITY);
   private readonly lostBag = new Uint8Array(CAPACITY);
   private readonly claimAt = new Int16Array(CAPACITY).fill(-1);
+  /** Per walker: the station where it waits for a train, by index; -1 for none. */
+  private readonly boardAt = new Int16Array(CAPACITY).fill(-1);
+  /** Stations with a way into the terminals, in order, and by `kind:name` as the trains know them. */
+  private readonly stationList: Station[] = [];
+  private readonly stations = new Map<string, Station>();
+  private readonly stationOfWay = new Map<number, Station>();
+  /** Trains run in this simulation: people come and go by them, not just by the station door. */
+  private trainsRun = false;
   private nextHousekeeping = 0;
   private now: number;
 
@@ -164,7 +199,14 @@ export class Terminals {
     this.rng = rng;
     this.now = now;
     this.plan = buildTerminalPlan(layout, AIRLINES);
-    this.people = new People(CAPACITY, this.plan.grids, (floor) => FLOOR_HEIGHT[floor] ?? 0);
+    for (const way of this.plan.ways) {
+      if (way.kind !== 'airtrain' && way.kind !== 'bart') continue;
+      const station: Station = { way, signal: STATION_SIGNALS + this.stationList.length, trains: [], coming: [], lastDoors: now };
+      this.stationList.push(station);
+      this.stations.set(`${way.kind}:${way.name}`, station);
+      this.stationOfWay.set(way.id, station);
+    }
+    this.people = new People(CAPACITY, this.plan.grids, (floor) => FLOOR_HEIGHT[floor] ?? 0, STATION_SIGNALS + this.stationList.length);
     this.stats = {
       departing: { created: 0, boarded: 0, missed: 0, cancelled: 0 },
       arriving: { created: 0, left: 0, alreadyGone: 0 },
@@ -174,6 +216,7 @@ export class Terminals {
       checkin: newWaits(),
       customs: newWaits(),
       takings: {},
+      byTrain: { off: 0, on: 0 },
     };
     this.shops = this.plan.places.filter((p) => p.kind === 'shop' || p.kind === 'food' || p.kind === 'lounge');
     for (const s of layout.airfield.stands) {
@@ -387,6 +430,68 @@ export class Terminals {
     return this.rng.range(1.1, 1.45) * (size >= 3 ? 0.88 : 1);
   }
 
+  // ---- trains ------------------------------------------------------------------------------
+
+  /**
+   * Run with the trains: from now on those who come by AirTrain or BART step off a train, and
+   * those who leave by one wait at the station for it.
+   */
+  connectTrains(transit: Transit): void {
+    this.trainsRun = true;
+    transit.onDoorsOpen = (train, route, stop) => this.trainDoors(route.kind, stop.name, train, true);
+    transit.onDoorsClose = (train, route, stop) => this.trainDoors(route.kind, stop.name, train, false);
+  }
+
+  private trainDoors(kind: string, name: string, train: { load: number }, open: boolean): void {
+    const station = this.stations.get(`${kind}:${name}`);
+    if (!station) {
+      // A station with no way into the terminals: those who rode from them get off here.
+      if (open) train.load = 0;
+      return;
+    }
+    if (!open) {
+      const at = station.trains.indexOf(train);
+      if (at >= 0) station.trains.splice(at, 1);
+      if (!station.trains.length) this.people.setSignal(station.signal, false);
+      return;
+    }
+    station.trains.push(train);
+    station.lastDoors = this.now;
+    this.people.setSignal(station.signal, true);
+    for (const rider of station.coming.splice(0)) {
+      this.stats.byTrain.off += rider.size;
+      this.stepOff(station, rider);
+    }
+  }
+
+  /** A party off a train comes in by the station's walkway. */
+  private stepOff(station: Station, rider: Rider): void {
+    const visit = this.book.visits.get(rider.visit);
+    if (!visit) {
+      // The flight is gone from the book: they turn round and go home.
+      this.stats.departing.missed += rider.size;
+      return;
+    }
+    this.enterAt(visit, rider.size, rider.bags, station.way, rider.checkin >= 0 ? this.plan.places[rider.checkin] : undefined);
+  }
+
+  /** A station that has seen no train for a long while works as a plain door, both ways. */
+  private watchStations(now: number): void {
+    if (!this.trainsRun) return;
+    for (const station of this.stationList) {
+      if (station.trains.length || now - station.lastDoors < TRAIN_LONGEST) continue;
+      this.people.setSignal(station.signal, true);
+      for (const rider of station.coming.splice(0)) this.stepOff(station, rider);
+    }
+  }
+
+  /** Departing people on their way to the airport by train, not yet off it. */
+  get riding(): number {
+    let n = 0;
+    for (const station of this.stationList) for (const rider of station.coming) n += rider.size;
+    return n;
+  }
+
   // ---- the passage of time ------------------------------------------------------------------
 
   step(now: number, dt: number): void {
@@ -406,6 +511,7 @@ export class Terminals {
     this.manageLanes(now);
     this.manageStaff(now);
     this.pruneBags();
+    this.watchStations(now);
   }
 
   /** Departing parties for every flight leaving within the lookahead, at the times they reach the airport. */
@@ -544,9 +650,30 @@ export class Terminals {
     const halls = this.plan.checkin.get(visit.rotation.airline);
     const checkin = halls?.length ? this.rng.weighted(halls, (h) => Math.max(200, h.size)) : undefined;
     const way = this.nearestWay(bags && checkin ? checkin : checkpoint, by) ?? this.nearestWay(checkpoint, 'curb');
-    const id = way ? this.addParty(KIND.departing, way.floor, way.x, way.y, size, visit) : -1;
-    if (!way || id < 0) {
+    if (!way) {
       unseen();
+      return;
+    }
+    // By train: on board until one opens its doors at the station.
+    const station = this.trainsRun ? this.stationOfWay.get(way.id) : undefined;
+    if (station) {
+      station.coming.push({ visit: visit.id, size, bags, checkin: checkin ? checkin.id : -1 });
+      return;
+    }
+    this.enterAt(visit, size, bags, way, checkin);
+  }
+
+  /** A departing party comes in at a way into the building and sets off for check-in and security. */
+  private enterAt(visit: Visit, size: number, bags: number, way: Place, checkin: Place | undefined): void {
+    const area = this.areaOf(visit);
+    const checkpoint = this.divertedTo.get(area) ?? this.plan.checkpoint.get(area) ?? [...this.plan.checkpoint.values()][0];
+    const id = checkpoint ? this.addParty(KIND.departing, way.floor, way.x, way.y, size, visit) : -1;
+    if (id < 0) {
+      // No room for another walker: taken to board unseen, bags and all, so the books still balance.
+      visit.boarded += size;
+      this.stats.departing.boarded += size;
+      this.stats.bags.checked += bags;
+      this.stats.bags.loaded += bags;
       return;
     }
     this.bags[id] = bags;
@@ -566,6 +693,7 @@ export class Terminals {
     this.bagReady[id] = 0;
     this.lostBag[id] = 0;
     this.claimAt[id] = -1;
+    this.boardAt[id] = -1;
     if (visit && kind === KIND.departing) this.partiesOf.get(visit.id)?.add(id);
     return id;
   }
@@ -623,6 +751,12 @@ export class Terminals {
     }
     const way = this.nearestWay(here, by) ?? this.nearestWay(here, 'pickup');
     if (way) steps.push(STEP.walk, this.field(way));
+    // By train: wait at the station until one stands there with its doors open, and get on.
+    const station = way && this.trainsRun ? this.stationOfWay.get(way.id) : undefined;
+    if (station) {
+      this.boardAt[person] = this.stationList.indexOf(station);
+      steps.push(STEP.until, station.signal, STEP.notify, EVENT.aboard);
+    }
     steps.push(STEP.notify, EVENT.leave, STEP.leave, 0);
     people.setScript(person, steps);
   }
@@ -828,6 +962,16 @@ export class Terminals {
       case EVENT.roam:
         this.roam(person);
         return;
+      case EVENT.aboard: {
+        const station = this.stationList[this.boardAt[person]];
+        this.boardAt[person] = -1;
+        const train = station?.trains[station.trains.length - 1];
+        if (train) {
+          train.load += people.size[person];
+          this.stats.byTrain.on += people.size[person];
+        }
+        return;
+      }
       default:
         return;
     }
@@ -1074,7 +1218,8 @@ export class Terminals {
   // ---- what the panel and the tests read ---------------------------------------------------------
 
   /** Everyone is somewhere: created = boarded + missed + still here, for departures and arrivals. */
-  audit(): { departingHere: number; arrivingHere: number; staffHere: number } {
+  /** People in the building by kind, and departing people still on the train to it. */
+  audit(): { departingHere: number; departingRiding: number; arrivingHere: number; staffHere: number } {
     let departingHere = 0;
     let arrivingHere = 0;
     let staffHere = 0;
@@ -1087,7 +1232,7 @@ export class Terminals {
       else if (kind === KIND.arriving) arrivingHere += people.size[id];
       else if (kind === KIND.staff) staffHere += 1;
     }
-    return { departingHere, arrivingHere, staffHere };
+    return { departingHere, departingRiding: this.riding, arrivingHere, staffHere };
   }
 
   /** Bags on the belts of each claim hall now: delivered and not yet picked up. */

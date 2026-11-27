@@ -21,7 +21,7 @@ describe('people in the terminals, over a morning', () => {
   it('accounts for everyone it creates', () => {
     expect(s.departing.created).toBeGreaterThan(5000);
     expect(s.arriving.created).toBeGreaterThan(1000);
-    expect(s.departing.created - s.departing.boarded - s.departing.missed - s.departing.cancelled - here.departingHere).toBe(0);
+    expect(s.departing.created - s.departing.boarded - s.departing.missed - s.departing.cancelled - here.departingHere - here.departingRiding).toBe(0);
     expect(s.arriving.created - s.arriving.left - here.arrivingHere).toBe(0);
   });
 
@@ -94,7 +94,8 @@ describe('a closed checkpoint', () => {
   it('sends its travellers through the next checkpoint, and loses nobody', () => {
     expect(queue(closed, 'D').totalServed).toBeGreaterThan(queue(open, 'D').totalServed);
     const s = closed.terminals!.stats.departing;
-    expect(s.created - s.boarded - s.missed - s.cancelled - closed.terminals!.audit().departingHere).toBe(0);
+    const here = closed.terminals!.audit();
+    expect(s.created - s.boarded - s.missed - s.cancelled - here.departingHere - here.departingRiding).toBe(0);
   });
 
   it('is refused when it would leave a concourse with no way through security', () => {
@@ -103,6 +104,38 @@ describe('a closed checkpoint', () => {
     expect(t.setCheckpointClosed(t.plan.checkpoint.get('E')!.id, true)).toBeNull();
     expect(t.setCheckpointClosed(t.plan.checkpoint.get('F')!.id, true)).toBeNull();
     expect(t.setCheckpointClosed(t.plan.checkpoint.get('G')!.id, true)).toMatch(/No other way/);
+  });
+});
+
+describe('people and the trains', () => {
+  // With the roads on, AirTrain and BART run, and those who come and go by them ride them.
+  const sim = new Sim(layout, { seed: 5, startTime: 7 * 3600, roads: true, people: true });
+  const loads = { airtrain: 0, bart: 0 };
+  let riding = 0;
+  for (let k = 0; k < 40; k += 1) {
+    sim.run(60);
+    for (const train of sim.transit!.trains) {
+      const kind = sim.transit!.routes[train.route].kind;
+      if (kind === 'airtrain' || kind === 'bart') loads[kind] = Math.max(loads[kind], train.load);
+    }
+    riding = Math.max(riding, sim.terminals!.audit().departingRiding);
+  }
+  const t = sim.terminals!;
+
+  it('brings travellers in off the trains and takes others away on them', () => {
+    expect(t.stats.byTrain.off).toBeGreaterThan(100);
+    expect(t.stats.byTrain.on).toBeGreaterThan(50);
+    expect(loads.airtrain).toBeGreaterThan(0);
+    expect(loads.bart).toBeGreaterThan(0);
+    // Between trains, some are still on their way.
+    expect(riding).toBeGreaterThan(0);
+  });
+
+  it('still accounts for everyone, those on the trains included', () => {
+    const s = t.stats;
+    const here = t.audit();
+    expect(s.departing.created - s.departing.boarded - s.departing.missed - s.departing.cancelled - here.departingHere - here.departingRiding).toBe(0);
+    expect(s.arriving.created - s.arriving.left - here.arrivingHere).toBe(0);
   });
 });
 

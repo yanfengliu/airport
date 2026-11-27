@@ -42,8 +42,8 @@ export class Sim {
   readonly transit: Transit | null;
   /** Passengers, staff and bags in the terminals, when the simulation was started with people. */
   readonly terminals: Terminals | null;
-  /** Set false to leave the roads standing while the rest runs, as when warming up. */
-  roadsRunning = true;
+  /** False while the roads stand still and the rest runs, as when warming up. */
+  private roadsRunning = true;
   /** Seconds since midnight of the first day. */
   time: number;
   /** When the run began, seconds since midnight of the first day. */
@@ -73,6 +73,8 @@ export class Sim {
     this.terminals = options.people ? new Terminals(layout, this.airside.book, rng.fork('terminals'), options.startTime) : null;
     // With people simulated, they are counted off and on the aircraft one party at a time.
     if (this.terminals) this.airside.passengersElsewhere = true;
+    // With trains as well, those who come and go by AirTrain and BART ride them.
+    if (this.terminals && this.transit) this.terminals.connectTrains(this.transit);
   }
 
   get secondsOfDay(): number {
@@ -103,7 +105,7 @@ export class Sim {
     this.steps += 1;
     this.airside.step(dt);
     if (this.roads && this.roadsRunning) this.roads.step(dt, this.time, this.secondsOfDay);
-    if (this.transit && this.roadsRunning) this.transit.step(dt, this.time);
+    if (this.transit) this.transit.step(dt, this.time);
     if (this.terminals) this.terminals.step(this.time, dt);
   }
 
@@ -111,6 +113,18 @@ export class Sim {
   run(seconds: number): void {
     const steps = Math.round(seconds / CONFIG.dt);
     for (let i = 0; i < steps; i += 1) this.step();
+  }
+
+  /**
+   * Run up to the time a viewer first sees: `seconds` in all, the roads only for the last
+   * `roadsFor` of them, since they fill in a few minutes while the airfield takes longer to get
+   * its aircraft into place, and they are the costliest to run.
+   */
+  warmUp(seconds: number, roadsFor: number): void {
+    this.roadsRunning = false;
+    this.run(Math.max(0, seconds - roadsFor));
+    this.roadsRunning = true;
+    this.run(Math.min(seconds, roadsFor));
   }
 
   checksum(): number {
