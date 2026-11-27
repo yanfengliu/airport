@@ -44,7 +44,10 @@
 //   - ground control never hands a claim back out of order;
 //   - nothing is still stuck when the run ends;
 //   - at least 85 numbered gates are in use;
-//   - the run takes under 60 seconds of real time.
+//   - the run takes under 60 seconds of the processor's time (CPU time), however busy the machine
+//     is. Changed by the owner on 2026-11-27 from time by the clock, which other work on a shared
+//     machine pushed past the limit while the simulation itself took 18 s; the clock's time is still
+//     printed.
 // Wings brushing while one of the two is moving is counted and reported but not judged: the
 // taxiways are not yet matched to wingspans.
 // Exit code 0 when every seed passes, 1 otherwise.
@@ -75,7 +78,7 @@ const LIMITS = {
   longestGateHold: 20 * 60,
   goAroundShare: 0.03,
   usableGates: 85,
-  wallSeconds: 60,
+  cpuSeconds: 60,
   /**
    * Aircraft drawn at their true size, fuselage at its width and wings with their chord, closer
    * than this, metres, are touching: parked, they overlap; moving, their wings brush.
@@ -129,6 +132,8 @@ interface Result {
   outOfOrder: number;
   stuckAtEnd: number;
   usableGates: number;
+  /** The run's time: the processor's, judged, and the clock's. */
+  cpuSeconds: number;
   wallSeconds: number;
   checksum: number;
   failures: string[];
@@ -136,6 +141,7 @@ interface Result {
 
 function run(seed: number): Result {
   const started = performance.now();
+  const cpu = process.cpuUsage();
   const sim = new Sim(layout, { seed, startTime: hh * 3600 + mm * 60 });
   const end = sim.time + hours * 3600;
   const pairs = { stand: new Set<string>(), body: new Set<string>(), centrelines: new Set<string>(), wing: new Set<string>(), runway: new Set<string>(), headOn: new Set<string>() };
@@ -257,6 +263,7 @@ function run(seed: number): Result {
     outOfOrder: sim.airside.traffic.outOfOrder,
     stuckAtEnd,
     usableGates,
+    cpuSeconds: (({ user, system }) => Math.round((user + system) / 1e5) / 10)(process.cpuUsage(cpu)),
     wallSeconds: Math.round((performance.now() - started) / 100) / 10,
     checksum: sim.checksum(),
     failures: [],
@@ -276,7 +283,7 @@ function run(seed: number): Result {
   if (result.outOfOrder > 0) result.failures.push(`${result.outOfOrder} claims released out of order`);
   if (result.stuckAtEnd > 0) result.failures.push(`${result.stuckAtEnd} aircraft stuck at the end`);
   if (result.usableGates < LIMITS.usableGates) result.failures.push(`only ${result.usableGates} gates in use`);
-  if (result.wallSeconds > LIMITS.wallSeconds) result.failures.push(`took ${result.wallSeconds} s`);
+  if (result.cpuSeconds > LIMITS.cpuSeconds) result.failures.push(`took ${result.cpuSeconds} s of the processor's time`);
   return result;
 }
 
@@ -287,7 +294,7 @@ if (asJson) {
   for (const r of results) {
     console.log(
       `seed ${String(r.seed).padEnd(4)} ${r.failures.length ? 'FAIL' : 'pass'}  landed ${r.landings}/${r.flights}  took off ${r.takeoffs}/${r.flights}  cycles ${r.cycles}/${r.cohort}  go-arounds ${r.goArounds}  longest wait ${r.longestWait} s  gate hold ${r.longestGateHold} s  ` +
-        `stands ${r.standOverlaps} bodies ${r.bodyHits} (centrelines within 4 m ${r.centrelineHits}; wings ${r.wingBrushes})  runway conflicts ${r.runwayConflicts}  head-on ${r.headOn}  lined up ${r.longestLinedUp} s  gates ${r.usableGates}  ${r.wallSeconds} s  checksum ${r.checksum}` +
+        `stands ${r.standOverlaps} bodies ${r.bodyHits} (centrelines within 4 m ${r.centrelineHits}; wings ${r.wingBrushes})  runway conflicts ${r.runwayConflicts}  head-on ${r.headOn}  lined up ${r.longestLinedUp} s  gates ${r.usableGates}  ${r.cpuSeconds} s CPU (${r.wallSeconds} s by the clock)  checksum ${r.checksum}` +
         (r.failures.length ? `\n          ${r.failures.join('; ')}` : ''),
     );
   }

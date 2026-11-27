@@ -1,8 +1,9 @@
 // The day-long airside benchmark, one seed, as part of the gate: a full day of flights with every
 // limit of `tools/sim/soak.ts` (whole cycles, waits on the ground and at the gates, go-arounds, no
-// two aircraft meeting, no runway conflicts, nothing stuck). Bound: one seed of the eleven the
-// benchmark is judged on; run `node tools/sim/soak.ts --seeds 7,11,3,21,42,101,202,303,404,505,606`
-// for all of them.
+// two aircraft meeting, no runway conflicts, nothing stuck, under a minute of the processor's
+// time). Its time is the CPU's, not the clock's, so it can run beside the other tests. Bound: one
+// seed of the eleven the benchmark is judged on; run
+// `node tools/sim/soak.ts --seeds 7,11,3,21,42,101,202,303,404,505,606` for all of them.
 
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';

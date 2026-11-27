@@ -1,9 +1,9 @@
 // The day-long road and people benchmarks, as part of the gate: a whole day of road traffic judged
 // on the 'Roads flow' criterion (nobody standing ten minutes, the freeways carrying their demand,
 // the curbs served), and a whole day of people judged on theirs (everyone and every bag accounted
-// for, misses, mishandled bags and security waits within their limits). Neither judges time, so the
-// two run side by side, after the airside day (soak.test.ts) has run alone. Bound: seed 7, from
-// 04:00; run the tools with other seeds and starts for more.
+// for, misses, mishandled bags and security waits within their limits). The two run side by side.
+// The airside day is in soak.test.ts. Bound: seed 7, from 04:00; run the tools with other seeds and
+// starts for more.
 
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
