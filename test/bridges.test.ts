@@ -99,13 +99,32 @@ describe("the jet bridge model's glazing", () => {
       const slot = model.geometry.getAttribute('slot');
       const index = model.geometry.index!;
       const sides = [0, 0];
+      const panes: number[][] = [];
+      const walls: number[][] = [];
       for (let t = 0; t < index.count; t += 3) {
-        const corners = [index.getX(t), index.getX(t + 1), index.getX(t + 2)];
-        if (!glass.has(slot.getX(corners[0]))) continue;
-        sides[corners.reduce((z, v) => z + position.getZ(v), 0) > 0 ? 0 : 1] += 1;
+        const corners = [index.getX(t), index.getX(t + 1), index.getX(t + 2)].map((v) => [position.getX(v), position.getY(v), position.getZ(v)]);
+        const side = corners.reduce((z, c) => z + c[2], 0) > 0 ? 0 : 1;
+        if (glass.has(slot.getX(index.getX(t)))) {
+          sides[side] += 1;
+          panes.push(corners.flat());
+        } else walls.push(corners.flat());
       }
       expect(sides[0], `${id}: glass`).toBeGreaterThan(0);
       expect(sides[1], `${id}: as much glass on its other side`).toBe(sides[0]);
+      // Every pane outside its side's wall, not inside it: no wall stands further out straight
+      // across from the middle of a pane, on the same side.
+      for (const [ax, ay, az, bx, by, bz, cx, cy, cz] of panes) {
+        const [x, y, z] = [(ax + bx + cx) / 3, (ay + by + cy) / 3, (az + bz + cz) / 3];
+        for (const [px, py, pz, qx, qy, qz, rx, ry, rz] of walls) {
+          const d = (qy - ry) * (px - rx) + (rx - qx) * (py - ry);
+          if (Math.abs(d) < 1e-9) continue;
+          const u = ((qy - ry) * (x - rx) + (rx - qx) * (y - ry)) / d;
+          const v = ((ry - py) * (x - rx) + (px - rx) * (y - ry)) / d;
+          if (u < 0 || v < 0 || u + v > 1) continue;
+          const wz = u * pz + v * qz + (1 - u - v) * rz;
+          if (Math.sign(wz) === Math.sign(z)) expect(Math.abs(wz), `${id}: a pane at ${x.toFixed(2)},${y.toFixed(2)} inside its wall`).toBeLessThanOrEqual(Math.abs(z) + 0.005);
+        }
+      }
     }
   });
 });

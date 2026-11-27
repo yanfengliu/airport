@@ -750,18 +750,41 @@ function convert(m: Wanted, glb: Buffer, meta: Meta, borrowed: Clip[]): Entry {
   if (m.drop && !skipped && m.role === 'prop') console.warn(`${m.id}: no part named like ${m.drop}; kept whole (${g.nodes.map((n) => n.name).filter(Boolean).slice(0, 12).join(', ')})`);
 
   // Glazed on both sides: each pane on the +z side copied onto the other, mirrored (its corners in
-  // the other order, so it faces out), a little proud of the wall there.
+  // the other order, so it faces out), a little proud of the wall there, which may stand further
+  // out than the pane's own side, where the panes are set into it.
   let glazed = 0;
   if (m.glaze) {
     const boned = bones.length > 0;
     const count = triangles.length;
+    // The other side's wall: its triangles, of everything but the glass.
+    const wall: number[] = [];
+    for (let t = 0; t < triangles.length; t += 3) {
+      const corners = [triangles[t], triangles[t + 1], triangles[t + 2]];
+      if (corners.some((v) => positions[v * 3 + 2] >= 0) || m.glaze(colours.slice(corners[0] * 3, corners[0] * 3 + 3))) continue;
+      for (const v of corners) wall.push(positions[v * 3], positions[v * 3 + 1], positions[v * 3 + 2]);
+    }
+    /** How far out the other side's wall stands straight across from a point: its surface, seen along z. */
+    const outer = (x: number, y: number): number => {
+      let most = 0;
+      for (let k = 0; k < wall.length; k += 9) {
+        const [ax, ay, az, bx, by, bz, cx, cy, cz] = wall.slice(k, k + 9);
+        const d = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+        if (Math.abs(d) < 1e-9) continue;
+        const u = ((by - cy) * (x - cx) + (cx - bx) * (y - cy)) / d;
+        const v = ((cy - ay) * (x - cx) + (ax - cx) * (y - cy)) / d;
+        if (u < -1e-6 || v < -1e-6 || u + v > 1 + 1e-6) continue;
+        most = Math.max(most, -(u * az + v * bz + (1 - u - v) * cz));
+      }
+      return most;
+    };
     for (let t = 0; t < count; t += 3) {
       const [a, b, c] = [triangles[t], triangles[t + 1], triangles[t + 2]];
       if (!m.glaze(colours.slice(a * 3, a * 3 + 3))) continue;
       if (positions[a * 3 + 2] + positions[b * 3 + 2] + positions[c * 3 + 2] <= 0) continue;
       const base = positions.length / 3;
       for (const v of [a, c, b]) {
-        positions.push(positions[v * 3], positions[v * 3 + 1], -positions[v * 3 + 2] - GLAZE_PROUD);
+        const [x, y, z] = [positions[v * 3], positions[v * 3 + 1], positions[v * 3 + 2]];
+        positions.push(x, y, -Math.max(z, outer(x, y)) - GLAZE_PROUD);
         colours.push(colours[v * 3], colours[v * 3 + 1], colours[v * 3 + 2]);
         partOf.push(partOf[v]);
         if (boned) bones.push(bones[v]);
