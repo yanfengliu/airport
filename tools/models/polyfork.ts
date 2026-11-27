@@ -139,7 +139,8 @@ const MODELS: Wanted[] = [
   { id: 'baggage-handler-0823f5', role: 'character', drop: HELD, dropped: 'what it held in its hand removed' },
   { id: 'police-officer-1cc379', role: 'character', drop: HELD, dropped: 'what it held in its hand removed' },
   { id: 'salaryman-commuter-4170c1', role: 'character', drop: HELD, dropped: 'what it held in its hand removed' },
-  { id: 'city-commuter-52a53f', role: 'character', drop: HELD, dropped: 'what it held in its hand removed' },
+  // Its hat is a white dome half again as wide as its shoulders: from above, in a crowd indoors, an umbrella.
+  { id: 'city-commuter-52a53f', role: 'character', drop: /^attach-hat$/i, dropped: 'its domed hat removed' },
   { id: 'commuter-381e7f', role: 'character', drop: HELD, dropped: 'what it held in its hand removed' },
   { id: 'student-with-backpack-65d2b4', role: 'character', drop: HELD, dropped: 'what it held in its hand removed' },
   { id: 'student-in-a-hoodie-7c8223', role: 'character', drop: HELD, dropped: 'what it held in its hand removed' },

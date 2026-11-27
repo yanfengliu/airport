@@ -448,8 +448,13 @@ export function buildFittings(layout: Layout, plan: TerminalPlan, queues: Readon
   const gateSpan = new Map<number, number>();
   for (const [stand, place] of plan.holdroom) gateSpan.set(place.id, Math.max(gateSpan.get(place.id) ?? 0, span.get(stand) ?? 36));
 
-  // The counters, lanes, booths and gates first: they are where the queues say.
+  // The lines themselves: nothing else stands between their ropes.
   const ids = [...queues.keys()].sort((a, b) => a - b);
+  for (const id of ids) {
+    const { x, y, heading, length, width } = queues.get(id)!.shape;
+    out.claim(plan.places[id].floor, x, y, heading, length / 2, width / 2, false);
+  }
+  // The counters, lanes, booths and gates: they are where the queues say.
   for (const id of ids) {
     const place = plan.places[id];
     const queue = queues.get(id)!;
@@ -647,8 +652,18 @@ export const DESK_FROM_PASSENGER = 0.45 + SIZE.desk[1] / 2;
 /** A departures board where the line is joined, facing those joining it. */
 function boardAt(out: Layouter, place: Place, queue: ServiceQueue): void {
   const e = queue.entrance;
-  const [x, y] = at(frameAt(e.x, e.y, place.heading), -2.2, -1.6);
-  if (out.walkable(place.floor, x, y) && out.fits(place.floor, x, y, place.heading, 1.0, 0.4, false)) out.put('board', place.floor, x, y, place.heading, 0, false);
+  const { x: qx, y: qy, heading, length, width } = queue.shape;
+  const q = frameAt(qx, qy, heading);
+  // Where the line is joined, along and across its ropes: the back of them, or the front.
+  const along = (e.x - qx) * q.ux + (e.y - qy) * q.uy;
+  const across = -(e.x - qx) * q.uy + (e.y - qy) * q.ux;
+  // Behind where it is joined, or beside the ropes there, or behind them: outside them, anyway.
+  const spots = [at(q, along - 2.2, across - 1.6), at(q, along, (Math.sign(across) || -1) * (width / 2 + 1.2)), at(q, -length / 2 - 2.2, across)];
+  for (const [x, y] of spots) {
+    if (!out.walkable(place.floor, x, y) || !out.fits(place.floor, x, y, place.heading, 1.0, 0.4, false)) continue;
+    out.put('board', place.floor, x, y, place.heading, 0, false);
+    return;
+  }
 }
 
 /** Across a security lane from its server: the belt with its x-ray on one side, the scanner on the other. */

@@ -21,6 +21,7 @@ import { fuselageAt, newFuselage } from '../../sim/airfield/path.ts';
 import { standPath } from '../../sim/airside/aircraft.ts';
 import { SOUTHEAST_PLAN, WEST_PLAN } from '../../sim/airside/tower.ts';
 import { AIRCRAFT, type AircraftType } from '../../sim/fleet.ts';
+import type { AirfieldLamps } from '../lights.ts';
 import { flatMaterial, propInstances, type Models } from '../models/library.ts';
 import { BRIDGE_RETRACT, BRIDGE_SHORTEST, JET_BRIDGE, bridgeLines } from './bridges.ts';
 
@@ -68,6 +69,8 @@ export const MAST_LAMP = 16;
 export const MAST_CLEAR = { building: 2, walkway: 4, tunnel: 4, road: 6, taxiway: 25, aircraft: 3 };
 /** The docking display: how far ahead the stand's line may meet the terminal, the height it hangs at, and its room from a bridge's walkway. */
 const DISPLAY_REACH = [10, 90];
+/** How far out from the terminal's face a floodlight hangs on its bracket, metres. */
+const FACE_LAMP_OUT = 0.8;
 const DISPLAY_HEIGHT = 5.5;
 const DISPLAY_WALKWAY = 2.5;
 
@@ -80,15 +83,31 @@ export interface PropPlace {
 
 export interface Furniture {
   socks: PropPlace[];
-  lights: PropPlace[];
+  /** The approach-slope units, four to a runway end, each with its place in the row: 0 nearest the runway. */
+  lights: (PropPlace & { unit: number })[];
   localizers: (PropPlace & { end: string })[];
   glidePaths: (PropPlace & { end: string })[];
   beacons: PropPlace[];
   /** Per gate, by its stand: the floodlight mast and the docking display, where they found room. */
   masts: (PropPlace & { stand: string })[];
   displays: (PropPlace & { stand: string })[];
-  /** Each gate's floodlight: on its mast's head, or on the terminal's roof above the stand. */
+  /** Each gate's floodlight: on its mast's head, or on the terminal's face under its roof's edge, above the stand. */
   floodlights: { x: number; y: number; h: number; stand: string }[];
+}
+
+/** Height of the beacon's lamps, metres: in the head of the 10 m model. */
+const BEACON_LAMP = 9.6;
+
+/**
+ * The furniture's lamps: the floodlights; the approach-slope units', the two nearer the runway red
+ * and the others white, as a pilot on the slope sees them; and the beacon's.
+ */
+export function airfieldLamps(f: Furniture): AirfieldLamps {
+  return {
+    floodlights: f.floodlights,
+    slopes: f.lights.map((l) => ({ x: l.x, y: l.y, red: l.unit < 2 })),
+    beacons: f.beacons.map((b) => ({ x: b.x, y: b.y, h: BEACON_LAMP })),
+  };
 }
 
 function toSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
@@ -251,7 +270,7 @@ export function airfieldFurniture(layout: Pick<Layout, 'airfield' | 'roads' | 'r
       const units = (along: number, side: number): [number, number][] => Array.from({ length: 4 }, (_, k) => at(along, side * (out + PAPI_OUT + k * PAPI_SPACING)));
       const papi = nearest(PAPI_IN, [PAPI_OUT], (along, side) => units(along, side).every(([x, y]) => clear(x, y, PAPI_CLEAR)));
       // Facing back down the approach, to the aircraft coming in.
-      if (papi) for (const [x, y] of units(papi[0], papi[1])) furniture.lights.push({ x, y, h: 0, facing: approach });
+      if (papi) units(papi[0], papi[1]).forEach(([x, y], unit) => furniture.lights.push({ x, y, h: 0, facing: approach, unit }));
       if (!ILS_ENDS.includes(end.name)) continue;
       // The glide path beside the touchdown zone, on the side away from the light units, clear of
       // them, of the windsock and of every other runway's strip.
@@ -393,9 +412,10 @@ export function airfieldFurniture(layout: Pick<Layout, 'airfield' | 'roads' | 'r
       const at = rayHit(t.poly.outer, stand.x, stand.y, c, s);
       if (at < hit) [hit, roof] = [at, t.height];
     }
-    // No room for a mast: the floodlight on the roof's edge there.
+    // No room for a mast: the floodlight on the terminal's face there, under the roof's edge, a
+    // little out from the glass on its bracket.
     if (!furniture.masts.some((m) => m.stand === stand.id) && hit <= DISPLAY_REACH[1]) {
-      furniture.floodlights.push({ x: stand.x + c * (hit + 0.5), y: stand.y + s * (hit + 0.5), h: roof + 1, stand: stand.id });
+      furniture.floodlights.push({ x: stand.x + c * (hit - FACE_LAMP_OUT), y: stand.y + s * (hit - FACE_LAMP_OUT), h: roof - 0.6, stand: stand.id });
     }
     // The display on the face, a little in front of it, clear of a bridge's walkway leaving the face
     // there: on the stand's line, or beside it, where a line parallel to it meets the face.

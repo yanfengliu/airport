@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import type { Building, Layout } from '../shared/layout.ts';
 import { Lights } from './lights.ts';
 import type { Models } from './models/library.ts';
-import { airfieldFurniture, buildAirfieldProps } from './static/airfield-props.ts';
+import { airfieldFurniture, airfieldLamps, buildAirfieldProps } from './static/airfield-props.ts';
 import { buildAirfieldGround } from './static/airfield.ts';
 import { buildBridges, type BridgeEnd } from './static/bridges.ts';
 import { buildBuildings, type NightGlow } from './static/buildings.ts';
@@ -107,7 +107,7 @@ export function buildStaticWorld(layout: Layout, models: Models = new Map()): St
   group.add(tower.group);
   glows.push({ material: tower.glass, strength: 0.5 });
 
-  const lights = new Lights(layout.airfield, layout.roads, layout.land, undefined, furniture?.floodlights ?? null);
+  const lights = new Lights(layout.airfield, layout.roads, layout.land, undefined, furniture ? airfieldLamps(furniture) : null);
   group.add(lights.group);
   const glow = buildGroundGlow(layout.airfield, layout.roads);
   group.add(glow.mesh);

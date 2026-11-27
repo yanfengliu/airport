@@ -224,6 +224,8 @@ export class Terminals {
   private readonly aislePoints = new Map<number, number[]>();
   /** Rows of check-in desks placed so far, for the next hall's to keep clear of. */
   private readonly deskRows: { x: number; y: number; heading: number; halfL: number; halfW: number }[] = [];
+  /** Where each line already laid out waits, between its ropes, as a rectangle like a desk row's. */
+  private readonly lineAreas: { x: number; y: number; heading: number; halfL: number; halfW: number }[] = [];
   /** Seat groups each place's people may use, worked out the first time they are needed. */
   private readonly nearSeats = new Map<number, number[]>();
   /** Walks to where each queue is joined, by place id. */
@@ -529,9 +531,10 @@ export class Terminals {
       halfL: (servers * spacing) / 2 + 0.6,
       halfW: SIZE.desk[1] / 2 + 0.4,
     });
-    const clash = (r: { x: number; y: number; heading: number; halfL: number; halfW: number }): number => {
+    type Rect = { x: number; y: number; heading: number; halfL: number; halfW: number };
+    const clash = (r: Rect, others: readonly Rect[]): number => {
       let hit = 0;
-      for (const other of this.deskRows) {
+      for (const other of others) {
         for (let a = -r.halfL; a <= r.halfL; a += 1) {
           for (const b of [-r.halfW, 0, r.halfW]) {
             const x = r.x + Math.cos(r.heading) * a - Math.sin(r.heading) * b;
@@ -544,6 +547,14 @@ export class Terminals {
       }
       return hit;
     };
+    // The line between its ropes, behind a row of servers `back` from the place.
+    const lineArea = (h: number, len: number, back: number): Rect => ({
+      x: place.x - Math.cos(h) * (back + len / 2 + 2),
+      y: place.y - Math.sin(h) * (back + len / 2 + 2),
+      heading: h,
+      halfL: len / 2,
+      halfW: width / 2,
+    });
     let best = { heading, length, back: 0, score: -Infinity };
     // An aisle of a counter island: a long, narrow hall with another beside it, side by side. The
     // two face each other's way, their desks back to back down the middle between them.
@@ -553,7 +564,9 @@ export class Terminals {
       for (const turn of [0, Math.PI, Math.PI / 2, -Math.PI / 2]) {
         for (const back of place.kind === 'checkin' ? [0, 1.5, 3, 4.5] : [0]) {
           let score = fit(heading + turn, len) - (turn === 0 ? 0 : 0.02) - back * 0.01;
-          if (place.kind === 'checkin') score -= clash(deskRow(heading + turn, back)) * 0.2;
+          // Its desks in another's line, or its line over another's desks, count against it too,
+          // though less than desks standing in desks.
+          if (place.kind === 'checkin') score -= clash(deskRow(heading + turn, back), this.deskRows) + (clash(deskRow(heading + turn, back), this.lineAreas) + clash(lineArea(heading + turn, len, back), this.deskRows)) * 0.2;
           if (score > best.score) best = { heading: heading + turn, length: len, back, score };
         }
       }
@@ -648,19 +661,22 @@ export class Terminals {
       }
       front.push(Number.isNaN(along) ? { x, y } : { x, y, exitX: x + ux * along - uy * aside, exitY: y + uy * along + ux * aside });
     }
-    // The waiting area stands on the floor, within the walls, and so does the crowd past its ropes:
-    // where the area behind the row does not, the nearest that does, back from the row or to one
-    // side of it, as large as may be.
+    // The waiting area, and the crowd past its ropes, stand on the floor, within the walls and clear
+    // of other halls' desks: where the area behind the row does not, the nearest that does, back
+    // from the row or to one side of it, as large as may be.
     // The departures level is one floor, landside and airside, as people see it.
     const level = place.floor === FLOOR.arrivals ? [this.plan.grids[FLOOR.arrivals]] : floors;
     const standable = (x: number, y: number): boolean => level.some((g) => g.cellAt(x, y) >= 0) && withinWalls(x, y);
+    // Nor in a row of another hall's check-in desks.
+    const inDesks = (x: number, y: number): boolean =>
+      this.deskRows.some((r) => Math.abs((x - r.x) * Math.cos(r.heading) + (y - r.y) * Math.sin(r.heading)) <= r.halfL && Math.abs(-(x - r.x) * Math.sin(r.heading) + (y - r.y) * Math.cos(r.heading)) <= r.halfW);
     const covers = (cx: number, cy: number, len: number, wide: number): boolean => {
       const [na, nb] = [Math.max(1, Math.ceil(len / 1.5)), Math.max(1, Math.ceil(wide / 1.5))];
       for (let i = 0; i <= na; i += 1) {
         for (let j = 0; j <= nb; j += 1) {
           const a = -len / 2 + 0.05 + ((len - 0.1) * i) / na;
           const b = -wide / 2 + 0.05 + ((wide - 0.1) * j) / nb;
-          if (!standable(cx + ux * a - uy * b, cy + uy * a + ux * b)) return false;
+          if (!standable(cx + ux * a - uy * b, cy + uy * a + ux * b) || inDesks(cx + ux * a - uy * b, cy + uy * a + ux * b)) return false;
         }
       }
       return true;
@@ -680,7 +696,8 @@ export class Terminals {
         }
       }
     }
-    const queue = new ServiceQueue({ ...area, heading }, front, standable);
+    const queue = new ServiceQueue({ ...area, heading }, front, (x, y) => standable(x, y) && !inDesks(x, y));
+    this.lineAreas.push({ x: area.x, y: area.y, heading, halfL: area.length / 2, halfW: area.width / 2 });
     queue.setOpen(place.kind === 'holdroom' ? front.length : Math.min(2, front.length));
     id = this.people.addQueue(queue);
     this.queueId.set(place.id, id);

@@ -59,6 +59,18 @@ function makeMaterial(): THREE.ShaderMaterial {
   });
 }
 
+/** Lamps of the airfield's furniture, where it is drawn (src/render/static/airfield-props.ts). */
+export interface AirfieldLamps {
+  floodlights: readonly { x: number; y: number; h: number }[];
+  slopes: readonly { x: number; y: number; red: boolean }[];
+  beacons: readonly { x: number; y: number; h: number }[];
+}
+
+/** Height of an approach-slope unit's lamps, metres: the middle of its face (the model is 1.03 m tall). */
+const SLOPE_LAMP = 0.7;
+/** Seconds the beacon takes to turn once, showing white and then green. */
+const BEACON_TURN = 5;
+
 /** Collects lights given in map coordinates (x east, y north, h up). */
 class LightList {
   readonly positions: number[] = [];
@@ -135,10 +147,12 @@ export class Lights {
   private used = 0;
 
   /**
-   * `floodlights`: where the gates' floodlights are, on their masts or the terminal's roof, when
-   * the airfield's furniture is drawn; without it each hangs ahead of its gate's stop point.
+   * `furniture`, when the airfield's furniture is drawn: where the gates' floodlights are, on
+   * their masts or the terminal's face; the lamps of the approach-slope units, red for those
+   * nearer the runway as a pilot on the slope sees them; and the rotating beacon. Without it each
+   * floodlight hangs ahead of its gate's stop point.
    */
-  constructor(airfield: Airfield, roads: Roads, land: Land, capacity = 24_000, floodlights: readonly { x: number; y: number; h: number }[] | null = null) {
+  constructor(airfield: Airfield, roads: Roads, land: Land, capacity = 24_000, furniture: AirfieldLamps | null = null) {
     this.group.name = 'lights';
     this.capacity = capacity;
     const list = new LightList();
@@ -180,17 +194,35 @@ export class Lights {
       }
     }
 
-    // ---- taxiways -----------------------------------------------------------------------
+    // ---- taxiways: their edge lights stop at a runway's edge --------------------------------
+    const onRunway = (x: number, y: number): boolean =>
+      airfield.runways.some((r) => {
+        const [a, b] = r.ends;
+        const [ux, uy] = [(b.x - a.x) / r.length, (b.y - a.y) / r.length];
+        const along = (x - a.x) * ux + (y - a.y) * uy;
+        return along > -2 && along < r.length + 2 && Math.abs(-(x - a.x) * uy + (y - a.y) * ux) < r.width / 2 + 2;
+      });
+    const edgeLight = (x: number, y: number): void => {
+      if (!onRunway(x, y)) list.add(x, y, 0.35, BLUE, 1.9);
+    };
     for (const e of airfield.edges) {
       if (e.kind !== 'twy') continue;
-      along(e.pts, 2, 30, 11.5, (x, y) => list.add(x, y, 0.35, BLUE, 1.9));
-      along(e.pts, 2, 30, -11.5, (x, y) => list.add(x, y, 0.35, BLUE, 1.9));
+      along(e.pts, 2, 30, 11.5, edgeLight);
+      along(e.pts, 2, 30, -11.5, edgeLight);
       along(e.pts, 2, 15, 0, (x, y) => list.add(x, y, 0.1, GREEN, 1.1));
     }
     for (const n of airfield.nodes) if (n.hold) for (const k of [-1, 0, 1]) list.add(n.x + k * 3, n.y, 0.3, RED, 2);
 
+    // ---- the approach-slope units and the beacon ------------------------------------------
+    for (const l of furniture?.slopes ?? []) list.add(l.x, l.y, SLOPE_LAMP, l.red ? RED : WHITE, 3.2);
+    // White and green in turn, as its two lamps come round.
+    for (const b of furniture?.beacons ?? []) {
+      list.add(b.x, b.y, b.h, WHITE, 8, BEACON_TURN, 0.12, 0);
+      list.add(b.x, b.y, b.h, GREEN, 8, BEACON_TURN, 0.12, BEACON_TURN / 2);
+    }
+
     // ---- stands: a floodlight on each gate's mast, or ahead of its stop point --------------
-    if (floodlights) for (const f of floodlights) list.add(f.x, f.y, f.h, WHITE, 9);
+    if (furniture) for (const f of furniture.floodlights) list.add(f.x, f.y, f.h, WHITE, 9);
     else {
       for (const s of airfield.stands) {
         if (!s.contact) continue;

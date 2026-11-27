@@ -12,7 +12,7 @@
 // are kept off the masts by test/bridges.test.ts.
 
 import { describe, expect, it } from 'vitest';
-import { BEACON_CLEAR, GLIDE_CLEAR, ILS_ENDS, LOCALIZER_CLEAR, MAST_CLEAR, MAST_LAMP, PAPI_CLEAR, RAIL_CLEAR, ROAD_CLEAR, WINDSOCK_CLEAR, airfieldFurniture } from '../src/render/static/airfield-props.ts';
+import { BEACON_CLEAR, GLIDE_CLEAR, ILS_ENDS, LOCALIZER_CLEAR, MAST_CLEAR, MAST_LAMP, PAPI_CLEAR, RAIL_CLEAR, ROAD_CLEAR, WINDSOCK_CLEAR, airfieldFurniture, airfieldLamps } from '../src/render/static/airfield-props.ts';
 import { JET_BRIDGE, bridgeLines } from '../src/render/static/bridges.ts';
 import { AIRCRAFT } from '../src/sim/fleet.ts';
 import { Sim } from '../src/sim/sim.ts';
@@ -150,7 +150,7 @@ describe('the airfield furniture', () => {
     }
   });
 
-  it('lights every gate, from a mast clear of every aircraft it and its neighbours take, of the bridges and of buildings, or from the roof', () => {
+  it("lights every gate, from a mast clear of every aircraft it and its neighbours take, of the bridges and of buildings, or from the terminal's face", () => {
     const { masts, floodlights, beacons } = furniture();
     const gates = airfield.stands.filter((s) => s.contact);
     expect(floodlights.map((f) => f.stand).sort()).toEqual(gates.map((s) => s.id).sort());
@@ -196,6 +196,24 @@ describe('the airfield furniture', () => {
     for (const st of airfield.stands) expect(Math.hypot(st.x - b.x, st.y - b.y)).toBeGreaterThanOrEqual(BEACON_CLEAR.stand);
     expect(fromTaxiways(b.x, b.y)).toBeGreaterThanOrEqual(60);
     expect(fromRunways(b.x, b.y)).toBeGreaterThanOrEqual(100);
+  });
+
+  it('lights the approach-slope units red nearer the runway and white beyond, the beacon in its head, and every floodlight outside the terminal', () => {
+    const f = furniture();
+    const lamps = airfieldLamps(f);
+    expect(lamps.slopes.length).toBe(f.lights.length);
+    const fromCentreline = (x: number, y: number): number => Math.min(...airfield.runways.map((r) => toSegment(x, y, r.ends[0].x, r.ends[0].y, r.ends[1].x, r.ends[1].y)));
+    for (const red of lamps.slopes.filter((l) => l.red)) {
+      // The rest of its row: the units within the row's length of it.
+      const row = lamps.slopes.filter((l) => Math.hypot(l.x - red.x, l.y - red.y) < 30);
+      expect(row.filter((l) => l.red).length, 'two red to a row').toBe(2);
+      for (const white of row.filter((l) => !l.red)) expect(fromCentreline(white.x, white.y)).toBeGreaterThan(fromCentreline(red.x, red.y));
+    }
+    expect(lamps.slopes.filter((l) => l.red).length * 2).toBe(lamps.slopes.length);
+    expect(lamps.beacons.map((b) => [b.x, b.y])).toEqual(f.beacons.map((b) => [b.x, b.y]));
+    for (const b of lamps.beacons) expect(b.h).toBeLessThan(10.1);
+    const rings = layout.terminals.buildings.map((t) => t.poly.outer);
+    for (const l of lamps.floodlights) expect(Math.min(...rings.map((r) => ringReach(r, l.x, l.y))), 'outside the terminal').toBeGreaterThan(0.5);
   });
 
   it('hangs each docking display on the face of the terminal where the line of its stand meets it, looking down the stand', () => {

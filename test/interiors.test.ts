@@ -19,6 +19,7 @@ import { ACT, POSE, ROLE } from '../src/sim/terminal/people.ts';
 import { FLOOR } from '../src/sim/terminal/plan.ts';
 import { ServiceQueue, type LineSpot } from '../src/sim/terminal/queue.ts';
 import { loadLayoutFromDisk, repoRoot } from './helpers/layout.ts';
+import { loadModelsFromDisk } from './helpers/models.ts';
 import { once } from './helpers/once.ts';
 
 const layout = loadLayoutFromDisk();
@@ -158,6 +159,28 @@ describe('the terminals, furnished', () => {
     expect(out.slice(0, 10)).toEqual([]);
   });
 
+  it("stands nothing between a line's ropes: no seat, no furniture", () => {
+    const { t, f } = fitted();
+    const level = (floor: number): number => (floor === FLOOR.arrivals ? 0 : 1);
+    const seatLevel = new Int8Array(f.seats.length / 3);
+    for (const g of f.groups) seatLevel.fill(level(g.floor), g.first, g.first + g.count);
+    const inside: string[] = [];
+    for (const [id, queue] of t.queues) {
+      const place = t.plan.places[id];
+      const { x, y, heading, length, width } = queue.shape;
+      const [ux, uy] = [Math.cos(heading), Math.sin(heading)];
+      // Between the ropes: within the rectangle they run round, a little in from them.
+      const within = (px: number, py: number): boolean => Math.abs((px - x) * ux + (py - y) * uy) < length / 2 - 0.1 && Math.abs(-(px - x) * uy + (py - y) * ux) < width / 2 - 0.1;
+      for (let s = 0; s < seatLevel.length; s += 1) {
+        if (seatLevel[s] === level(place.floor) && within(f.seats[s * 3], f.seats[s * 3 + 1])) inside.push(`a seat in the line of ${place.name ?? place.kind}`);
+      }
+      for (const i of f.items) {
+        if (level(i.floor) === level(place.floor) && corners(i).some(([cx, cy]) => within(cx, cy))) inside.push(`a ${i.kind} in the line of ${place.name ?? place.kind}`);
+      }
+    }
+    expect(inside.slice(0, 8)).toEqual([]);
+  });
+
   it('stands everything on the floor, nothing inside anything else, and no seat inside furniture', () => {
     const { t, f } = fitted();
     // On the floor: inside a terminal building, where the walking grid's cells may not reach right to the walls.
@@ -287,6 +310,27 @@ describe('crowds that are not machine-made', () => {
     // On a grid, people share a handful of distances back from the ropes; in a crowd, hardly any.
     const rows = new Set(pts.map(([x]) => Math.round(x * 10)));
     expect(rows.size).toBeGreaterThan(pts.length * 0.4);
+  });
+
+  it('puts nobody in a hat much wider than a head: seen from above, a crowd indoors is people, not umbrellas', () => {
+    const index = JSON.parse(readFileSync(join(repoRoot, 'public', 'models', 'index.json'), 'utf8')) as { models: { id: string; role: string }[] };
+    const characters = loadModelsFromDisk(index.models.filter((m) => m.role === 'character').map((m) => m.id));
+    expect(characters.size).toBeGreaterThan(20);
+    const wide: string[] = [];
+    for (const [id, model] of characters) {
+      // Every colour of it: a hat's colour slots are each named for it.
+      const hat = new Set((model.info.parts ?? []).flatMap((part, k) => (part === 'hat' ? [k] : [])));
+      if (!hat.size) continue;
+      const position = model.geometry.getAttribute('position');
+      const slot = model.geometry.getAttribute('slot');
+      let [x0, x1, z0, z1] = [Infinity, -Infinity, Infinity, -Infinity];
+      for (let i = 0; i < position.count; i += 1) {
+        if (!hat.has(slot.getX(i))) continue;
+        [x0, x1, z0, z1] = [Math.min(x0, position.getX(i)), Math.max(x1, position.getX(i)), Math.min(z0, position.getZ(i)), Math.max(z1, position.getZ(i))];
+      }
+      if (Math.max(x1 - x0, z1 - z0) > 0.45) wide.push(`${id}: a hat ${Math.max(x1 - x0, z1 - z0).toFixed(2)} m across`);
+    }
+    expect(wide).toEqual([]);
   });
 
   it('keeps a crowd past its ropes to the floor there is, each of its people in a place of their own', () => {
