@@ -75,3 +75,18 @@ console.log(`longest waits by queue (min): ${lines.map((q) => `${q.name} ${q.lon
 const arrivingBalance = s.arriving.created - s.arriving.left - a.arrivingHere;
 console.log(`balance: departing ${departingBalance} unaccounted, arriving ${arrivingBalance} unaccounted; missed ${((100 * s.departing.missed) / Math.max(1, s.departing.boarded + s.departing.missed)).toFixed(2)}% of those whose flight left`);
 console.log(`ran ${hours} h in ${((performance.now() - started) / 1000).toFixed(1)} s; checksum ${sim.checksum()}`);
+
+// The acceptance criteria for people and bags, judged on this run; exit code 1 if any fails.
+const b = s.bags;
+const failures: string[] = [];
+const share = (part: number, whole: number): number => part / Math.max(1, whole);
+if (departingBalance !== 0) failures.push(`${departingBalance} departing unaccounted`);
+if (arrivingBalance !== 0) failures.push(`${arrivingBalance} arriving unaccounted`);
+if (b.loaded + b.leftBehind + b.misrouted + b.returned !== b.checked) failures.push('checked bags without an outcome');
+if (b.collected + b.lost + t.arrivingBagsInside() !== b.arrived) failures.push('arriving bags without an outcome');
+if (share(s.departing.missed, s.departing.boarded + s.departing.missed) >= 0.02) failures.push('2% or more missed their flight');
+if (share(s.connecting.missed, s.connecting.boarded + s.connecting.missed) >= 0.02) failures.push('2% or more missed their connection');
+if (share(b.leftBehind + b.misrouted + b.lost, b.checked + b.arrived) >= 0.01) failures.push('1% or more of bags mishandled');
+if (percentile(s.security, 0.95) >= 30 * 60) failures.push('the 95th-percentile security wait is 30 minutes or more');
+console.log(failures.length ? `FAIL: ${failures.join('; ')}` : 'pass: everyone and every bag accounted for, misses, mishandling and security waits within their limits');
+process.exit(failures.length ? 1 : 0);

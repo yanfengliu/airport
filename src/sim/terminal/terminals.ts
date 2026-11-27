@@ -29,6 +29,8 @@ const LOOKAHEAD = 5 * 3600;
 const HOUSEKEEPING = 5;
 /** At a mid-day start, travellers who came more than this many seconds before are through security. */
 const WARM_THROUGH = 2400;
+/** Metres from its gate within which a party can be boarding that gate's flight. */
+const GATE_REACH = 60;
 
 const EVENT = { airside: 1, board: 2, atClaim: 3, leave: 4, shop: 5, roam: 6 } as const;
 /** What a walker is, in the low bits of `people.flags`. */
@@ -85,7 +87,12 @@ export interface TerminalStats {
    * among the departing as well, as the travellers of their onward flight.
    */
   connecting: { created: number; boarded: number; missed: number };
-  bags: { checked: number; loaded: number; leftBehind: number; misrouted: number; delivered: number; collected: number; lost: number };
+  /**
+   * Departing bags: every one checked is at once loaded, left behind or misrouted; a cancelled
+   * flight's loaded bags are returned. Arriving bags: every one that arrives is in time collected
+   * or lost; delivered counts those put on a belt.
+   */
+  bags: { checked: number; loaded: number; leftBehind: number; misrouted: number; returned: number; arrived: number; delivered: number; collected: number; lost: number };
   security: WaitStats;
   checkin: WaitStats;
   customs: WaitStats;
@@ -122,6 +129,8 @@ export class Terminals {
   private readonly bagsMoving: number[] = [];
   /** Per arriving flight being deplaned: the flights its connecting passengers may change to. */
   private readonly onwardChoices = new Map<number, Visit[]>();
+  /** Checked bags counted as loaded for each departure not yet gone, by visit: a cancellation gives them back. */
+  private readonly bagsOnFlight = new Map<number, number>();
   /** Queues by place: check-in halls, checkpoints, customs, gates. */
   readonly queues = new Map<number, ServiceQueue>();
   private readonly queueId = new Map<number, number>();
@@ -161,7 +170,7 @@ export class Terminals {
       departing: { created: 0, boarded: 0, missed: 0, cancelled: 0 },
       arriving: { created: 0, left: 0, alreadyGone: 0 },
       connecting: { created: 0, boarded: 0, missed: 0 },
-      bags: { checked: 0, loaded: 0, leftBehind: 0, misrouted: 0, delivered: 0, collected: 0, lost: 0 },
+      bags: { checked: 0, loaded: 0, leftBehind: 0, misrouted: 0, returned: 0, arrived: 0, delivered: 0, collected: 0, lost: 0 },
       security: newWaits(),
       checkin: newWaits(),
       customs: newWaits(),
@@ -503,20 +512,31 @@ export class Terminals {
     const sinceStart = late;
     const boardingAt = visit.etd - CONFIG.turnaround.boardingStarts[AIRCRAFT[visit.rotation.type].body] * 60;
     this.stats.departing.created += size;
-    // Started in mid-day after this flight began boarding: the party is on board, bags and all.
-    if (sinceStart > 0 && this.now >= boardingAt && !visit.doorsClosed) {
+    // A party with nowhere to be put, or no room for another walker, is taken to board unseen,
+    // bags and all, so that the books still balance.
+    const unseen = (): void => {
       visit.boarded += size;
       this.stats.departing.boarded += size;
       this.stats.bags.checked += bags;
       this.stats.bags.loaded += bags;
+    };
+    // Started in mid-day after this flight began boarding: the party is on board.
+    if (sinceStart > 0 && this.now >= boardingAt && !visit.doorsClosed) {
+      unseen();
       return;
     }
     // Started in mid-day: someone who came more than a usual trip through check-in and security
-    // before now is already through, waiting near the gate.
+    // before now is already through, waiting near the gate, any bags checked and on their way.
     if (sinceStart > WARM_THROUGH || (sinceStart > 0 && this.now > boardingAt - 1800)) {
       const spot = this.around(holdroom, 16, 30);
       const id = this.addParty(KIND.departing, FLOOR.airside, holdroom.x, holdroom.y, size, visit);
-      if (id < 0) return;
+      if (id < 0) {
+        unseen();
+        return;
+      }
+      this.stats.bags.checked += bags;
+      this.stats.bags.loaded += bags;
+      this.bagsOnFlight.set(visit.id, (this.bagsOnFlight.get(visit.id) ?? 0) + bags);
       this.people.setScript(id, [STEP.point, this.rng.pick(spot), STEP.until, this.signalOf(visit), STEP.walk, this.field(holdroom), STEP.queue, this.queueAt(holdroom), STEP.notify, EVENT.board]);
       return;
     }
@@ -525,9 +545,11 @@ export class Terminals {
     const halls = this.plan.checkin.get(visit.rotation.airline);
     const checkin = halls?.length ? this.rng.weighted(halls, (h) => Math.max(200, h.size)) : undefined;
     const way = this.nearestWay(bags && checkin ? checkin : checkpoint, by) ?? this.nearestWay(checkpoint, 'curb');
-    if (!way) return;
-    const id = this.addParty(KIND.departing, way.floor, way.x, way.y, size, visit);
-    if (id < 0) return;
+    const id = way ? this.addParty(KIND.departing, way.floor, way.x, way.y, size, visit) : -1;
+    if (!way || id < 0) {
+      unseen();
+      return;
+    }
     this.bags[id] = bags;
     const steps: number[] = [];
     if (way.floor !== FLOOR.landside) steps.push(STEP.floor, FLOOR.landside);
@@ -710,6 +732,7 @@ export class Terminals {
     const hasBags = this.rng.chance(international ? 0.85 : 0.5);
     const bags = hasBags ? Math.max(1, Math.round(size * this.rng.range(0.6, 1.2))) : 0;
     this.bags[id] = bags;
+    this.stats.bags.arrived += bags;
     if (bags) {
       // Bags start coming round a quarter of an hour after the aircraft parks, over a spread that
       // grows with the number of people aboard.
@@ -759,9 +782,15 @@ export class Terminals {
         this.claimAt[person] = -1;
         return;
       }
-      case EVENT.board:
+      case EVENT.board: {
         if (!visit || visit.doorsClosed) {
           this.missed(person);
+          return;
+        }
+        // The gate changed while they made their way: on to the one the aircraft is at now.
+        const gate = this.holdroomOf(visit);
+        if (gate && Math.hypot(people.x[person] - gate.x, people.y[person] - gate.y) > GATE_REACH) {
+          people.setScript(person, [STEP.walk, this.field(gate), STEP.queue, this.queueAt(gate), STEP.notify, EVENT.board]);
           return;
         }
         visit.boarded += people.size[person];
@@ -770,6 +799,7 @@ export class Terminals {
         this.partiesOf.get(visit.id)?.delete(person);
         people.setScript(person, [STEP.leave, 0]);
         return;
+      }
       case EVENT.atClaim: {
         const claim = this.plan.places[this.claimAt[person]];
         const wait = Math.max(0, this.bagReady[person] - this.now) + (this.lostBag[person] ? 900 : 0);
@@ -786,12 +816,13 @@ export class Terminals {
           return;
         }
         people.flags[person] |= LEAVING;
-        if (this.claimAt[person] >= 0 && this.bags[person]) {
+        // Their bags are settled as they go: collected, or reported lost.
+        if (this.bags[person]) {
           if (this.lostBag[person]) this.stats.bags.lost += this.bags[person];
           else this.stats.bags.collected += this.bags[person];
-          this.claimAt[person] = -1;
           this.bags[person] = 0;
         }
+        this.claimAt[person] = -1;
         const area = visit ? this.holdroomOf(visit)?.area ?? 'B' : 'B';
         this.leaveBuilding(person, area, this.rng.weighted(LEAVE_BY, (e) => e[1])[0]);
         return;
@@ -842,10 +873,21 @@ export class Terminals {
     const ready = this.now + this.rng.range(480, 1500);
     if (!visit || ready > visit.etd - 900) this.stats.bags.leftBehind += bags;
     else if (this.rng.chance(0.002)) this.stats.bags.misrouted += bags;
-    else this.stats.bags.loaded += bags;
+    else {
+      this.stats.bags.loaded += bags;
+      this.bagsOnFlight.set(visit.id, (this.bagsOnFlight.get(visit.id) ?? 0) + bags);
+    }
     // Each is in the bag system, being sorted and screened, until it is ready to go out to its aircraft.
     this.bagsMoving.push(ready, bags);
     this.bags[person] = 0;
+  }
+
+  /** Arriving bags not yet collected or reported lost: on their way to a belt, or on one. */
+  arrivingBagsInside(): number {
+    let n = 0;
+    const people = this.people;
+    for (let id = 0; id < people.high; id += 1) if (people.alive[id] && (people.flags[id] & KIND_MASK) === KIND.arriving) n += this.bags[id];
+    return n;
   }
 
   /** Checked bags still being sorted and screened in the bag system. */
@@ -909,6 +951,11 @@ export class Terminals {
         if (!visit.doorsClosed && visit.std < now - 4 * 3600 && visit.onBlockAt === NOT_YET && this.partiesOf.get(visit.id)?.size) {
           visit.doorsClosed = true;
           for (const person of [...(this.partiesOf.get(visit.id) ?? [])]) this.missed(person, true);
+          // Their bags never flew: they go back to their owners.
+          const bags = this.bagsOnFlight.get(visit.id) ?? 0;
+          this.stats.bags.loaded -= bags;
+          this.stats.bags.returned += bags;
+          this.bagsOnFlight.delete(visit.id);
         }
         continue;
       }
@@ -922,6 +969,8 @@ export class Terminals {
         this.people.setSignal(signal, false);
         for (const person of [...(remaining ?? [])]) this.missed(person);
         this.partiesOf.delete(visit.id);
+        // Its bags are aboard and gone with it.
+        this.bagsOnFlight.delete(visit.id);
       }
     }
   }

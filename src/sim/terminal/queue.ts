@@ -91,11 +91,15 @@ export class ServiceQueue {
     this.joinedAt.set(person, now);
   }
 
-  /** Take someone out of the line who has given up or been called away. */
+  /**
+   * Take someone out of the line, or away from the server serving them, who has given up or been
+   * called away: a server still holding them would finish with whoever is given their place next.
+   */
   leave(person: number): void {
     const at = this.line.indexOf(person);
     if (at >= 0) this.line.splice(at, 1);
     this.joinedAt.delete(person);
+    for (const server of this.servers) if (server.serving === person) server.serving = -1;
   }
 
   /** Where the person at `place` in the line stands (0 is the head). */

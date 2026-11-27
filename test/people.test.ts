@@ -42,11 +42,14 @@ describe('people in the terminals, over a morning', () => {
     expect(percentile(s.security, 0.95)).toBeLessThan(30 * 60);
   });
 
-  it('mishandles fewer than one bag in a hundred', () => {
+  it('accounts for every bag, and mishandles fewer than one in a hundred', () => {
     const bags = s.bags;
     expect(bags.checked).toBeGreaterThan(2000);
-    expect(bags.loaded + bags.leftBehind + bags.misrouted).toBeLessThanOrEqual(bags.checked);
-    expect(bags.leftBehind + bags.misrouted + bags.lost).toBeLessThan(0.01 * (bags.checked + bags.delivered));
+    expect(bags.arrived).toBeGreaterThan(500);
+    // Every checked bag has exactly one outcome, and every arriving one is collected, lost or still inside.
+    expect(bags.loaded + bags.leftBehind + bags.misrouted + bags.returned).toBe(bags.checked);
+    expect(bags.collected + bags.lost + t.arrivingBagsInside()).toBe(bags.arrived);
+    expect(bags.leftBehind + bags.misrouted + bags.lost).toBeLessThan(0.01 * (bags.checked + bags.arrived));
   });
 
   it('has staff of each kind at work, and shops taking money', () => {
