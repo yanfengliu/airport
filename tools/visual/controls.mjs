@@ -77,48 +77,107 @@ try {
   await page.keyboard.press('Space');
   await page.click('[data-speed="1"]');
 
+  // The camera, by hand: drag pans, right-drag turns, the wheel zooms, a number key goes to a preset.
+  const view = () => sfo('window.__sfo.view()');
+  const v0 = await view();
+  await page.mouse.move(width / 2, height / 2);
+  await page.mouse.down();
+  await page.mouse.move(width / 2 - 300, height / 2, { steps: 8 });
+  await page.mouse.up();
+  await run(400);
+  const v1 = await view();
+  await check('dragging pans the view', Math.hypot(v1.x - v0.x, v1.y - v0.y) > 50, `moved ${Math.round(Math.hypot(v1.x - v0.x, v1.y - v0.y))} m`);
+  await check('moving the camera by hand lets go of the preset', (await page.locator('[data-preset].on').count()) === 0);
+  await page.mouse.down({ button: 'right' });
+  await page.mouse.move(width / 2 + 100, height / 2, { steps: 8 });
+  await page.mouse.up({ button: 'right' });
+  await run(300);
+  const v2 = await view();
+  await check('right-dragging turns the view', Math.abs(((v2.bearing - v1.bearing + 540) % 360) - 180) > 10, `${Math.round(v1.bearing)}° to ${Math.round(v2.bearing)}°`);
+  await page.mouse.wheel(0, -500);
+  await run(900);
+  const v3 = await view();
+  await check('the wheel zooms in', v3.distance < v2.distance * 0.8, `${Math.round(v2.distance)} m to ${Math.round(v3.distance)} m`);
+  await page.keyboard.press('Digit2');
+  await page.waitForFunction(() => window.__sfo.settled(), null, { timeout: 30_000 });
+  const v4 = await view();
+  await check('a number key goes to its preset', Math.hypot(v4.x + 1130, v4.y + 410) < 5 && Math.abs(v4.distance - 1750) < 20 && (await page.isVisible('[data-preset="terminals"].on')), `${Math.round(v4.x)}, ${Math.round(v4.y)} at ${Math.round(v4.distance)} m`);
+  await page.click('[data-speed="1"]');
+  await page.keyboard.press('BracketRight');
+  const faster = await sfo('JSON.parse(window.render_game_to_text()).speed');
+  await page.keyboard.press('BracketLeft');
+  await page.keyboard.press('BracketLeft');
+  const slower = await sfo('JSON.parse(window.render_game_to_text()).speed');
+  await check('] goes faster and [ slower, never to a stop', faster === 5 && slower === 1, `1× then ] ${faster}×, then [ [ ${slower}×`);
+  await page.keyboard.press('KeyH');
+  await check('H hides the bars and panels but not the map credit', !(await page.isVisible('.bar.top')) && !(await page.isVisible('.ops')) && (await page.isVisible('.credit')));
+  await page.keyboard.press('KeyH');
+
   // Panels.
   await page.keyboard.press('KeyO');
   await check('O hides the operations panel', !(await page.isVisible('.ops')));
   await page.click('[data-panel="ops"]');
   await check('the Operations button shows it again', await page.isVisible('.ops'));
   await page.keyboard.press('KeyB');
-  await check('B opens the flight board', await page.isVisible('.board') && (await page.locator('.board-row:not(.board-head)').count()) > 4);
+  const shownRows = await page.locator('.board-row:not(.board-head)').evaluateAll((rows) => rows.filter((r) => getComputedStyle(r).visibility !== 'hidden' && r.dataset.visit).length);
+  await check('B opens the flight board, with flights on it', (await page.isVisible('.board')) && shownRows > 4, `${shownRows} rows`);
   await page.click('[data-tab="arrivals"]');
   await check('the Arrivals tab shows arrivals', (await page.textContent('.city-head')) === 'From');
 
-  // Picking an aircraft on the map: the nearest one on screen that is on the ground.
+  // Picking an aircraft on the map: one taxiing in view, brought close, and clicked on its wing,
+  // well away from its middle.
   const target = await sfo(`(() => {
     const sim = window.__sfo.sim();
     for (const a of sim.airside.aircraft) {
-      if (a.alt > 1 || a.phase === 'gone') continue;
+      if (a.alt > 1 || (a.phase !== 'taxiIn' && a.phase !== 'taxiOut') || a.speed < 3) continue;
       const s = window.__sfo.screenOf(a.id);
-      if (s && s.onScreen && s.x > 650 && s.x < ${width} - 420 && s.y > 120 && s.y < ${height} - 120) return { id: a.id, x: s.x, y: s.y };
+      if (s && s.onScreen && s.x > 650 && s.x < ${width} - 420 && s.y > 160 && s.y < ${height} - 160) return { id: a.id, x: s.x, y: s.y, span: a.type.span };
     }
     return null;
   })()`);
   if (target) {
     await page.keyboard.press('Space');
-    await page.mouse.click(target.x, target.y);
+    // Close enough that the wing is well clear of the middle on screen, further than the old pick reached.
+    let wing = null;
+    let middle = null;
+    for (let k = 0; k < 10; k += 1) {
+      middle = await sfo(`window.__sfo.screenOf(${target.id})`);
+      wing = await sfo(`window.__sfo.wingPoint(${target.id}, 0.65)`);
+      if (Math.hypot(wing.x - middle.x, wing.y - middle.y) > 60) break;
+      await page.mouse.move(middle.x, middle.y);
+      await page.mouse.wheel(0, -500);
+      await run(300);
+      await page.waitForFunction(() => window.__sfo.settled(), null, { timeout: 30_000 });
+    }
+    await page.mouse.click(wing.x, wing.y);
     const selected = await sfo('window.__sfo.selected()');
-    await check('clicking an aircraft opens its card', selected !== null && (await page.isVisible('.inspector')), `picked #${selected}, aimed at #${target.id}`);
+    const offMiddle = Math.hypot(wing.x - middle.x, wing.y - middle.y);
+    await check('clicking an aircraft on its wing opens its own card', selected === target.id && offMiddle > 60 && (await page.isVisible('.inspector')), `aimed at #${target.id} ${Math.round(offMiddle)} px from its middle, picked #${selected}`);
     await page.keyboard.press('KeyF');
-    await page.keyboard.press('Space');
-    await run(1500);
-    await check('F follows it', (await sfo('window.__sfo.following()')) === selected);
+    await page.click('[data-speed="5"]');
+    const before = await sfo(`(() => { const a = window.__sfo.sim().airside.byIdMap.get(${target.id}); return { x: a.x, y: a.y }; })()`);
+    await run(2500);
+    const after = await sfo(`(() => { const a = window.__sfo.sim().airside.byIdMap.get(${target.id}); const v = window.__sfo.view(); return { x: a.x, y: a.y, cx: v.x, cy: v.y }; })()`);
+    const moved = Math.hypot(after.x - before.x, after.y - before.y);
+    const off = Math.hypot(after.cx - after.x, after.cy - after.y);
+    await check('F follows it: the camera stays on it as it moves', (await sfo('window.__sfo.following()')) === target.id && moved > 10 && off < 25, `it moved ${Math.round(moved)} m; the view is ${Math.round(off)} m from it`);
+    await page.click('[data-speed="1"]');
     await page.keyboard.press('Escape');
     await check('Escape closes the card', !(await page.isVisible('.inspector')));
   } else {
-    await check('clicking an aircraft opens its card', false, 'no aircraft on the ground in view');
+    await check('clicking an aircraft on its wing opens its own card', false, 'no aircraft taxiing in view');
   }
 
-  // Picking from the board: a departure that is taxiing or at its gate.
+  // Picking from the board: a departure that is taxiing or at its gate, and the camera on that one.
+  await page.click('[data-preset="terminals"]');
   await page.click('[data-tab="departures"]');
-  const row = page.locator('.board-row:not(.board-head)').filter({ hasText: /Taxiing|Boarding|Gate closed|On time|Final call/ }).first();
+  const row = page.locator('.board-row:not(.board-head)').filter({ hasText: /Taxiing|Boarding|Gate closed|Final call/ }).first();
+  const visit = Number(await row.getAttribute('data-visit'));
   await row.click();
   await run(800);
   const picked = await sfo('window.__sfo.selected()');
-  await check('a board row picks and follows its aircraft', picked !== null && (await sfo('window.__sfo.following()')) === picked);
+  const ofVisit = await sfo(`(window.__sfo.sim().airside.aircraft.find((a) => a.visit.id === ${visit} && a.phase !== 'gone') || { id: null }).id`);
+  await check('a board row picks and follows the aircraft of that flight', picked !== null && picked === ofVisit && (await sfo('window.__sfo.following()')) === picked, `row for visit ${visit}, picked #${picked}, its aircraft #${ofVisit}`);
   await page.keyboard.press('Escape');
   await page.keyboard.press('KeyB');
 
@@ -127,11 +186,18 @@ try {
   await run(300);
   const changing = await sfo('window.__sfo.ops()');
   await check('a southeast storm starts the change to the Southeast Plan', changing.plan === 'Southeast' && changing.changeover > 0, `${changing.plan}, ${Math.round(changing.changeover)} s of changeover`);
+  await page.click('[data-weather="clear"]');
+  await run(2000);
+  const clearSky = await sfo('window.__sfo.layers()');
   await page.click('[data-weather="fog"]');
-  await run(300);
+  await run(2000);
   const fog = await sfo('window.__sfo.ops()');
   await check('fog leaves one arrival stream', fog.paired === false && fog.landing.length === 1, fog.landing.join(' '));
+  const foggy = await sfo('window.__sfo.layers()');
+  await check('fog closes in on the picture', foggy.haze > 0.8 && foggy.fog > 5 * clearSky.fog, `haze ${foggy.haze.toFixed(2)}, fog density ${foggy.fog.toExponential(2)} against ${clearSky.fog.toExponential(2)} before`);
   await page.click('[data-weather="clear"]');
+  await run(2000);
+  await check('clear weather clears it again', (await sfo('window.__sfo.layers()')).haze < 0.05);
 
   // Runways and checkpoints.
   await page.click('[data-runway="01R/19L"]');
@@ -150,18 +216,28 @@ try {
   }
   await check('closing the last way through security to E, F and G is refused, and says why', /No other way/.test(await page.textContent('.ops-notice')), await page.textContent('.ops-notice'));
 
-  // The cut-away view.
+  // The cut-away view: what is drawn, not just which button is lit.
+  await page.click('[data-preset="terminals"]');
+  await page.waitForFunction(() => window.__sfo.settled(), null, { timeout: 30_000 });
   await page.keyboard.press('KeyI');
   await run(600);
-  await check('I lifts the roofs onto the departures level', await page.isVisible('[data-inside="departures"].on'));
+  const departuresLevel = await sfo('window.__sfo.layers()');
+  await check('I lifts the roofs onto the departures level', (await page.isVisible('[data-inside="departures"].on')) && !departuresLevel.roofs && departuresLevel.departures && !departuresLevel.arrivals && departuresLevel.people, JSON.stringify(departuresLevel));
   await page.keyboard.press('KeyI');
+  await run(600);
+  const arrivalsLevel = await sfo('window.__sfo.layers()');
+  await check('I again shows the arrivals level', !arrivalsLevel.roofs && arrivalsLevel.arrivals && !arrivalsLevel.departures && arrivalsLevel.people, JSON.stringify(arrivalsLevel));
   await page.keyboard.press('KeyI');
+  await run(300);
+  const roofsBack = await sfo('window.__sfo.layers()');
+  await check('I a third time puts the roofs back', roofsBack.roofs && !roofsBack.departures && !roofsBack.arrivals);
 
-  // The day jump keeps what the viewer set up.
+  // The day jump keeps what the viewer set up, and goes to the time asked for.
   await page.click('[data-jump="dusk"]');
   await page.waitForFunction(() => window.__sfo.settled(), null, { timeout: 60_000 });
   const after = await sfo('window.__sfo.ops()');
-  await check('a jump in time keeps the closed checkpoints', after.checkpoints.filter((cp) => cp.closed).length === 3, after.checkpoints.filter((cp) => cp.closed).map((cp) => cp.name).join(' '));
+  const clock = await sfo('window.__sfo.time()');
+  await check('a jump in time goes to dusk and keeps the closed checkpoints', Math.abs(clock - 19 * 3600) < 120 && after.checkpoints.filter((cp) => cp.closed).length === 3, `${(clock / 3600).toFixed(2)} h; closed: ${after.checkpoints.filter((cp) => cp.closed).map((cp) => cp.name).join(' ')}`);
 } catch (error) {
   results.push({ name: 'run', ok: false, detail: error.message });
   console.log(`FAIL  ${error.message}`);

@@ -12,12 +12,14 @@
 //   --settle 1200           extra milliseconds to wait before each capture
 //   --out <dir>             output folder; default artifacts/visual/<stamp>
 //   --query "k=v&k2=v2"     extra query string for the page
+//   --no-perf               skip the frame-rate measurement
 //
 // Fixed views are reached by clicking the preset buttons; random views by wheel, drag and
 // right-drag from a preset, so the input path is exercised and not only the camera state.
 // Writes manifest.json beside the captures: the view each one ended at, frames per second, the
-// GPU that drew it, and any console errors. Exits 1 if the page logged an error or drew on a
-// software renderer.
+// GPU that drew it, and any console errors. Then measures the frame rate at the morning peak at
+// 1920×1080 with the clock running at 1× and 60× in the busiest views. Exits 1 if the page logged
+// an error, drew on a software renderer, or ran slower than 45 frames a second at 1× or 20 at 60×.
 
 import { createReadStream, existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -161,8 +163,57 @@ try {
   }
 
   const slowest = captures.reduce((min, c) => Math.min(min, c.fps), Infinity);
-  writeFileSync(join(outDir, 'manifest.json'), `${JSON.stringify({ stamp, size: [width, height], gpu, loadMs, seed, slowestFps: slowest, errors, captures }, null, 2)}\n`);
-  console.log(`${captures.length} captures in ${outDir}; slowest ${slowest} fps`);
+
+  // ---- the 'Fast enough' criterion: the morning peak at 1920×1080, the clock running ----------
+  // Frames counted in the page while the simulation runs at 1× and at 60×, in the views that draw
+  // the most; the captures above are taken paused and say nothing about this.
+  const perf = [];
+  if (!argv.includes('--no-perf')) {
+    const perfPage = await browser.newPage({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1 });
+    perfPage.on('pageerror', (error) => errors.push(`pageerror (perf): ${error.message}`));
+    await perfPage.goto(`http://127.0.0.1:${port}/?t=08:00`);
+    await perfPage.waitForFunction(() => window.__sfo?.ready === true, null, { timeout: 120_000 });
+    const LIMITS = { 1: 45, 60: 20 };
+    for (const id of ['overview', 'terminals', 'highway', 'gates']) {
+      for (const inside of id === 'terminals' ? ['off', 'departures'] : ['off']) {
+        await perfPage.click(`[data-preset="${id}"]`);
+        await perfPage.click(`[data-inside="${inside}"]`);
+        await perfPage.waitForFunction(() => window.__sfo.settled(), null, { timeout: 30_000 });
+        for (const speed of [1, 60]) {
+          await perfPage.click(`[data-speed="${speed}"]`);
+          await perfPage.waitForTimeout(800);
+          const measured = await perfPage.evaluate(
+            (ms) =>
+              new Promise((done) => {
+                let frames = 0;
+                let longest = 0;
+                const start = window.performance.now();
+                let last = start;
+                const tick = (now) => {
+                  frames += 1;
+                  longest = Math.max(longest, now - last);
+                  last = now;
+                  if (now - start < ms) requestAnimationFrame(tick);
+                  else done({ fps: ((frames - 1) * 1000) / (now - start), longestFrame: longest, clock: window.__sfo.time() });
+                };
+                requestAnimationFrame(tick);
+              }),
+            4000,
+          );
+          const fps = Math.round(measured.fps * 10) / 10;
+          const pass = fps >= LIMITS[speed];
+          perf.push({ view: id, inside, speed, fps, longestFrameMs: Math.round(measured.longestFrame), clock: measured.clock, pass });
+          console.log(`  perf ${id}${inside === 'off' ? '' : ` (${inside})`} at ${speed}×: ${fps} fps, longest frame ${Math.round(measured.longestFrame)} ms${pass ? '' : `  BELOW ${LIMITS[speed]}`}`);
+          if (!pass) errors.push(`too slow: ${id} ${inside} at ${speed}× drew ${fps} fps, under ${LIMITS[speed]}`);
+        }
+        await perfPage.click('[data-speed="0"]');
+      }
+    }
+    await perfPage.close();
+  }
+
+  writeFileSync(join(outDir, 'manifest.json'), `${JSON.stringify({ stamp, size: [width, height], gpu, loadMs, seed, slowestFps: slowest, performance: perf, errors, captures }, null, 2)}\n`);
+  console.log(`${captures.length} captures in ${outDir}; slowest paused ${slowest} fps; running at the morning peak, slowest ${perf.length ? Math.min(...perf.map((p) => p.fps)) : "-"} fps`);
 } catch (error) {
   errors.push(`sweep: ${error.message}`);
   exitCode = 1;

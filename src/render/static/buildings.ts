@@ -92,7 +92,11 @@ function gableHouse(walls: MeshBuilder, roofs: MeshBuilder, x: number, y: number
   }
 }
 
-export function buildBuildings(data: Buildings, facades: FacadeTextures, skip: (b: Building) => boolean = () => false): { group: THREE.Group; glows: NightGlow[] } {
+/**
+ * The mapped buildings, but those `skip` says not to; and the houses, drawn as boxes, unless
+ * `houses` is false, as when building only the parts of a terminal's roof.
+ */
+export function buildBuildings(data: Buildings, facades: FacadeTextures, skip: (b: Building) => boolean = () => false, houses = true): { group: THREE.Group; glows: NightGlow[] } {
   const group = new THREE.Group();
   group.name = 'buildings';
   const plain = new MeshBuilder();
@@ -121,7 +125,7 @@ export function buildBuildings(data: Buildings, facades: FacadeTextures, skip: (
     }
   }
 
-  for (let i = 0; i < data.boxes.length; i += 6) {
+  for (let i = 0; houses && i < data.boxes.length; i += 6) {
     const x = data.boxes[i];
     const y = data.boxes[i + 1];
     const hl = data.boxes[i + 2];

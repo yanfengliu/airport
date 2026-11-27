@@ -115,15 +115,20 @@ export class AircraftLayer {
     }
   }
 
-  /** The aircraft under a ray, if any: its id and how far along the ray it was hit. */
+  /** The aircraft drawn under a ray, if any: its id and how far along the ray it was hit. */
   pick(raycaster: THREE.Raycaster): { id: number; distance: number } | null {
     let best: { id: number; distance: number } | null = null;
     for (const entry of this.meshes.values()) {
       if (!entry.ids.length) continue;
-      for (const hit of raycaster.intersectObject(entry.body, false)) {
-        if (hit.instanceId === undefined || hit.instanceId >= entry.ids.length) continue;
-        if (!best || hit.distance < best.distance) best = { id: entry.ids[hit.instanceId], distance: hit.distance };
-        break;
+      for (const mesh of [entry.body, entry.livery]) {
+        // The bounds three.js tests the ray against first are kept from the last time they were
+        // worked out; the aircraft have moved since.
+        mesh.computeBoundingSphere();
+        for (const hit of raycaster.intersectObject(mesh, false)) {
+          if (hit.instanceId === undefined || hit.instanceId >= entry.ids.length) continue;
+          if (!best || hit.distance < best.distance) best = { id: entry.ids[hit.instanceId], distance: hit.distance };
+          break;
+        }
       }
     }
     return best;

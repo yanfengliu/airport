@@ -5,6 +5,7 @@
 
 import * as THREE from 'three';
 import type { Aircraft } from '../../sim/airside/aircraft.ts';
+import { wingOver } from '../models/aircraft.ts';
 import { buildGseGeometry, type GseKind } from '../models/gse.ts';
 
 const KINDS: GseKind[] = ['pushback', 'power', 'loader', 'carts', 'fuel', 'catering', 'stairs'];
@@ -12,6 +13,12 @@ const CAPACITY = 220;
 /** Seconds after reaching the stand that the fuel truck arrives, and before departure that it leaves. */
 const FUEL_FROM = 600;
 const FUEL_UNTIL = 900;
+/** Sizes of the trucks as src/render/models/gse.ts builds them, metres: how far out the catering truck reaches from the fuselage, its half width; the fuel truck's half width, half length and height. */
+const CATERING_REACH = 7;
+const CATERING_HALF_WIDTH = 1.25;
+const FUEL_HALF_WIDTH = 1.2;
+const FUEL_HALF_LENGTH = 4.6;
+const FUEL_TOP = 3.05;
 
 export class GseLayer {
   readonly group = new THREE.Group();
@@ -73,10 +80,22 @@ export class GseLayer {
             put('carts', 0.22 * length + 2, -(half + 10.5), 0);
           }
         }
-        // Catering after the passengers are off and before boarding, at the right rear door.
-        if (v.deplaned >= v.rotation.paxIn && !v.boardingOpen && !v.doorsClosed) put('catering', -0.36 * length, -(half + 4.3), -Math.PI / 2);
-        // Fuel under the right wing for most of the stay.
-        if (onStand > FUEL_FROM && v.etd - now > FUEL_UNTIL) put('fuel', -0.04 * length, -(a.type.span * 0.26 + 1), 0);
+        // Catering after the passengers are off and before boarding, at the right rear door: behind
+        // the wing, whose trailing edge sweeps back further the further out it is.
+        if (v.deplaned >= v.rotation.paxIn && !v.boardingOpen && !v.doorsClosed) {
+          const wing = wingOver(a.type, half + CATERING_REACH);
+          const along = Math.min(-0.36 * length, wing ? wing.trail - CATERING_HALF_WIDTH - 0.8 : Infinity);
+          put('catering', along, -(half + 4.3), -Math.PI / 2);
+        }
+        // Fuel under the right wing for most of the stay, where the wing is high enough to clear the
+        // truck; under a low wing, beside its trailing edge instead.
+        if (onStand > FUEL_FROM && v.etd - now > FUEL_UNTIL) {
+          const side = a.type.span * 0.26 + 1;
+          const wing = wingOver(a.type, side + FUEL_HALF_WIDTH) ?? wingOver(a.type, side);
+          const under = Math.min(wingOver(a.type, side - FUEL_HALF_WIDTH)?.under ?? Infinity, wing?.under ?? Infinity);
+          if (under > FUEL_TOP + 0.3) put('fuel', -0.04 * length, -side, 0);
+          else put('fuel', (wing ? wing.trail : -0.04 * length) - FUEL_HALF_LENGTH - 1, -side, 0);
+        }
         // At a remote stand people come and go by stairs at the front left door.
         if (this.remote.has(v.stand)) put('stairs', length / 2 - 0.16 * length, half + 5.2, -Math.PI / 2);
       }

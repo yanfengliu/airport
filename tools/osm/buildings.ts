@@ -1,6 +1,6 @@
 // Buildings section: everything with a footprint that is not a passenger terminal.
 
-import { pointInRing, ringArea, ringCentroid, round1, type Vec2 } from '../../src/shared/geo.ts';
+import { closestOnSegment, pointInRing, ringArea, ringCentroid, round1, type Vec2 } from '../../src/shared/geo.ts';
 import type { Building, BuildingKind, Buildings, PolygonData } from '../../src/shared/layout.ts';
 import { flat } from './airfield.ts';
 import { simplifyRing } from './land.ts';
@@ -157,7 +157,10 @@ export function buildBuildings(osm: OsmData, log: (line: string) => void): Build
       const outerOne = outlines[p];
       if (p === q || outerOne.area <= inner.area || buildings[p].minHeight) continue;
       if (buildings[q].height > buildings[p].height + 0.5) continue;
-      if (!inner.outer.every((v) => pointInRing(v[0], v[1], outerOne.outer))) continue;
+      // A point on the bigger one's wall counts as inside: a part mapped against its building's
+      // wall shares that wall, and the two would be drawn on top of each other.
+      const within = (v: Vec2): boolean => pointInRing(v[0], v[1], outerOne.outer) || outerOne.outer.some((a, k) => closestOnSegment(v, a, outerOne.outer[(k + 1) % outerOne.outer.length]).distance < 0.5);
+      if (!inner.outer.every(within)) continue;
       if (outerOne.holes.some((h) => pointInRing(inner.outer[0][0], inner.outer[0][1], h))) continue;
       swallowed.add(buildings[q]);
       break;

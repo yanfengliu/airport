@@ -43,6 +43,31 @@ const SHAPES: Record<string, Shape> = {
   A388: { ...WIDE, wingAt: 0.33, rootChord: 0.21, engineRadius: 1.6, engineLength: 6, engineAt: [0.3, 0.56], winglet: 2.2, tall: 1.19, sweep: 0.6 },
 };
 
+/**
+ * The wing above a point `side` metres out from the centreline, as the model draws it: where its
+ * leading and trailing edges are, in metres forward of the middle of the aircraft, and how high
+ * its underside is. Null beyond the wingtip.
+ */
+export function wingOver(type: AircraftType, side: number): { lead: number; trail: number; under: number } | null {
+  const shape = SHAPES[type.id] ?? (type.body === 'wide' || type.body === 'super' ? WIDE : NARROW);
+  const L = type.length;
+  const ry = type.fuselage / 2;
+  const rz = ry * shape.tall;
+  const zc = rz + Math.max(1.35, ry * 0.92);
+  const semi = type.span / 2;
+  const root = ry * 0.6;
+  const y = Math.abs(side);
+  if (y > semi) return null;
+  const t = Math.max(0, (y - root) / (semi - root));
+  const rootChord = type.span * shape.rootChord;
+  const chord = rootChord + (rootChord * shape.taper - rootChord) * t;
+  const lead = L / 2 - L * shape.wingAt - Math.tan(shape.sweep) * (semi - root) * t;
+  const z = zc - rz * 0.62 + Math.tan(0.1) * (semi - root) * t;
+  // The section is a flat diamond, thickest a third of the way back: 13% of the chord at the root, 10% at the tip.
+  const thick = chord * (0.13 - 0.03 * t);
+  return { lead, trail: lead - chord, under: z - thick / 2 };
+}
+
 const WHITE: RGB = [1, 1, 1];
 const FUSELAGE = rgb(0xf3f4f6);
 const BELLY = rgb(0xc9cdd3);

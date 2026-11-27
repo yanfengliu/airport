@@ -67,6 +67,7 @@ export function createBoard(source: BoardSource, onPick: (visit: number) => void
         return;
       }
       entry.visit = item.visit;
+      entry.row.dataset.visit = String(item.visit);
       const changed = Math.abs(item.estimated - item.scheduled) >= 300;
       setText(entry.cells[0], changed ? `${formatClock(item.scheduled)} → ${formatClock(item.estimated)}` : formatClock(item.scheduled));
       setText(entry.cells[1], item.flight);

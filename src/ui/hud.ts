@@ -48,6 +48,7 @@ export interface HudState {
 export interface Hud {
   update(state: HudState): void;
   setVisible(visible: boolean): void;
+  readonly visible: boolean;
 }
 
 export function createHud(root: HTMLElement, presets: readonly Preset[], attribution: string, actions: HudActions): Hud {
@@ -137,7 +138,11 @@ export function createHud(root: HTMLElement, presets: readonly Preset[], attribu
       for (const button of panelButtons) button.classList.toggle('on', state.panels[button.dataset.panel as PanelId]);
     },
     setVisible(visible: boolean): void {
-      root.style.display = visible ? '' : 'none';
+      // The map's credit stays on screen whatever else is hidden: the data's licence asks for it.
+      root.classList.toggle('hud-hidden', !visible);
+    },
+    get visible(): boolean {
+      return !root.classList.contains('hud-hidden');
     },
   };
 }

@@ -47,11 +47,14 @@ export class MapCamera {
   private readonly ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private readonly cleanup: (() => void)[] = [];
   /** World half-extent the look-at point is kept inside. */
-  bounds = 4200;
+  /** Where the point looked at may go, in metres east and north: over the mapped ground. */
+  area = { west: -4200, south: -4200, east: 4200, north: 4200 };
   /** Called when the viewer clicks without dragging; receives client coordinates. */
   onClick: ((clientX: number, clientY: number) => void) | null = null;
   /** Called when the viewer pans by hand, which ends follow mode. */
   onUserPan: (() => void) | null = null;
+  /** Called whenever the viewer moves the camera by hand, by any control. */
+  onUserMove: (() => void) | null = null;
 
   readonly camera: THREE.PerspectiveCamera;
   private readonly dom: HTMLElement;
@@ -181,13 +184,15 @@ export class MapCamera {
   }
 
   private clampGoal(): void {
-    this.goal.x = THREE.MathUtils.clamp(this.goal.x, -this.bounds, this.bounds);
-    this.goal.y = THREE.MathUtils.clamp(this.goal.y, -this.bounds, this.bounds);
+    const area = this.area;
+    this.goal.x = THREE.MathUtils.clamp(this.goal.x, area.west, area.east);
+    this.goal.y = THREE.MathUtils.clamp(this.goal.y, area.south, area.north);
     this.goal.distance = THREE.MathUtils.clamp(this.goal.distance, MIN_DISTANCE, MAX_DISTANCE);
     this.goal.tilt = THREE.MathUtils.clamp(this.goal.tilt, MIN_TILT, MAX_TILT);
   }
 
   private userPanned(): void {
+    this.onUserMove?.();
     if (this.follow) {
       this.follow = null;
       this.onUserPan?.();
@@ -213,10 +218,12 @@ export class MapCamera {
     }
     if (has('KeyQ')) this.goal.bearing -= 1.2 * dt;
     if (has('KeyE')) this.goal.bearing += 1.2 * dt;
+    // R and V tilt; F is the app's, for following an aircraft.
     if (has('KeyR')) this.goal.tilt -= 0.8 * dt;
-    if (has('KeyF')) this.goal.tilt += 0.8 * dt;
+    if (has('KeyV')) this.goal.tilt += 0.8 * dt;
     if (has('KeyZ', 'Equal', 'NumpadAdd')) this.goal.distance *= Math.exp(-1.6 * dt);
     if (has('KeyX', 'Minus', 'NumpadSubtract')) this.goal.distance *= Math.exp(1.6 * dt);
+    if (has('KeyQ', 'KeyE', 'KeyR', 'KeyV', 'KeyZ', 'Equal', 'NumpadAdd', 'KeyX', 'Minus', 'NumpadSubtract')) this.onUserMove?.();
     this.stiffness = 9;
     this.clampGoal();
   }
@@ -245,6 +252,7 @@ export class MapCamera {
       drag.moved += Math.abs(dx) + Math.abs(dy);
       if (drag.moved < 4) return;
       if (drag.mode === 'orbit') {
+        this.onUserMove?.();
         this.goal.bearing -= dx * 0.0055;
         this.goal.tilt -= dy * 0.0045;
         this.clampGoal();
@@ -279,6 +287,7 @@ export class MapCamera {
       'wheel',
       (e) => {
         e.preventDefault();
+        this.onUserMove?.();
         const scale = Math.exp(THREE.MathUtils.clamp(e.deltaY, -240, 240) * (e.ctrlKey ? 0.012 : 0.0016));
         const before = this.goal.distance;
         const after = THREE.MathUtils.clamp(before * scale, MIN_DISTANCE, MAX_DISTANCE);

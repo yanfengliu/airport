@@ -8,6 +8,16 @@ const DEG = Math.PI / 180;
 /** The widest the "aperture" opens, at night. */
 const MAX_EXPOSURE = 3.2;
 
+/**
+ * How hazy the weather makes the picture, 0 clear to 1 dense fog: from the visibility in statute
+ * miles, and from a low cloud ceiling in feet, which greys the light even under it.
+ */
+export function hazeFor(weather: { visibility: number; ceiling: number }): number {
+  const seeing = THREE.MathUtils.clamp((10 - weather.visibility) / 9.25, 0, 1);
+  const overcast = 0.5 * THREE.MathUtils.clamp((5000 - weather.ceiling) / 4700, 0, 1);
+  return Math.max(seeing, overcast);
+}
+
 export interface StageOptions {
   canvas: HTMLCanvasElement;
   /** Keep the drawing buffer so screenshots can read the canvas. */

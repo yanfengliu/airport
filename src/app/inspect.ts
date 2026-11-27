@@ -1,6 +1,7 @@
 // Picking an aircraft under the pointer, and what the inspector says about it.
 
 import * as THREE from 'three';
+import type { AircraftLayer } from '../render/dynamic/aircraft-layer.ts';
 import { formatClock } from '../shared/sun.ts';
 import type { Aircraft } from '../sim/airside/aircraft.ts';
 import { NOT_YET } from '../sim/airside/flights.ts';
@@ -9,14 +10,27 @@ import { DAY } from '../sim/schedule.ts';
 import type { Sim } from '../sim/sim.ts';
 import type { InspectorInfo } from '../ui/inspector.ts';
 
-/** How far from the pointer, in CSS pixels, an aircraft's middle may be and still be picked. */
+/** How far from the pointer, in CSS pixels, a small aircraft's middle may be and still be picked. */
 const PICK_RADIUS = 28;
 
 const scratch = new THREE.Vector3();
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
 
-/** The aircraft whose middle is nearest the pointer on screen, within reach; null if none is. */
-export function pickAircraft(sim: Sim, camera: THREE.Camera, canvas: HTMLCanvasElement, clientX: number, clientY: number): Aircraft | null {
+/**
+ * The aircraft under the pointer: whichever drawn aircraft the pointer is over, nose to tail and
+ * wingtip to wingtip; failing that, one too small on screen to hit whose middle is within reach.
+ * Null if none is.
+ */
+export function pickAircraft(sim: Sim, camera: THREE.Camera, canvas: HTMLCanvasElement, clientX: number, clientY: number, drawn: AircraftLayer): Aircraft | null {
   const box = canvas.getBoundingClientRect();
+  pointer.set(((clientX - box.left) / box.width) * 2 - 1, -((clientY - box.top) / box.height) * 2 + 1);
+  raycaster.setFromCamera(pointer, camera);
+  const hit = drawn.pick(raycaster);
+  if (hit) {
+    const a = sim.airside.byIdMap.get(hit.id);
+    if (a && a.phase !== 'gone') return a;
+  }
   let best: Aircraft | null = null;
   let bestDistance = PICK_RADIUS;
   for (const a of sim.airside.aircraft) {
@@ -25,7 +39,6 @@ export function pickAircraft(sim: Sim, camera: THREE.Camera, canvas: HTMLCanvasE
     if (scratch.z < -1 || scratch.z > 1) continue;
     const x = box.left + ((scratch.x + 1) / 2) * box.width;
     const y = box.top + ((1 - scratch.y) / 2) * box.height;
-    // Big aircraft seen close can be picked anywhere along their body.
     const d = Math.hypot(x - clientX, y - clientY);
     if (d < bestDistance) {
       bestDistance = d;

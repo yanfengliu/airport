@@ -9,7 +9,8 @@ import { PeopleLayer } from '../render/dynamic/people-layer.ts';
 import { TrainLayer } from '../render/dynamic/train-layer.ts';
 import { buildInteriors } from '../render/static/interiors.ts';
 import { VehicleLayer } from '../render/dynamic/vehicle-layer.ts';
-import { Stage } from '../render/stage.ts';
+import { wingOver } from '../render/models/aircraft.ts';
+import { Stage, hazeFor } from '../render/stage.ts';
 import { buildStaticWorld } from '../render/world.ts';
 import { formatClock } from '../shared/sun.ts';
 import { CONFIG } from '../sim/config.ts';
@@ -64,7 +65,9 @@ async function start(): Promise<void> {
   const world = buildStaticWorld(layout);
   stage.scene.add(world.group);
   const [west, south, east, north] = layout.land.bounds;
-  camera.bounds = Math.max(Math.abs(west), Math.abs(south), east, north) + 400;
+  // The camera looks at mapped ground, short of its edges, never past them at nothing.
+  const EDGE = 500;
+  camera.area = { west: west + EDGE, south: south + EDGE, east: east - EDGE, north: north - EDGE };
 
   let secondsOfDay = parseClock(params.get('t'), 8.5 * 3600);
   const seed = Number(params.get('seed') ?? 7) || 7;
@@ -128,8 +131,13 @@ async function start(): Promise<void> {
     camera.setFollow(null);
     camera.setView({ h: 0, ...preset.view }, immediate);
   };
-  camera.onUserPan = () => {
+  // Moved by hand, the view is no longer a preset; panned by hand, it no longer follows.
+  camera.onUserMove = () => {
     presetId = null;
+  };
+  camera.onUserPan = () => {
+    followed = null;
+    refreshInspector();
   };
 
   // ---- panels: operations, flight boards, the aircraft inspector ----------------------------
@@ -216,7 +224,7 @@ async function start(): Promise<void> {
     refreshPanels();
   };
   camera.onClick = (x, y) => {
-    const a = pickAircraft(sim, stage.camera, canvas, x, y);
+    const a = pickAircraft(sim, stage.camera, canvas, x, y, aircraftLayer);
     select(a ? a.id : null);
   };
 
@@ -243,6 +251,8 @@ async function start(): Promise<void> {
     const target = event.target as HTMLElement | null;
     if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
     if (event.metaKey || event.ctrlKey || event.altKey) return;
+    // Each of these keys does its thing once a press: a key held down must not toggle on and off.
+    if (event.repeat) return;
     if (event.code.startsWith('Digit')) {
       const preset = PRESETS[Number(event.code.slice(5)) - 1];
       if (preset) goToPreset(preset.id);
@@ -250,14 +260,17 @@ async function start(): Promise<void> {
       event.preventDefault();
       setSpeed(speed === 0 ? resumeSpeed : 0);
     } else if (event.code === 'BracketRight' || event.code === 'BracketLeft') {
-      const index = SPEEDS.indexOf(speed as (typeof SPEEDS)[number]);
+      // Faster and slower through the running speeds, 1× to 60×; Space is for pausing. From a
+      // pause, from the speed it would resume at.
+      const running = SPEEDS.filter((s) => s > 0);
+      const index = Math.max(0, running.indexOf((speed > 0 ? speed : resumeSpeed) as (typeof running)[number]));
       const step = event.code === 'BracketRight' ? 1 : -1;
-      setSpeed(SPEEDS[Math.max(0, Math.min(SPEEDS.length - 1, (index === -1 ? 1 : index) + step))]);
+      setSpeed(running[Math.max(0, Math.min(running.length - 1, index + step))]);
     } else if (event.code === 'KeyI') {
       const order = INSIDE.map((o) => o.id);
       setInside(order[(order.indexOf(inside) + 1) % order.length]);
     } else if (event.code === 'KeyH') {
-      hud.setVisible(hudRoot.style.display === 'none');
+      hud.setVisible(!hud.visible);
     } else if (event.code === 'KeyB') {
       togglePanel('flights');
     } else if (event.code === 'KeyO') {
@@ -280,6 +293,9 @@ async function start(): Promise<void> {
   const focus = new THREE.Vector3();
   const drawFrame = (realSeconds: number): void => {
     focus.set(camera.x, camera.h, -camera.y);
+    // The weather in the picture follows the weather the tower works to, over a second or so.
+    const haze = hazeFor(sim.airside.weather);
+    stage.haze = Math.abs(haze - stage.haze) < 0.005 ? haze : stage.haze + (haze - stage.haze) * 0.06;
     stage.update(secondsOfDay, focus, Math.max(160, camera.distance * 0.9));
     world.lights.begin();
     // Moving lights are only worth placing once it is dark enough to see them.
@@ -330,6 +346,19 @@ async function start(): Promise<void> {
   const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
   const gpu = debugInfo ? String(gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL)) : 'unknown';
 
+  /**
+   * Screen position of a point on an aircraft, for driving clicks at it: its middle, or `forward`
+   * metres towards the nose and `right` metres towards the right wingtip from there, `up` metres
+   * above the ground under it.
+   */
+  const screenOf = (id: number, forward = 0, right = 0, up = 2): { x: number; y: number; onScreen: boolean } | null => {
+    const a = sim.airside.byIdMap.get(id);
+    if (!a) return null;
+    const h = a.heading;
+    const p = new THREE.Vector3(a.x + Math.cos(h) * forward + Math.sin(h) * right, a.alt + up, -(a.y + Math.sin(h) * forward - Math.cos(h) * right)).project(stage.camera);
+    const box = canvas.getBoundingClientRect();
+    return { x: box.left + ((p.x + 1) / 2) * box.width, y: box.top + ((1 - p.y) / 2) * box.height, onScreen: p.z > -1 && p.z < 1 && Math.abs(p.x) < 1 && Math.abs(p.y) < 1 };
+  };
   window.__sfo = {
     ready: true,
     gpu,
@@ -344,17 +373,21 @@ async function start(): Promise<void> {
     fps: () => fps,
     renderInfo: () => ({ calls: stage.renderer.info.render.calls, triangles: stage.renderer.info.render.triangles }),
     ops: () => opsSnapshot(sim),
+    /** What is drawn: the terminal roofs, each cut-away level, the walkers; and the weather's haze. */
+    layers: () => ({ roofs: world.terminalShell.visible, departures: interiors.departures.visible, arrivals: interiors.arrivals.visible, people: peopleLayer.group.visible, haze: stage.haze, fog: stage.fogDensity }),
     selected: () => selected,
     following: () => (camera.isFollowing ? followed : null),
     operator: () => ({ weather: operator.weather, runways: [...operator.runways], checkpoints: [...operator.checkpoints] }),
-    /** Screen position of an aircraft's middle, for driving clicks at it. */
-    screenOf: (id: number) => {
+    /** The aircraft a click at a screen position would pick, by id; null for none. */
+    pickAt: (x: number, y: number) => pickAircraft(sim, stage.camera, canvas, x, y, aircraftLayer)?.id ?? null,
+    /** Screen position of the middle of an aircraft's right wing, `share` of the way out to the tip, as drawn. */
+    wingPoint: (id: number, share = 0.6) => {
       const a = sim.airside.byIdMap.get(id);
-      if (!a) return null;
-      const p = new THREE.Vector3(a.x, a.alt + 2, -a.y).project(stage.camera);
-      const box = canvas.getBoundingClientRect();
-      return { x: box.left + ((p.x + 1) / 2) * box.width, y: box.top + ((1 - p.y) / 2) * box.height, onScreen: p.z > -1 && p.z < 1 && Math.abs(p.x) < 1 && Math.abs(p.y) < 1 };
+      const side = a ? (a.type.span / 2) * share : 0;
+      const wing = a ? wingOver(a.type, side) : null;
+      return wing ? screenOf(id, (wing.lead + wing.trail) / 2, side, wing.under + 0.25) : null;
     },
+    screenOf,
   };
   window.render_game_to_text = () =>
     JSON.stringify({

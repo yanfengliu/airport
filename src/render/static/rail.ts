@@ -10,15 +10,28 @@ const WIDTH: Record<RailLine['kind'], number> = { airtrain: 3.1, bart: 4, caltra
 const ELEVATED_FROM = 0.6;
 const BURIED_BELOW = -0.4;
 
-/** Split a line into the runs that are above ground, dropping what is in tunnel. */
-function visibleRuns(pts: readonly number[]): number[][] {
+/**
+ * Split a line into the runs that are above ground, dropping what is in tunnel. A run ends where
+ * the track goes into the ground, between its points if need be, so that a viaduct comes down to
+ * its tunnel mouth rather than stopping in the air at its last point above ground.
+ */
+export function visibleRuns(pts: readonly number[]): number[][] {
   const runs: number[][] = [];
   let current: number[] = [];
+  /** Where the track between points `a` and `b` (indices) is at the ground. */
+  const portal = (a: number, b: number): number[] => {
+    const t = (BURIED_BELOW - pts[a + 2]) / (pts[b + 2] - pts[a + 2]);
+    return [pts[a] + (pts[b] - pts[a]) * t, pts[a + 1] + (pts[b + 1] - pts[a + 1]) * t, BURIED_BELOW];
+  };
   for (let i = 0; i < pts.length; i += 3) {
-    if (pts[i + 2] < BURIED_BELOW) {
+    const buried = pts[i + 2] < BURIED_BELOW;
+    const before = i >= 3 ? pts[i - 1] < BURIED_BELOW : buried;
+    if (buried) {
+      if (!before && current.length) current.push(...portal(i - 3, i));
       if (current.length >= 6) runs.push(current);
       current = [];
     } else {
+      if (before && i >= 3) current.push(...portal(i - 3, i));
       current.push(pts[i], pts[i + 1], pts[i + 2]);
     }
   }

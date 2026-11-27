@@ -54,6 +54,11 @@ body {
   pointer-events: auto;
 }
 
+/* H hides the bars and panels; the map credit stays. */
+#hud.hud-hidden > :not(.credit) {
+  display: none;
+}
+
 .bar {
   position: absolute;
   left: 12px;
