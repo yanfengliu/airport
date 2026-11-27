@@ -144,7 +144,7 @@ export function buildAircraftGeometry(type: AircraftType): AircraftGeometry {
   const f = airframe(type);
   const body = new MeshBuilder();
   const livery = new MeshBuilder();
-  const { half, ry, rz, zc, stations } = f;
+  const { ry, rz, zc, stations } = f;
 
   // ---- fuselage: stations from the tail cone to the nose ----------------------------------
   const liveryFrom = 2;
@@ -170,7 +170,7 @@ export function buildAircraftGeometry(type: AircraftType): AircraftGeometry {
   skin(body, [deckX - 0.9, -ry * 0.62, zc + rz * 0.5], [deckX + 0.7, -ry * 0.42, zc + rz * 0.34], [deckX + 0.7, ry * 0.42, zc + rz * 0.34], [deckX - 0.9, ry * 0.62, zc + rz * 0.5], GLASS, [deckX - 2, 0, zc - rz]);
 
   // ---- wings ----------------------------------------------------------------------------
-  const { semi, rootChord, wingZ, tipX, tipZ } = f;
+  const { rootChord, wingZ } = f;
   for (const s of f.sides) {
     surface(body, s.wing, WING);
     if (s.winglet) surface(livery, s.winglet, WHITE);
@@ -208,16 +208,18 @@ export function buildAircraftGeometry(type: AircraftType): AircraftGeometry {
     }
   }
 
+  return { body: body.build(), livery: livery.build(), lights: lightsOf(type) };
+}
+
+/** Where a type's lights are, in three.js model space (+x the nose, -z the left): from its shape as drawn. */
+export function lightsOf(type: AircraftType): AircraftGeometry['lights'] {
+  const { half, zc, rz, tipX, tipZ, semi, noseGearX, wheelR } = airframe(type);
   return {
-    body: body.build(),
-    livery: livery.build(),
-    lights: {
-      nose: new THREE.Vector3(noseGearX, wheelR * 2.4, 0),
-      tail: new THREE.Vector3(-half, zc + rz * 0.5, 0),
-      left: new THREE.Vector3(tipX, tipZ, -semi),
-      right: new THREE.Vector3(tipX, tipZ, semi),
-      beacon: new THREE.Vector3(0, zc + rz + 0.15, 0),
-    },
+    nose: new THREE.Vector3(noseGearX, wheelR * 2.4, 0),
+    tail: new THREE.Vector3(-half, zc + rz * 0.5, 0),
+    left: new THREE.Vector3(tipX, tipZ, -semi),
+    right: new THREE.Vector3(tipX, tipZ, semi),
+    beacon: new THREE.Vector3(0, zc + rz + 0.15, 0),
   };
 }
 

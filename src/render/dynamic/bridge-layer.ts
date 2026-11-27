@@ -5,6 +5,7 @@
 // the aircraft does not run over its nose.
 
 import * as THREE from 'three';
+import { airframe } from '../../shared/airframe.ts';
 import type { Aircraft } from '../../sim/airside/aircraft.ts';
 import { MeshBuilder, box } from '../builder.ts';
 import { BRIDGE_FLOOR, BRIDGE_ROOF, BRIDGE_STEEL, BRIDGE_TUNNEL, type BridgeEnd } from '../static/terminals.ts';
@@ -14,9 +15,6 @@ const RETRACT = 6;
 const SHORTEST = 1.5;
 /** Simulated seconds to reach out to the door or to pull back. */
 const TRAVEL = 40;
-/** Where the forward door is: this share of the length behind the nose, at least this far. */
-const DOOR_BACK = 0.12;
-const DOOR_BACK_LEAST = 4.2;
 /** How far off the fuselage's side the bridge stops, metres. */
 const DOOR_GAP = 0.4;
 /** Length of the cab at the end of the tunnel, which turns to meet the door square on, metres. */
@@ -36,8 +34,10 @@ export function doorFor(a: Pick<Aircraft, 'x' | 'y' | 'heading' | 'type'>, px: n
     sx = -sx;
     sy = -sy;
   }
-  const along = a.type.length / 2 - Math.max(DOOR_BACK_LEAST, DOOR_BACK * a.type.length);
-  const out = a.type.fuselage / 2 + DOOR_GAP;
+  // The front left door of the aircraft as drawn, and the side of its fuselage.
+  const f = airframe(a.type);
+  const along = f.doors.front.x;
+  const out = f.ry + DOOR_GAP;
   return { x: a.x + fx * along + sx * out, y: a.y + fy * along + sy * out, nx: sx, ny: sy };
 }
 

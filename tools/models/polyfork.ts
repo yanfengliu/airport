@@ -18,10 +18,17 @@
 // standing pose. public/models/index.json lists them all with their palettes, sizes, credits and,
 // for characters, how far a walk or a run cycle carries them. Vertices are welded, as the app
 // shades every face flat.
+//
+// It then writes our own models beside them, for what Polyfork has no model of
+// (tools/models/original/), in the same form (tools/models/format.ts): listed with `source:
+// 'original'`, their category, the names of their colour slots, their parts and poses, and credited
+// as ours, not Polyfork's.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeModel } from './format.ts';
+import { ORIGINALS } from './original/index.ts';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const cache = join(root, 'artifacts', 'models', 'polyfork');
@@ -107,6 +114,9 @@ const MODELS: Wanted[] = [
   { id: 'airstairs-truck-de0f4b', role: 'prop' },
   { id: 'apron-passenger-bus-c46aef', role: 'prop' },
   { id: 'lavatory-service-truck-023f33', role: 'prop' },
+  // Outside: the airliners every type but the A380 is drawn with, fitted to its size (src/shared/airframe.ts).
+  { id: 'narrow-body-airliner-619183', role: 'prop' },
+  { id: 'widebody-airliner-ae0a5a', role: 'prop' },
 ];
 
 /** Frames sampled from each character's built-in clips, and the seat height the sitting pose is made for, metres. */
@@ -131,6 +141,8 @@ async function get(url: string): Promise<Response> {
 interface Meta {
   id: string;
   name: string;
+  /** Polyfork's own class of the model: vehicle, building, prop, character... */
+  category: string;
   credit: string;
   page: string;
   triangles: number;
@@ -143,6 +155,7 @@ interface Row {
   title: string;
   free: boolean;
   page: string;
+  class: string;
   triangles: number;
   size_m: { x: number; y: number; z: number };
   download?: { glb?: string };
@@ -166,7 +179,7 @@ async function fetchModel(m: Wanted): Promise<{ glb: Buffer; meta: Meta }> {
   // Every free model's mesh files are offered under CC BY 4.0 (the dataset's INDEX-LICENSE.md and
   // https://polyfork.dev/licensing); the credit line is the one Polyfork gives each model.
   if (!row.free) throw new Error(`${m.id}: not a free model, so not under CC BY 4.0`);
-  const meta: Meta = { id: m.id, name: row.title, credit: `${row.title} by Polyfork (${row.page}), CC BY 4.0`, page: row.page, triangles: row.triangles, size: [row.size_m.x, row.size_m.y, row.size_m.z] };
+  const meta: Meta = { id: m.id, name: row.title, category: row.class, credit: `${row.title} by Polyfork (${row.page}), CC BY 4.0`, page: row.page, triangles: row.triangles, size: [row.size_m.x, row.size_m.y, row.size_m.z] };
   const local = join(dataset, `${m.id}.glb`);
   if (existsSync(local) && !refetch) return { glb: readFileSync(local), meta };
   mkdirSync(cache, { recursive: true });
@@ -473,10 +486,14 @@ function strideOf(g: Gltf, c: Clip, length: number, rest: Pose, hips: number, pa
 
 // ---- converting --------------------------------------------------------------------------------
 
-interface Entry {
+export interface Entry {
   id: string;
   name: string;
   role: Role;
+  /** Whose model it is: Polyfork's, converted, or our own (tools/models/original/). */
+  source: 'polyfork' | 'original';
+  /** What kind of thing it is, as Polyfork sorts its models: vehicle, building, prop, character... */
+  category: string;
   credit: string;
   page: string;
   changed: string;
@@ -691,45 +708,24 @@ function convert(m: Wanted, glb: Buffer, meta: Meta, borrowed: Clip[]): Entry {
     }
   }
 
-  // Quantize across the box of the kept vertices.
-  const min = [Infinity, Infinity, Infinity];
-  const max = [-Infinity, -Infinity, -Infinity];
-  for (const i of kept) for (let k = 0; k < 3; k += 1) {
-    min[k] = Math.min(min[k], positions[i * 3 + k]);
-    max[k] = Math.max(max[k], positions[i * 3 + k]);
-  }
-  const span = max.map((v, k) => Math.max(v - min[k], 1e-6));
-  const vertexCount = kept.length;
-  const wide = vertexCount > 65535;
-  const parts: Buffer[] = [];
-  const q = Buffer.alloc(vertexCount * 6);
-  kept.forEach((i, n) => {
-    for (let k = 0; k < 3; k += 1) q.writeInt16LE(Math.round(((positions[i * 3 + k] - min[k]) / span[k]) * 65535 - 32768), n * 6 + k * 2);
+  const written = writeModel(out, m.id, {
+    positions: kept.flatMap((i) => [positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]]),
+    slots: kept.map((i) => slots[i]),
+    bones: m.role === 'character' ? kept.map((i) => bones[i] ?? 0) : undefined,
+    triangles: tris,
+    matrices,
   });
-  parts.push(q);
-  parts.push(Buffer.from(kept.map((i) => slots[i])));
-  if (m.role === 'character') parts.push(Buffer.from(kept.map((i) => bones[i] ?? 0)));
-  const pad = (b: Buffer[]): void => {
-    const length = b.reduce((n, x) => n + x.length, 0);
-    if (length % 4) b.push(Buffer.alloc(4 - (length % 4)));
-  };
-  pad(parts);
-  const idx = Buffer.alloc(tris.length * (wide ? 4 : 2));
-  tris.forEach((v, i) => (wide ? idx.writeUInt32LE(v, i * 4) : idx.writeUInt16LE(v, i * 2)));
-  parts.push(idx);
-  pad(parts);
-  if (matrices.length) parts.push(Buffer.from(Float32Array.from(matrices).buffer));
-  const file = `${m.id}.bin`;
-  const data = Buffer.concat(parts);
-  writeFileSync(join(out, file), data);
+  const { file, vertices: vertexCount, box } = written;
   const changes = ['converted to a compact form for this app (vertices welded and quantized, colours as slots)'];
   if (m.dropped && skipped) changes.push(m.dropped);
   if (m.role === 'character') changes.push(`its built-in Walk, Idle and Run clips sampled as ${WALK_FRAMES}, ${IDLE_FRAMES} and ${RUN_FRAMES} frames, and a sitting pose made here from its standing one`);
-  console.log(`${m.id}: ${vertexCount} vertices, ${tris.length / 3} triangles, ${palette.length / 3} colours${m.role === 'character' ? `, ${joints.length} bones, ${matrices.length / 12 / joints.length} poses` : ''}${skipped ? `, ${skipped} parts left out` : ''}; ${(data.length / 1024).toFixed(0)} KiB`);
+  console.log(`${m.id}: ${vertexCount} vertices, ${tris.length / 3} triangles, ${palette.length / 3} colours${m.role === 'character' ? `, ${joints.length} bones, ${matrices.length / 12 / joints.length} poses` : ''}${skipped ? `, ${skipped} parts left out` : ''}; ${(written.bytes / 1024).toFixed(0)} KiB`);
   return {
     id: m.id,
     name: meta.name,
     role: m.role,
+    source: 'polyfork',
+    category: meta.category,
     credit: meta.credit,
     page: meta.page,
     changed: changes.join('; '),
@@ -737,7 +733,7 @@ function convert(m: Wanted, glb: Buffer, meta: Meta, borrowed: Clip[]): Entry {
     file,
     vertices: vertexCount,
     triangles: tris.length / 3,
-    box: [...min, ...span],
+    box,
     palette: palette.map((v) => Math.round(v * 10000) / 10000),
     parts: m.role === 'character' ? slotParts : undefined,
     bones: m.role === 'character' ? joints.length : undefined,
@@ -759,17 +755,50 @@ async function main(): Promise<void> {
     const { glb, meta } = fetched.get(m.id)!;
     entries.push(convert(m, glb, meta, borrowed));
   }
-  writeFileSync(join(out, 'index.json'), `${JSON.stringify({ source: 'https://polyfork.dev', licence: 'CC BY 4.0', models: entries }, null, 1)}\n`);
+  // Our own models, for what Polyfork has no model of, made in its manner (tools/models/original/).
+  const ours: Entry[] = [];
+  for (const spec of ORIGINALS) {
+    const made = spec.build().build();
+    const written = writeModel(out, spec.id, made.mesh);
+    const [sx, sy, sz] = [written.box[3], written.box[4], written.box[5]];
+    console.log(`${spec.id} (ours): ${written.vertices} vertices, ${written.triangles} triangles, ${made.colours.length} colours, ${made.parts.length} parts${made.poses ? `, poses ${Object.keys(made.poses).join(' ')}` : ''}; ${(written.bytes / 1024).toFixed(0)} KiB`);
+    ours.push({
+      id: spec.id,
+      name: spec.name,
+      role: 'prop',
+      source: 'original',
+      category: spec.category,
+      credit: `${spec.name}, an original model made for this project`,
+      page: '',
+      changed: '',
+      size: [Math.round(sx * 100) / 100, Math.round(sy * 100) / 100, Math.round(sz * 100) / 100],
+      file: written.file,
+      vertices: written.vertices,
+      triangles: written.triangles,
+      box: written.box,
+      palette: made.palette,
+      parts: made.colours,
+      bones: made.mesh.bones ? made.parts.length : undefined,
+      poses: made.poses,
+    });
+  }
+  writeFileSync(join(out, 'index.json'), `${JSON.stringify({ source: 'https://polyfork.dev', licence: 'CC BY 4.0', models: [...entries, ...ours] }, null, 1)}\n`);
   const credits = [
     '# Model credits',
     '',
-    'The 3D models in this folder are from [Polyfork](https://polyfork.dev), under the [Creative Commons Attribution 4.0](https://creativecommons.org/licenses/by/4.0/) licence. Each was changed for this app as noted. Polyfork does not endorse this project.',
+    'Most of the 3D models in this folder are from [Polyfork](https://polyfork.dev), under the [Creative Commons Attribution 4.0](https://creativecommons.org/licenses/by/4.0/) licence. Each was changed for this app as noted. Polyfork does not endorse this project.',
     '',
     ...entries.map((e) => `- ${e.credit}. Changed: ${e.changed}.`),
     '',
+    '## Our own models',
+    '',
+    "Made for this project, in Polyfork's manner, for what Polyfork has no model of (tools/models/original/). They are not Polyfork's.",
+    '',
+    ...ours.map((e) => `- ${e.name} (${e.category}).`),
+    '',
   ];
   writeFileSync(join(out, 'CREDITS.md'), credits.join('\n'));
-  console.log(`${entries.length} models written to public/models`);
+  console.log(`${entries.length} of Polyfork's models and ${ours.length} of our own written to public/models`);
 }
 
 await main();

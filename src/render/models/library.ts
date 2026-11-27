@@ -11,6 +11,10 @@ export interface ModelInfo {
   id: string;
   name: string;
   role: 'prop' | 'character';
+  /** Whose it is: Polyfork's, converted, or our own (tools/models/original/). */
+  source?: 'polyfork' | 'original';
+  /** What kind of thing it is, as Polyfork sorts its models: vehicle, building, prop, character... */
+  category?: string;
   credit: string;
   page: string;
   changed: string;
@@ -21,8 +25,12 @@ export interface ModelInfo {
   triangles: number;
   box: number[];
   palette: number[];
-  /** For characters, the part each colour slot is on: body, hair, top, coat, bottom, feet... */
+  /**
+   * What each colour slot is: for characters the part it is on (body, hair, top, coat...); for our
+   * own models its name (fuselage, livery, stripe...).
+   */
   parts?: string[];
+  /** For a model with parts that move (characters, and our own models' doors and gear): how many. */
   bones?: number;
   poses?: Record<string, [number, number]>;
   /** For characters: metres one cycle of the walk, and of the run, carries them. */
@@ -32,9 +40,9 @@ export interface ModelInfo {
 
 export interface Model {
   info: ModelInfo;
-  /** Positions in metres in the model's own frame (y up, front +z), a slot per vertex, for characters a bone. */
+  /** Positions in metres in the model's own frame (y up, front +z), a slot per vertex, for a model with moving parts a bone. */
   geometry: THREE.BufferGeometry;
-  /** For characters: 12 numbers per bone per pose, the rows of each bone's 3x4 matrix. */
+  /** For a model with moving parts: 12 numbers per bone per pose, the rows of each bone's 3x4 matrix. */
   poses: Float32Array | null;
   /** Vertices on each colour slot. */
   slotCounts: number[];
@@ -72,7 +80,7 @@ function decode(info: ModelInfo, data: ArrayBuffer): Model {
   const slots = new Uint8Array(data, at, n);
   at += n;
   let bones: Uint8Array | null = null;
-  if (info.role === 'character') {
+  if (info.bones) {
     bones = new Uint8Array(data, at, n);
     at += n;
   }
@@ -82,7 +90,7 @@ function decode(info: ModelInfo, data: ArrayBuffer): Model {
   const index = wide ? new Uint32Array(data.slice(at, at + count * 4)) : new Uint16Array(data.slice(at, at + count * 2));
   at += count * (wide ? 4 : 2);
   at = Math.ceil(at / 4) * 4;
-  const poses = info.role === 'character' ? new Float32Array(data.slice(at)) : null;
+  const poses = info.bones ? new Float32Array(data.slice(at)) : null;
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(position, 3));
   geometry.setAttribute('slot', new THREE.BufferAttribute(Float32Array.from(slots), 1));
@@ -102,6 +110,29 @@ function decode(info: ModelInfo, data: ArrayBuffer): Model {
 /** The look every model is drawn with: flat faces, lit, coloured per vertex, as they were made. */
 export function flatMaterial(): THREE.MeshLambertMaterial {
   return new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+}
+
+/**
+ * The flat look with some colour slots painted per instance: the vertices of `slots` take the
+ * instance's colour (InstancedMesh.setColorAt), the rest keep the colour they were made with. An
+ * airline's colour on an airliner's tail, a vehicle's paint.
+ */
+export function paintedMaterial(slots: readonly number[]): THREE.MeshLambertMaterial {
+  const material = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+  const test = slots.length ? slots.map((s) => `abs(slot - ${s.toFixed(1)}) < 0.5`).join(' || ') : 'false';
+  material.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute float slot;')
+      .replace(
+        '#include <color_vertex>',
+        `vColor = vec4(color.rgb, 1.0);
+#ifdef USE_INSTANCING_COLOR
+        if (${test}) vColor.rgb = instanceColor.rgb;
+#endif`,
+      );
+  };
+  material.customProgramCacheKey = () => `painted-${slots.join(',')}`;
+  return material;
 }
 
 const matrix = new THREE.Matrix4();

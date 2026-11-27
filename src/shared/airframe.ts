@@ -1,8 +1,13 @@
-// The shape of each type of aircraft as the model draws it, in numbers: the fuselage, where the
-// wing meets it, the wing's sweep, chords and span, the tip devices, the tail, the engines and the
-// main wheels. The 3D model (src/render/models/aircraft.ts), the outline the stands are judged by
-// (footprint.ts) and the ground equipment placed round a parked aircraft all read it, so that what
-// is judged is what is drawn.
+// The shape of each type of aircraft as it is drawn, in numbers: the fuselage, where the wing
+// meets it, the wing's sweep, chords and span, the tip devices, the tail, the engines and the main
+// wheels. The aircraft layer, the outline the stands are judged by (footprint.ts) and the ground
+// equipment placed round a parked aircraft all read it, so that what is judged is what is drawn.
+//
+// Most types are drawn with one of Polyfork's airliners fitted to their published length, span and
+// height (MODEL_SHAPES, DRAWN_BY): their shapes are that model's, measured by
+// tools/models/airliner-shape.ts and scaled the same way, and test/outline.test.ts checks that the
+// model as drawn lies inside them. A type with no such model (the A380) is drawn and described by
+// the proportions below.
 //
 // Body frame: x forward, y to the left wing, z up, origin on the ground under the middle of the
 // fuselage.
@@ -51,6 +56,87 @@ const PROPORTIONS: Record<string, Proportions> = {
   B77W: { ...WIDE, wingAt: 0.36, engineRadius: 1.95, engineLength: 7.3 },
   A388: { ...WIDE, wingAt: 0.33, rootChord: 0.21, engineRadius: 1.6, engineLength: 6, engineAt: [0.3, 0.56], winglet: 2.2, tall: 1.19, sweep: 0.6 },
 };
+
+/**
+ * One of Polyfork's airliners, measured: its size, where its nose is, the fuselage's half width,
+ * the underside and top of its cabin and its outline from above (x, half width), the wing and
+ * tailplane as tapered surfaces bounding all of each (flaps, ailerons and tip devices included),
+ * the fin, the left engine and the left main gear. In the model's own frame and size: x along
+ * the aircraft (nose forward), y to its left, z up. Printed by tools/models/airliner-shape.ts.
+ */
+interface ModelShape {
+  length: number;
+  span: number;
+  height: number;
+  nose: number;
+  half: number;
+  cabin: [number, number];
+  body: [number, number][];
+  wing: { root: V3; rootChord: number; rootThick: number; tip: V3; tipChord: number; tipThick: number };
+  stabiliser: { root: V3; rootChord: number; rootThick: number; tip: V3; tipChord: number; tipThick: number };
+  fin: { front: number; back: number; half: number; top: number };
+  engines: { y: number; z: number; radius: number; front: number; back: number }[];
+  gear: { noseX: number; mainX: number; track: number; halfLength: number; halfWidth: number };
+  /** The front and rearmost left doors: the middle of each along the aircraft, and its sill's height. */
+  doors: { front: { x: number; sill: number }; rear: { x: number; sill: number } };
+}
+
+export const MODEL_SHAPES: Record<string, ModelShape> = {
+  'narrow-body-airliner-619183': {
+    length: 38.01, span: 35.78, height: 11.95, nose: 18.82, half: 1.98, cabin: [1.35, 6.05],
+    body: [[-19.19, 0.47], [-16.69, 2.02], [2.31, 2.02], [12.81, 2.01], [13.31, 2], [14.81, 1.97], [15.31, 1.92], [15.81, 1.86], [16.31, 1.78], [16.81, 1.63], [17.31, 1.45], [17.81, 1.22], [18.31, 0.98], [18.82, 0.66]],
+    wing: { root: [5.35, 1, 2.325], rootChord: 7.65, rootThick: 1.29, tip: [-2.96, 17.89, 4.935], tipChord: 2.56, tipThick: 2.47 },
+    stabiliser: { root: [-13.49, 0.89, 4.55], rootChord: 3.81, rootThick: 0.42, tip: [-16.79, 6.2, 5.11], tipChord: 1.42, tipThick: 0.16 },
+    fin: { front: -9.39, back: -17.3, half: 0.29, top: 11.95 },
+    engines: [{ y: 5.8, z: 1.62, radius: 1.05, front: 6.31, back: -0.45 }],
+    gear: { noseX: 12.6, mainX: 0.32, track: 3.8, halfLength: 0.89, halfWidth: 0.6 },
+    doors: { front: { x: 11.98, sill: 3.23 }, rear: { x: -10.77, sill: 3.23 } },
+  },
+  'widebody-airliner-ae0a5a': {
+    length: 64, span: 60, height: 18, nose: 32, half: 2.99, cabin: [2.07, 8.94],
+    body: [[-32, 0.55], [-27, 3.02], [-8.5, 3.03], [11, 3.03], [25.5, 3.01], [26.5, 2.91], [27.5, 2.81], [28, 2.66], [29, 2.3], [29.5, 2.1], [31, 1.39], [32, 0.82]],
+    wing: { root: [10.82, 2.98, 3.755], rootChord: 18.97, rootThick: 1.89, tip: [-9.03, 30, 6.245], tipChord: 1.78, tipThick: 0.65 },
+    stabiliser: { root: [-21.29, 1, 6.385], rootChord: 7.31, rootThick: 0.63, tip: [-27.6, 10.81, 7.56], tipChord: 2.01, tipThick: 0.18 },
+    fin: { front: -19.6, back: -31.78, half: 0.43, top: 18 },
+    engines: [{ y: 9.8, z: 2.65, radius: 1.84, front: 9.95, back: -0.61 }],
+    gear: { noseX: 26.37, mainX: 0, track: 5.73, halfLength: 2, halfWidth: 0.44 },
+    doors: { front: { x: 24.05, sill: 4.82 }, rear: { x: -18.5, sill: 4.82 } },
+  },
+};
+
+/** Which of Polyfork's airliners draws each type; the rest are drawn from their proportions. */
+export const DRAWN_BY: Record<string, string> = {
+  E75L: 'narrow-body-airliner-619183',
+  BCS3: 'narrow-body-airliner-619183',
+  A320: 'narrow-body-airliner-619183',
+  A21N: 'narrow-body-airliner-619183',
+  B738: 'narrow-body-airliner-619183',
+  B39M: 'narrow-body-airliner-619183',
+  B752: 'narrow-body-airliner-619183',
+  B789: 'widebody-airliner-ae0a5a',
+  A359: 'widebody-airliner-ae0a5a',
+  B77W: 'widebody-airliner-ae0a5a',
+};
+
+/**
+ * Types Polyfork has no model of, drawn with one of our own built from their proportions here
+ * (tools/models/original/airliner.ts): at their own size, centred on the aircraft's point.
+ */
+export const OWN_MODEL: Record<string, string> = {
+  A388: 'double-deck-airliner',
+};
+
+/**
+ * How a type's model is fitted to it: the model's id, and the scales along its length, across its
+ * span and up its height that bring it to the type's published size, with `mid` the model's x at
+ * the middle of its length (the aircraft's point). Null for a type drawn from its proportions.
+ */
+export function modelFit(type: AirframeType): { id: string; along: number; across: number; up: number; mid: number } | null {
+  const id = DRAWN_BY[type.id];
+  const shape = id ? MODEL_SHAPES[id] : undefined;
+  if (!id || !shape) return null;
+  return { id, along: type.length / shape.length, across: type.span / shape.span, up: type.height / shape.height, mid: shape.nose - shape.length / 2 };
+}
 
 export type V3 = [number, number, number];
 
@@ -119,6 +205,8 @@ export interface Airframe {
   tipZ: number;
   sides: [Side, Side];
   fin: Surface;
+  /** The front and rearmost passenger doors on the left: where each is along x, and its sill's height. */
+  doors: { front: { x: number; sill: number }; rear: { x: number; sill: number } };
   /** The landing gear: wheel radius, where the nose gear and main gear stand along x, the main gear's distance out from the centreline, and the offsets of its bogie's axles. */
   wheelR: number;
   noseGearX: number;
@@ -133,6 +221,12 @@ const airframes = new WeakMap<AirframeType, Airframe>();
 export function airframe(type: AirframeType): Airframe {
   const known = airframes.get(type);
   if (known) return known;
+  const fit = modelFit(type);
+  if (fit) {
+    const fitted = fittedAirframe(type, MODEL_SHAPES[fit.id], fit);
+    airframes.set(type, fitted);
+    return fitted;
+  }
   const p = PROPORTIONS[type.id] ?? (type.body === 'wide' || type.body === 'super' ? WIDE : NARROW);
   const L = type.length;
   const half = L / 2;
@@ -232,6 +326,9 @@ export function airframe(type: AirframeType): Airframe {
     sides: [sideOf(1), sideOf(-1)],
     fin,
     wheelR,
+    // The front door this share of the length behind the nose, at least 4.2 m; the rear one 19% of
+    // it ahead of the tail; sills a fifth of the way down the fuselage's half height.
+    doors: { front: { x: half - Math.max(4.2, 0.12 * L), sill: zc - rz * 0.2 }, rear: { x: -half + 0.19 * L, sill: zc - rz * 0.2 } },
     noseGearX: half - L * 0.12,
     mainGearX: half - L * 0.55,
     track: Math.min(semi * 0.36, Math.max(2.6, type.fuselage * 0.95)),
@@ -239,6 +336,93 @@ export function airframe(type: AirframeType): Airframe {
   };
   airframes.set(type, built);
   return built;
+}
+
+/** A type's shape from its model's, scaled as the model is drawn for it (see modelFit). */
+function fittedAirframe(type: AirframeType, shape: ModelShape, fit: { along: number; across: number; up: number; mid: number }): Airframe {
+  const ax = (x: number): number => (x - fit.mid) * fit.along;
+  const L = type.length;
+  const half = L / 2;
+  const ry = shape.half * fit.across;
+  const zc = ((shape.cabin[0] + shape.cabin[1]) / 2) * fit.up;
+  const rz = ((shape.cabin[1] - shape.cabin[0]) / 2) * fit.up;
+  // The fuselage as a tube of the cabin's height, as wide as the model's outline at each point.
+  const stations = shape.body.map(([x, w]): [number, number, number, number] => [ax(x), zc, w * fit.across, rz]);
+  const narrows = (from: number, step: number): number => {
+    const order = step > 0 ? stations : [...stations].reverse();
+    for (const st of order) if (st[2] >= ry * 0.95) return st[0];
+    return from;
+  };
+  const noseStart = narrows(half, -1);
+  const tailEnd = narrows(-half, 1);
+  const surface = (s: ModelShape['wing'], side: 1 | -1): Surface => ({
+    root: [ax(s.root[0]), side * s.root[1] * fit.across, s.root[2] * fit.up],
+    rootChord: s.rootChord * fit.along,
+    rootThick: s.rootThick * fit.up,
+    tip: [ax(s.tip[0]), side * s.tip[1] * fit.across, s.tip[2] * fit.up],
+    tipChord: s.tipChord * fit.along,
+    tipThick: s.tipThick * fit.up,
+    upright: false,
+  });
+  const sideOf = (side: 1 | -1): Side => {
+    const wing = surface(shape.wing, side);
+    const engines = shape.engines.map((e): Engine => {
+      const y = side * e.y * fit.across;
+      const z = e.z * fit.up;
+      const radius = e.radius * Math.max(fit.across, fit.up);
+      const front = ax(e.front);
+      const back = ax(e.back);
+      const le = surfaceOver(wing, y);
+      return { y, stations: [[back, z, radius, radius], [front, z, radius, radius]], front, radius, z, leX: le?.lead ?? front, leZ: le ? (le.under + le.top) / 2 : z + radius, length: front - back };
+    });
+    return { side, wing, winglet: null, engines, stabiliser: surface(shape.stabiliser, side) };
+  };
+  const sides: [Side, Side] = [sideOf(1), sideOf(-1)];
+  const finChord = (shape.fin.front - shape.fin.back) * fit.along;
+  const fin: Surface = {
+    root: [ax(shape.fin.front), 0, shape.cabin[1] * fit.up],
+    rootChord: finChord,
+    rootThick: 2 * shape.fin.half * fit.across,
+    tip: [ax(shape.fin.back) + finChord * 0.4, 0, shape.fin.top * fit.up],
+    tipChord: finChord * 0.4,
+    tipThick: shape.fin.half * fit.across,
+    upright: true,
+  };
+  const wing = sides[0].wing;
+  return {
+    type,
+    half,
+    ry,
+    rz,
+    zc,
+    tall: rz / ry,
+    noseLength: half - noseStart,
+    tailLength: tailEnd + half,
+    noseStart,
+    stations,
+    windows: { from: tailEnd, to: noseStart, z: zc + rz * 0.22, y: ry },
+    deckX: noseStart + (half - noseStart) * 0.52,
+    semi: type.span / 2,
+    wingRoot: wing.root[1],
+    rootChord: wing.rootChord,
+    tipChord: wing.tipChord,
+    wingX: wing.root[0],
+    wingZ: wing.root[2],
+    tipX: wing.tip[0],
+    tipZ: wing.tip[2],
+    sides,
+    fin,
+    doors: {
+      front: { x: ax(shape.doors.front.x), sill: shape.doors.front.sill * fit.up },
+      rear: { x: ax(shape.doors.rear.x), sill: shape.doors.rear.sill * fit.up },
+    },
+    // The main wheels as one block each side, as long and wide as the model's gear.
+    wheelR: (shape.gear.halfLength * fit.along) / 0.9,
+    noseGearX: ax(shape.gear.noseX),
+    mainGearX: ax(shape.gear.mainX),
+    track: shape.gear.track * fit.across,
+    bogies: [0],
+  };
 }
 
 /**

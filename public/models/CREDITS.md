@@ -1,6 +1,6 @@
 # Model credits
 
-The 3D models in this folder are from [Polyfork](https://polyfork.dev), under the [Creative Commons Attribution 4.0](https://creativecommons.org/licenses/by/4.0/) licence. Each was changed for this app as noted. Polyfork does not endorse this project.
+Most of the 3D models in this folder are from [Polyfork](https://polyfork.dev), under the [Creative Commons Attribution 4.0](https://creativecommons.org/licenses/by/4.0/) licence. Each was changed for this app as noted. Polyfork does not endorse this project.
 
 - Check-In Desk Run by Polyfork (https://polyfork.dev/asset/check-in-desk-run-b96c12), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
 - Self Check-In Kiosk by Polyfork (https://polyfork.dev/asset/self-check-in-kiosk-3fe1c1), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
@@ -64,3 +64,15 @@ The 3D models in this folder are from [Polyfork](https://polyfork.dev), under th
 - Airstairs Truck by Polyfork (https://polyfork.dev/asset/airstairs-truck-de0f4b), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
 - Apron Passenger Bus by Polyfork (https://polyfork.dev/asset/apron-passenger-bus-c46aef), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
 - Lavatory Service Truck by Polyfork (https://polyfork.dev/asset/lavatory-service-truck-023f33), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
+- Narrow-Body Airliner by Polyfork (https://polyfork.dev/asset/narrow-body-airliner-619183), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
+- Widebody Airliner by Polyfork (https://polyfork.dev/asset/widebody-airliner-ae0a5a), CC BY 4.0. Changed: converted to a compact form for this app (vertices welded and quantized, colours as slots).
+
+## Our own models
+
+Made for this project, in Polyfork's manner, for what Polyfork has no model of (tools/models/original/). They are not Polyfork's.
+
+- Double-Deck Airliner (vehicle).
+- Rapid Transit Car (vehicle).
+- Rapid Transit Cab Car (vehicle).
+- Bilevel Commuter Car (vehicle).
+- Bilevel Commuter Cab Car (vehicle).

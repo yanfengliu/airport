@@ -1,11 +1,16 @@
-// Draws every aircraft: one instanced mesh pair per type, placed from simulation state and eased
-// between simulation steps.
+// Draws every aircraft, placed from simulation state and eased between simulation steps: most types
+// with one of Polyfork's airliners fitted to their size (src/shared/airframe.ts), the A380, which
+// Polyfork has no model of, with our own (tools/models/original/airliner.ts); each with its accent
+// colour the airline's. One instanced mesh per type. Without the models, each type is drawn from
+// its proportions, with a tail in the airline's colour.
 
 import * as THREE from 'three';
 import type { Aircraft } from '../../sim/airside/aircraft.ts';
 import { AIRCRAFT } from '../../sim/fleet.ts';
 import { LIGHT_COLOURS, type Lights } from '../lights.ts';
-import { buildAircraftGeometry, type AircraftGeometry } from '../models/aircraft.ts';
+import { OWN_MODEL, modelFit } from '../../shared/airframe.ts';
+import { buildAircraftGeometry, lightsOf, type AircraftGeometry } from '../models/aircraft.ts';
+import { paintedMaterial, type Models } from '../models/library.ts';
 
 /** Phases in which an aircraft has its engines running, and so its beacon flashing. */
 const RUNNING = new Set(['pushback', 'starting', 'taxiOut', 'lineUp', 'takeoff', 'climb', 'approach', 'landing', 'taxiIn', 'goAround']);
@@ -15,9 +20,21 @@ const TAXIING = new Set(['taxiOut', 'taxiIn']);
 
 const CAPACITY = 64;
 
+/**
+ * The colour slots of each of Polyfork's airliners that take the airline's colour: the narrow-body's
+ * blue accent (tail, winglets, engine cowls and cheatline), the wide-body's tail and engine cowls.
+ * test/outline.test.ts checks that they colour the fin and not the cabin.
+ */
+export const LIVERY_SLOTS: Record<string, number[]> = {
+  'narrow-body-airliner-619183': [1],
+  'widebody-airliner-ae0a5a': [4, 18],
+};
+
 interface TypeMeshes {
+  /** The model, coloured as made but for its livery slots, which take the airline's colour. */
   body: THREE.InstancedMesh;
-  livery: THREE.InstancedMesh;
+  /** For a type drawn from its proportions: the tail, in the airline's colour. */
+  livery: THREE.InstancedMesh | null;
   /** Aircraft id shown by each instance, for picking. */
   ids: number[];
   lights: AircraftGeometry['lights'];
@@ -34,11 +51,36 @@ export class AircraftLayer {
   private readonly colour = new THREE.Color();
   private readonly lamp = new THREE.Vector3();
 
-  constructor() {
+  constructor(models: Models = new Map()) {
     this.group.name = 'aircraft';
     const bodyMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.42, metalness: 0.12, envMapIntensity: 0.9 });
     const liveryMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4, metalness: 0.1, envMapIntensity: 0.9 });
+    const painted = new Map<string, THREE.Material>();
     for (const type of Object.values(AIRCRAFT)) {
+      // Our own model is made at the type's size, centred on its point.
+      const fit = modelFit(type) ?? (OWN_MODEL[type.id] ? { id: OWN_MODEL[type.id], along: 1, across: 1, up: 1, mid: 0 } : null);
+      const model = fit ? models.get(fit.id) : undefined;
+      if (fit && model) {
+        // The model's frame (+z its nose, +x its left) turned to this layer's (+x the nose, -z the
+        // left), its middle on the aircraft's point, and scaled to the type's length, span and height.
+        const geometry = model.geometry.clone();
+        geometry.applyMatrix4(new THREE.Matrix4().makeRotationY(Math.PI / 2).multiply(new THREE.Matrix4().makeScale(fit.across, fit.up, fit.along)).multiply(new THREE.Matrix4().makeTranslation(0, 0, -fit.mid)));
+        geometry.computeBoundingSphere();
+        // The livery slots: listed for Polyfork's, named 'livery' in our own.
+        const livery = LIVERY_SLOTS[fit.id] ?? (model.info.parts ?? []).flatMap((name, slot) => (name === 'livery' ? [slot] : []));
+        if (!painted.has(fit.id)) painted.set(fit.id, paintedMaterial(livery));
+        const body = new THREE.InstancedMesh(geometry, painted.get(fit.id)!, CAPACITY);
+        body.count = 0;
+        body.castShadow = true;
+        body.receiveShadow = true;
+        body.frustumCulled = false;
+        body.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        body.name = `aircraft-${type.id}`;
+        body.setColorAt(0, this.colour.set(0xffffff));
+        this.group.add(body);
+        this.meshes.set(type.id, { body, livery: null, ids: [], lights: lightsOf(type) });
+        continue;
+      }
       const geometry = buildAircraftGeometry(type);
       const body = new THREE.InstancedMesh(geometry.body, bodyMaterial, CAPACITY);
       const livery = new THREE.InstancedMesh(geometry.livery, liveryMaterial, CAPACITY);
@@ -80,16 +122,19 @@ export class AircraftLayer {
       this.quaternion.setFromEuler(this.euler);
       this.matrix.compose(this.position, this.quaternion, this.scale);
       entry.body.setMatrixAt(index, this.matrix);
-      entry.livery.setMatrixAt(index, this.matrix);
-      entry.livery.setColorAt(index, this.colour.set(a.airline.colour));
+      this.colour.set(a.airline.colour);
+      if (entry.livery) {
+        entry.livery.setMatrixAt(index, this.matrix);
+        entry.livery.setColorAt(index, this.colour);
+      } else entry.body.setColorAt(index, this.colour);
       if (lights) this.addLights(lights, entry.lights, a);
     }
     for (const entry of this.meshes.values()) {
-      entry.body.count = entry.ids.length;
-      entry.livery.count = entry.ids.length;
-      entry.body.instanceMatrix.needsUpdate = true;
-      entry.livery.instanceMatrix.needsUpdate = true;
-      if (entry.livery.instanceColor) entry.livery.instanceColor.needsUpdate = true;
+      for (const mesh of entry.livery ? [entry.body, entry.livery] : [entry.body]) {
+        mesh.count = entry.ids.length;
+        mesh.instanceMatrix.needsUpdate = true;
+        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      }
     }
   }
 
@@ -120,7 +165,7 @@ export class AircraftLayer {
     let best: { id: number; distance: number } | null = null;
     for (const entry of this.meshes.values()) {
       if (!entry.ids.length) continue;
-      for (const mesh of [entry.body, entry.livery]) {
+      for (const mesh of entry.livery ? [entry.body, entry.livery] : [entry.body]) {
         // The bounds three.js tests the ray against first are kept from the last time they were
         // worked out; the aircraft have moved since.
         mesh.computeBoundingSphere();

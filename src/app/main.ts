@@ -105,7 +105,7 @@ async function start(): Promise<void> {
   let sim = startSim(secondsOfDay);
   /** Simulated seconds owed to the simulation, less than one step. */
   let owed = 0;
-  const aircraftLayer = new AircraftLayer();
+  const aircraftLayer = new AircraftLayer(models);
   const gseLayer = new GseLayer(new Set(layout.airfield.stands.filter((s) => !s.contact).map((s) => s.id)), models);
   const bridgeLayer = new BridgeLayer(world.bridgeEnds);
   const vehicleLayer = new VehicleLayer();

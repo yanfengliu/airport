@@ -106,11 +106,6 @@ const LAVATORY = [240, 1500];
 /** Room left between a piece and the fuselage it serves, and between pieces, metres. */
 const GAP = 0.15;
 const CLEAR = 0.6;
-/** The front passenger door, as the jet bridges find it (bridge-layer.ts): this share of the length behind the nose, at least this far. */
-const DOOR_BACK = 0.12;
-const DOOR_BACK_LEAST = 4.2;
-/** The rear passenger doors: this share of the length ahead of the tail, clear of the tailplane. */
-const REAR_DOOR = 0.19;
 /** Length of the tow bar from the tug to the nose gear, metres, at least: long enough for the tug to stand clear ahead of the nose. */
 const TOWBAR = 3.6;
 /** How far into the towbarless tug's cradle the nose wheel sits, metres. */
@@ -174,7 +169,6 @@ export function turnaroundLayout(type: Aircraft['type'], remote: boolean): reado
   const f = airframe(type);
   const out: GsePlace[] = [];
   const L = type.length;
-  const half = L / 2;
   const ry = f.ry;
   const wide = type.body === 'wide' || type.body === 'super';
   const put = (task: GseTask, kind: GseKind, along: number, side: number, turn: number, h = 0): void => {
@@ -187,11 +181,20 @@ export function turnaroundLayout(type: Aircraft['type'], remote: boolean): reado
   // Ground power ahead of the nose gear, on the right.
   put('power', 'power', f.noseGearX + 1.5, -(ry + 1.4 + GSE_MODELS.power.left), 0);
 
-  // Bags: a narrow-body's belt loader at the aft hold, a wide-body's container loaders at both;
-  // each with its train out beyond the loader's end and the catering truck's.
+  // Catering at the right rear door: behind the wing, whose trailing edge sweeps back further the
+  // further out it is, and ahead of the tail.
   const catering = GSE_MODELS.catering;
-  const holds = wide ? [0.25 * L, -0.22 * L] : [-0.21 * L];
+  const cateringHalf = (catering.left - catering.right) / 2;
+  const wingOut = wingOver(type, ry + GAP + (catering.front - catering.back));
+  const rear = Math.min(f.doors.rear.x, wingOut ? wingOut.trail - cateringHalf - CLEAR : Infinity);
+  frontIn('catering', 'catering', rear);
+
+  // Bags: a narrow-body's belt loader at the aft hold, ahead of the catering truck; a wide-body's
+  // container loaders at both holds; each with its train out beyond the loader's end and the
+  // catering truck's.
   const loader: GseKind = wide ? 'kloader' : 'loader';
+  const loaderHalf = (GSE_MODELS[loader].left - GSE_MODELS[loader].right) / 2;
+  const holds = wide ? [0.25 * L, -0.22 * L] : [Math.max(-0.21 * L, rear + cateringHalf + CLEAR + loaderHalf)];
   for (const hold of holds) {
     if (wide) backIn('bags', loader, hold);
     else frontIn('bags', loader, hold);
@@ -210,23 +213,18 @@ export function turnaroundLayout(type: Aircraft['type'], remote: boolean): reado
     train(out, 'bags', car, cars, head, line, ahead ? 0 : Math.PI);
   }
 
-  // Catering at the right rear door: behind the wing, whose trailing edge sweeps back further the
-  // further out it is, and ahead of the tail.
-  const wingOut = wingOver(type, ry + GAP + (catering.front - catering.back));
-  const rear = Math.min(-half + REAR_DOOR * L, wingOut ? wingOut.trail - (catering.left - catering.right) / 2 - CLEAR : Infinity);
-  frontIn('catering', 'catering', rear);
-
   // The lavatory truck backs up to the tail cone, behind the catering truck.
   const lavatory = GSE_MODELS.lavatory;
-  backIn('lavatory', 'lavatory', rear - (catering.left - catering.right) / 2 - CLEAR - lavatory.left);
+  backIn('lavatory', 'lavatory', rear - cateringHalf - CLEAR - lavatory.left);
 
   // Fuel under the right wing, outboard of the engine, where the wing is high enough to clear the
   // truck; under a low wing, just ahead of its leading edge instead.
   const fuel: GseKind = remote ? 'tanker' : 'hydrant';
   const truck = GSE_MODELS[fuel];
-  // Outboard of the inner engine: between the two of an A380's.
+  // Outboard of the inner engine (between the two of an A380's); at a wide-body, whose forward
+  // hold's train stands out ahead of the wing, outboard of the trains as well.
   const engine = f.sides[1].engines.reduce((near, e) => Math.min(near, Math.abs(e.y) + e.radius), Infinity);
-  const inner = engine + CLEAR;
+  const inner = Math.max(engine, wide ? -line + width : 0) + CLEAR;
   const side = -(inner + truck.left);
   const near = wingOver(type, inner);
   const far = wingOver(type, inner + truck.left - truck.right);
@@ -238,12 +236,17 @@ export function turnaroundLayout(type: Aircraft['type'], remote: boolean): reado
     // Stairs at the front left door, and for a narrow-body at the rear left door too; a bus out beyond them.
     const stairs: GseKind = wide ? 'stairs' : 'stairsLow';
     const s = GSE_MODELS[stairs];
-    const door = half - Math.max(DOOR_BACK_LEAST, DOOR_BACK * L);
+    // At the doors of the aircraft as drawn (src/shared/airframe.ts).
+    const door = f.doors.front.x;
     const onLeft = (along: number): void => put('stairs', stairs, along, ry + GAP + s.front, -Math.PI / 2);
     onLeft(door);
-    if (!wide) onLeft(-half + REAR_DOOR * L);
+    if (!wide) onLeft(f.doors.rear.x);
+    // The bus alongside, its front a little ahead of the door and its back clear ahead of the
+    // wing's leading edge, which sweeps forward the nearer the fuselage it is.
     const bus = GSE_MODELS.bus;
-    put('bus', 'bus', door - 1 - bus.front + 4, ry + GAP + (s.front - s.back) + CLEAR + 1 - bus.right, 0);
+    const busSide = ry + GAP + (s.front - s.back) + CLEAR + 1 - bus.right;
+    const busLead = Math.max(wingOver(type, busSide + bus.right)?.lead ?? -Infinity, wingOver(type, busSide + bus.left)?.lead ?? -Infinity);
+    put('bus', 'bus', Math.max(door + 3 - bus.front, busLead + CLEAR - bus.back), busSide, 0);
   }
   layouts.set(key, out);
   return out;
