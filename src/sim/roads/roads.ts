@@ -25,6 +25,8 @@ export class RoadSim {
     const atEdge = (x: number, y: number): boolean => x < west + EDGE_MARGIN || x > east - EDGE_MARGIN || y < south + EDGE_MARGIN || y > north - EDGE_MARGIN;
     this.through = new ThroughTraffic(this.net, rng.fork('through'), atEdge);
     this.airport = new AirportTraffic(this.net, rng.fork('airport'), atEdge, centre);
+    this.traffic.onArrive = (vehicle) => this.airport.arrived(vehicle);
+    this.traffic.onLeave = (vehicle) => this.airport.left(vehicle);
   }
 
   step(dt: number, now: number, secondsOfDay: number): void {

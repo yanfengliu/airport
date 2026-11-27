@@ -20,8 +20,10 @@ const PARKING_KINDS: [VehicleKind, number][] = [['car', 58], ['suv', 36], ['van'
 const CURB_LENGTH = 45;
 
 export interface AirportTrafficStats {
+  /** Vehicles that pulled up at the curb, not just set out to. */
   dropOffs: number;
   pickUps: number;
+  /** Vehicles that reached a garage, and that came out of one. */
   intoGarages: number;
   outOfGarages: number;
   /** Errands that could not start because the way in was full. */
@@ -98,8 +100,6 @@ export class AirportTraffic {
       // Setting down is quick; someone waiting for a passenger with bags takes longer.
       const dwell = errand === 'dropOff' ? rng.range(25, 75) : rng.range(35, 120);
       traffic.planStop(vehicle, curb.id, rng.range(14, curb.len - 10), kind === 'bus' || kind === 'shuttle' ? dwell + 40 : dwell);
-      if (errand === 'dropOff') this.stats.dropOffs += 1;
-      else this.stats.pickUps += 1;
       return true;
     }
     if (errand === 'toGarage') {
@@ -111,7 +111,6 @@ export class AirportTraffic {
       const vehicle = traffic.spawn(rng, kind, paintFor(rng, kind), way.id, inbound, way.speed * 0.9);
       if (!vehicle) return false;
       vehicle.purpose = PURPOSE.toGarage;
-      this.stats.intoGarages += 1;
       return true;
     }
     if (!this.garagesOut.length) return false;
@@ -125,6 +124,17 @@ export class AirportTraffic {
     this.stats.outOfGarages += 1;
     void now;
     return true;
+  }
+
+  /** A vehicle has pulled up where it planned to. */
+  arrived(vehicle: Vehicle): void {
+    if (vehicle.purpose === PURPOSE.dropOff) this.stats.dropOffs += 1;
+    else if (vehicle.purpose === PURPOSE.pickUp) this.stats.pickUps += 1;
+  }
+
+  /** A vehicle has driven off the end of the road: off the map, or into a car park. */
+  left(vehicle: Vehicle): void {
+    if (vehicle.purpose === PURPOSE.toGarage && this.garagesIn.some((l) => l.id === vehicle.link)) this.stats.intoGarages += 1;
   }
 
   step(traffic: RoadTraffic, dt: number, now: number, secondsOfDay: number): void {

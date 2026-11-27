@@ -70,20 +70,24 @@ describe('road traffic at the morning peak', () => {
     expect(roads.traffic.stats.finished).toBeGreaterThan(5000);
   });
 
-  it('leaves nobody standing for long away from a curb or a red light', () => {
+  it('leaves nobody standing still for long, at a red light or anywhere but a curb', () => {
     expect(roads.traffic.stats.longestStuck).toBeLessThan(300);
   });
 
-  it('never has one vehicle inside another', () => {
+  it('never has one vehicle inside another, in a lane or changing lanes', () => {
     expect(overlaps).toBe(0);
   });
 
   it('brings cars to the curbs and the garages', () => {
     const s = roads.airport.stats;
+    // Counted when they pull up or drive in, not when they set out.
     expect(s.dropOffs).toBeGreaterThan(100);
     expect(s.pickUps).toBeGreaterThan(100);
     expect(s.intoGarages + s.outOfGarages).toBeGreaterThan(50);
     expect(curbStops).toBeGreaterThan(5);
+    const t = roads.traffic.stats;
+    expect(t.stopsMade).toBe(s.dropOffs + s.pickUps);
+    expect(t.stopsMissed).toBeLessThan(0.05 * (t.stopsMade + t.stopsMissed));
   });
 });
 

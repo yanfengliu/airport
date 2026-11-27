@@ -59,5 +59,18 @@ while (time < end) {
   }
 }
 const elapsed = (performance.now() - wall) / 1000;
-console.log(`airport: ${JSON.stringify(roads.airport.stats)}; curbs ${roads.airport.departuresCurbs.length} departures, ${roads.airport.arrivalsCurbs.length} arrivals`);
+console.log(`airport: ${JSON.stringify(roads.airport.stats)}; curbs ${roads.airport.departuresCurbs.length} departures, ${roads.airport.arrivalsCurbs.length} arrivals; curb stops made ${roads.traffic.stats.stopsMade}, given up ${roads.traffic.stats.stopsMissed}`);
+// The 'Roads flow' criterion, judged on this run when it covers a day; exit code 1 if it fails.
+const failures: string[] = [];
+const s = roads.traffic.stats;
+if (s.longestStuck >= 600) failures.push(`a vehicle stood still ${Math.round(s.longestStuck)} s`);
+for (const name of ['US 101', 'I 380']) {
+  const road = roads.through.roads.get(name);
+  const served = road ? road.admitted / Math.max(1, road.requested) : 0;
+  console.log(`${name}: ${Math.round(road?.requested ?? 0)} vehicles wanted to come in, ${road?.admitted ?? 0} did (${(served * 100).toFixed(1)}%)`);
+  if (served < 0.8) failures.push(`${name} carried ${(served * 100).toFixed(1)}% of its demand`);
+}
+const stops = s.stopsMade + s.stopsMissed;
+if (stops && s.stopsMissed > 0.05 * stops) failures.push(`${s.stopsMissed} of ${stops} curb stops given up`);
+if (hours >= 24) console.log(failures.length ? `FAIL: ${failures.join('; ')}` : 'pass: nobody stuck ten minutes, the freeways carry their demand, the curbs are served');
 console.log(`ran ${hours} h in ${elapsed.toFixed(1)} s (${Math.round((hours * 3600) / elapsed)}x real time, ${((elapsed * 1000) / steps).toFixed(2)} ms a step); checksum ${roads.checksum()}`);

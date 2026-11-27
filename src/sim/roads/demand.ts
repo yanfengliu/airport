@@ -45,6 +45,17 @@ export class ThroughTraffic {
   /** Multiplies every volume; 1 is a normal weekday. */
   scale = 1;
   backlog = 0;
+  /** Per road entering the map, by name: vehicles that wanted to come in, and that did. */
+  readonly roads = new Map<string, { requested: number; admitted: number }>();
+
+  private byRoad(name: string): { requested: number; admitted: number } {
+    let road = this.roads.get(name);
+    if (!road) {
+      road = { requested: 0, admitted: 0 };
+      this.roads.set(name, road);
+    }
+    return road;
+  }
 
   /** `atEdge` says whether a point is where the mapped area ends; a dead end elsewhere is just a dead end. */
   constructor(net: RoadNet, rng: Rng, atEdge: (x: number, y: number) => boolean) {
@@ -96,7 +107,10 @@ export class ThroughTraffic {
   step(traffic: RoadTraffic, dt: number, secondsOfDay: number): void {
     const share = hourlyShare(secondsOfDay) * this.scale;
     for (const entry of this.entries) {
-      entry.owed += (entry.peak * share * dt) / 3600;
+      const wanted = (entry.peak * share * dt) / 3600;
+      entry.owed += wanted;
+      const road = this.byRoad(entry.link.name);
+      road.requested += wanted;
       // A little randomness in the gaps, without losing the count.
       let tries = 0;
       while (entry.owed >= 1 && tries < 3) {
@@ -108,6 +122,7 @@ export class ThroughTraffic {
         const vehicle = traffic.spawn(this.rng, kind, paintFor(this.rng, kind), entry.link.id, exit.route, entry.link.speed * 0.9);
         if (!vehicle) break;
         entry.owed -= 1;
+        road.admitted += 1;
       }
       // What cannot get in is the tail of a queue beyond the map; do not let it grow without end.
       if (entry.owed > 40) {
