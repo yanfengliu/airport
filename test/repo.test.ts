@@ -3,20 +3,37 @@
 // import statements; it does not follow dynamic imports.
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync, statSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { repoRoot } from './helpers/layout.ts';
 
-const tracked = execFileSync('git', ['ls-files', '-z'], { cwd: repoRoot, encoding: 'utf8' }).split('\0').filter(Boolean);
-const BINARY = /\.(png|jpe?g|gif|webp|avif|ico|pdf|zip|gz|woff2?|ttf|otf|mp4|webm|wasm|glb|bin)$/i;
+// Tracked files, and new ones not ignored that are about to be: both would reach the repository.
+const tracked = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], { cwd: repoRoot, encoding: 'utf8' })
+  .split('\0')
+  .filter(Boolean)
+  .filter((file) => existsSync(join(repoRoot, file)));
+const BINARY = /\.(png|jpe?g|gif|webp|avif|ico|pdf|zip|gz|woff2?|ttf|otf|mp4|webm|wasm|glb|bin|ktx2|hdr|exr|mp3|wav|ogg)$/i;
+
+/** A binary by its name or, whatever its name, by a NUL byte in its first 8 KiB, as git judges. */
+function isBinary(file: string): boolean {
+  if (BINARY.test(file)) return true;
+  const fd = openSync(join(repoRoot, file), 'r');
+  try {
+    const head = Buffer.alloc(8192);
+    const read = readSync(fd, head, 0, head.length, 0);
+    return head.subarray(0, read).includes(0);
+  } finally {
+    closeSync(fd);
+  }
+}
 
 describe('tracked files', () => {
   it('stay under 1 MiB, and binaries under 512 KiB', () => {
     const over: string[] = [];
     for (const file of tracked) {
       const size = statSync(join(repoRoot, file)).size;
-      const limit = BINARY.test(file) ? 512 * 1024 : 1024 * 1024;
+      const limit = isBinary(file) ? 512 * 1024 : 1024 * 1024;
       if (size > limit) over.push(`${file}: ${(size / 1024).toFixed(0)} KiB`);
     }
     expect(over).toEqual([]);
@@ -39,11 +56,14 @@ describe('simulation boundary', () => {
     for (const file of sources) {
       const text = readFileSync(join(repoRoot, file), 'utf8');
       const code = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
-      if (/from\s+['"]three/.test(code)) offenders.push(`${file}: imports three`);
-      if (/from\s+['"][^'"]*\/(render|ui|app)\//.test(code)) offenders.push(`${file}: imports from render, ui or app`);
+      // Any way of loading a module: `from '…'`, a bare `import '…'`, `import('…')` or `require('…')`.
+      const loads = (pattern: string): RegExp => new RegExp(`(?:from\\s+|import\\s*\\(\\s*|import\\s+|require\\s*\\(\\s*)['"]${pattern}`);
+      if (loads('three').test(code)) offenders.push(`${file}: imports three`);
+      if (loads(`[^'"]*\\/(render|ui|app)\\/`).test(code)) offenders.push(`${file}: imports from render, ui or app`);
       if (/\b(document|window|navigator|requestAnimationFrame|performance)\s*[.(]/.test(code)) offenders.push(`${file}: uses a browser global`);
-      if (/\bMath\.random\s*\(/.test(code)) offenders.push(`${file}: uses Math.random`);
-      if (/\bDate\.now\s*\(|\bnew Date\s*\(/.test(code)) offenders.push(`${file}: reads the wall clock`);
+      if (/\bMath\.random\s*\(/.test(code) || /\bcrypto\s*\./.test(code)) offenders.push(`${file}: uses a random number not from the simulation's source`);
+      if (/\bDate\.now\s*\(|\bnew Date\s*\(|\bDate\s*\(/.test(code)) offenders.push(`${file}: reads the wall clock`);
+      if (/\b(setTimeout|setInterval|setImmediate|queueMicrotask)\s*\(/.test(code)) offenders.push(`${file}: uses a timer`);
     }
     expect(offenders).toEqual([]);
   });

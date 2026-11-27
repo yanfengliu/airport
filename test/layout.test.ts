@@ -86,7 +86,10 @@ describe('airfield', () => {
       expect(e.len).toBeGreaterThan(0);
     }
     expect(airfield.nodes.filter((n) => n.hold).length).toBeGreaterThanOrEqual(60);
-    expect(new Set(airfield.edges.filter((e) => e.ref).map((e) => e.ref)).size).toBeGreaterThanOrEqual(40);
+    const refs = new Set(airfield.edges.filter((e) => e.ref).map((e) => e.ref));
+    expect(refs.size).toBeGreaterThanOrEqual(40);
+    // The lettered taxiways the airport's diagram names, each there by name.
+    for (const letter of ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'K', 'L', 'M', 'N', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'Y', 'Z']) expect(refs.has(letter), `taxiway ${letter}`).toBe(true);
   });
 });
 

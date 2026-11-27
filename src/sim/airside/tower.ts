@@ -4,7 +4,7 @@
 
 import type { TaxiNet } from '../airfield/net.ts';
 import { CONFIG } from '../config.ts';
-import type { BodyClass, WakeClass } from '../fleet.ts';
+import { AIRCRAFT, type BodyClass, type WakeClass } from '../fleet.ts';
 
 export interface RunwayPlan {
   name: 'West' | 'Southeast';
@@ -18,7 +18,7 @@ export interface RunwayPlan {
 // (CONFIG.runway.crossHoldsDeparture) by traffic crossing in front of it. Without such a turn, a
 // runway with a queue of departures is never crossed: the next lines up before the last is past
 // the crossing.
-const { crossHoldsDeparture: CROSS_HOLDS_DEPARTURE, crossLiningUp: CROSS_LINING_UP, firstCome: FIRST_COME, askLapses: ASK_LAPSES } = CONFIG.runway;
+const { crossHoldsDeparture: CROSS_HOLDS_DEPARTURE, crossLiningUp: CROSS_LINING_UP, firstCome: FIRST_COME, askLapses: ASK_LAPSES, oppositeClear: OPPOSITE_CLEAR } = CONFIG.runway;
 
 export const WEST_PLAN: RunwayPlan ={ name: 'West', arrivals: ['28L', '28R'], departures: ['01L', '01R'], longDepartures: ['28L', '28R'] };
 export const SOUTHEAST_PLAN: RunwayPlan = { name: 'Southeast', arrivals: ['19L', '19R'], departures: ['10L', '10R'], longDepartures: ['10L', '10R'] };
@@ -85,8 +85,15 @@ export class Tower {
   /** Landing slots taken, by slot number and runway end. */
   private readonly slots = new Map<string, number>();
   private readonly holes = new Set<string>();
-  /** The latest landing slot given out. */
+  /** The latest landing slot given out, and the latest on each runway end. */
   private lastSlot = 0;
+  private readonly lastSlotOn = new Map<string, number>();
+  /**
+   * Whether departures are still on their way to a runway end: no landing slot is given on its
+   * other end until they have gone, so that a change of plan cannot leave them facing the
+   * arrivals for good. Set by whoever runs the departures.
+   */
+  departuresWaiting: (end: string) => boolean = () => false;
   private readonly net: TaxiNet;
   private readonly position: (aircraft: number) => RunwayPosition | null;
   /** Counters for the operations panel and the tests. */
@@ -162,6 +169,22 @@ export class Tower {
     return this.visual ? open : open.slice(-1);
   }
 
+  /** The other end of the same runway. */
+  otherEnd(end: string): string {
+    return this.net.runwayEnds.get(end)!.other.name;
+  }
+
+  /**
+   * Is an arrival coming to the other end of `end`'s runway: on its approach, or holding a landing
+   * slot not yet a minute past? A departure from `end` would climb out head-on towards it.
+   */
+  private landingTowards(end: string, now: number): number | null {
+    const other = this.otherEnd(end);
+    const coming = this.runwayOf(end).inbound.find((i) => i.end === other);
+    if (coming) return coming.aircraft;
+    return (this.lastSlotOn.get(other) ?? -Infinity) > now - OPPOSITE_CLEAR ? -1 : null;
+  }
+
   /** The end of the same runway as `end` that takes landings under the plan, if any: a departure from it needs a gap in them. */
   arrivalEndOn(end: string): string | null {
     const id = this.net.runwayEnds.get(end)!.runway.id;
@@ -204,16 +227,20 @@ export class Tower {
     // With every arrival runway closed nothing lands: the arrival waits for one to open.
     if (!ends.length) return null;
     const order = prefer && ends.includes(prefer) ? [prefer, ...ends.filter((e) => e !== prefer)] : ends;
+    // Not an end whose other end still has departures on their way to it: they would face the landings.
+    const usable = order.filter((end) => !this.departuresWaiting(this.otherEnd(end)));
+    if (!usable.length) return null;
     for (let k = Math.ceil(Math.max(earliest, this.notBefore) / length); ; k += 1) {
       const at = k * length;
       if (at > latest) return null;
-      for (const end of order) {
+      for (const end of usable) {
         if (this.slotTaken(end, at) || this.isHole(end, at)) continue;
         // A super-heavy needs the slots behind it empty, and one of them may already be given out.
         if (wake === 'J' && Array.from({ length: CONFIG.runway.slotsBehindSuper }, (_, n) => at + (n + 1) * length).some((t) => this.slotTaken(end, t))) continue;
         this.slots.set(this.slotKey(end, at), 1);
         if (wake === 'J') for (let n = 1; n <= CONFIG.runway.slotsBehindSuper; n += 1) this.addHole(end, at + n * length);
         this.lastSlot = Math.max(this.lastSlot, at);
+        this.lastSlotOn.set(end, Math.max(this.lastSlotOn.get(end) ?? -Infinity, at));
         return { end, threshold: at };
       }
     }
@@ -304,20 +331,23 @@ export class Tower {
 
   /**
    * The runway ends a departure may use, the long runways for the big aircraft: the plan's open
-   * ones, not sorted. With all of them closed, the plan's others of the right kind, and failing
-   * those the closed ones: a departure has to leave from somewhere.
+   * ones, not sorted. With all of them closed, the plan's others that are long enough for it. A
+   * big aircraft with none of those waits at its stand; a small one, failing all, takes the
+   * closed ones: it has to leave from somewhere.
    */
   departureEndsFor(body: BodyClass): readonly string[] {
-    const own = body === 'wide' || body === 'super' ? this.plan.longDepartures : this.plan.departures;
+    const big = body === 'wide' || body === 'super';
+    const own = big ? this.plan.longDepartures : this.plan.departures;
     const open = own.filter((end) => this.open(end));
     if (open.length) return open;
-    const other = (body === 'wide' || body === 'super' ? this.plan.departures : this.plan.longDepartures).filter((end) => this.open(end));
-    return other.length ? other : own;
+    const shortest = shortestRunway(body);
+    const other = (big ? this.plan.departures : this.plan.longDepartures).filter((end) => this.open(end) && this.net.runwayEnds.get(end)!.runway.length >= shortest);
+    return other.length ? other : big ? [] : own;
   }
 
   /** The runway ends a departure may use, the one with the shortest queue first. */
   departureEnds(body: BodyClass, queued: (end: string) => number): string[] {
-    return [...this.departureEndsFor(body)].sort((a, b) => queued(a) - queued(b) || a.localeCompare(b));
+    return [...this.departureEndsFor(body)].sort((a, b) => queued(a) - queued(b) || (a < b ? -1 : a > b ? 1 : 0));
   }
 
   /** May the aircraft at the hold line enter the runway and line up? */
@@ -330,6 +360,8 @@ export class Tower {
     }
     mine.last = now;
     if (runway.cleared !== null && runway.cleared !== aircraft) return this.deny('another cleared to line up', runway.cleared);
+    const headOn = this.landingTowards(end, now);
+    if (headOn !== null) return this.deny('landing the other way', headOn);
     // First come, first served between the hold lines of one runway: a departure that has held
     // short much longer goes first, unless it could not take the last clearance it was given.
     for (const [id, other] of runway.asking) {
@@ -413,6 +445,8 @@ export class Tower {
     }
     const last = runway.lastDeparture;
     if (last && last.end === end && now - last.time < CONFIG.runway.departureGap[last.wake]) return this.deny('wake gap behind the last departure');
+    const headOn = this.landingTowards(end, now);
+    if (headOn !== null) return this.deny('landing the other way', headOn);
     const next = runway.inbound[0];
     if (next && next.threshold - now < rollSeconds + 20) return this.deny('landing too close to take off', next.aircraft);
     const margin = CONFIG.runway.crossingMargin;
@@ -496,4 +530,14 @@ export class Tower {
   tidy(now: number): void {
     if (this.windows.length > 64) this.windows = this.windows.filter((w) => w.to > now - 5);
   }
+}
+
+/**
+ * The shortest runway an aircraft of a body class may take off from: the longest roll to rotation
+ * of its types, with a sixth more and room to line up.
+ */
+export function shortestRunway(body: BodyClass): number {
+  let vRot = 0;
+  for (const type of Object.values(AIRCRAFT)) if (type.body === body) vRot = Math.max(vRot, type.vRot);
+  return (1.15 * vRot * vRot) / (2 * CONFIG.runway.takeoffAccel[body]) + 150;
 }

@@ -86,6 +86,21 @@ describe('an hour of trains', () => {
   let closest = Infinity;
   let collisions = 0;
   let vanished = 0;
+  /** Trains whose own cars lie on top of each other: a train folding back over itself. */
+  let folded = 0;
+  const folds = (): number => {
+    let n = 0;
+    for (const train of transit.trains) {
+      const route = transit.routes[train.route];
+      const centres: { x: number; y: number }[] = [];
+      for (let car = 0; car < route.cars; car += 1) {
+        transit.carPose(train, car, pose);
+        if (pose.visible) centres.push({ x: pose.x, y: pose.y });
+      }
+      for (let a = 0; a < centres.length; a += 1) for (let b = a + 1; b < centres.length; b += 1) if (Math.hypot(centres[a].x - centres[b].x, centres[a].y - centres[b].y) < 0.7 * route.carLength) n += 1;
+    }
+    return n;
+  };
   const pose = { x: 0, y: 0, z: 0, heading: 0, visible: false };
   const seen = (train: Transit['trains'][number]): number => {
     let n = 0;
@@ -104,6 +119,7 @@ describe('an hour of trains', () => {
     // A train that has just closed its doors, turning round or not, is still all there.
     for (const { train, cars } of standing) if (train.doorsUntil < 0 && seen(train) < cars) vanished += 1;
     if (i % 4 === 0) collisions += trainsInsideEachOther(transit);
+    folded += folds();
     // On a loop, the gap from each train to the next one round the line, front to front.
     for (let r = 0; r < transit.routes.length; r += 1) {
       const route = transit.routes[r];
@@ -138,5 +154,28 @@ describe('an hour of trains', () => {
 
   it('keeps a train in view as it turns round at the end of its line', () => {
     expect(vanished).toBe(0);
+  });
+
+  it('turns a train round at a spur without it folding back through itself, and takes no turn a train cannot', () => {
+    // Long Term Parking is at the end of a spur: the Blue Line goes out and comes back.
+    const blue = transit.routes.find((r) => r.id === 'AirTrain Blue Line')!;
+    expect(blue.stops.find((s) => s.name === 'Long Term Parking')?.reverses).toBe(true);
+    expect(folded).toBe(0);
+    // Between stops a line bends, never doubles back: a train cannot reverse through a junction.
+    for (const route of transit.routes) {
+      const p = route.pts;
+      let previous: number | null = null;
+      for (let i = 0; i + 1 < route.cum.length; i += 1) {
+        // Points a hair apart, where one leg of a route joins the next, have no direction between them.
+        if (route.cum[i + 1] - route.cum[i] < 0.05) continue;
+        const heading = Math.atan2(p[i * 3 + 4] - p[i * 3 + 1], p[i * 3 + 3] - p[i * 3]);
+        if (previous !== null) {
+          const turn = Math.abs(Math.atan2(Math.sin(heading - previous), Math.cos(heading - previous)));
+          const atStop = route.stops.some((s) => s.reverses && Math.abs(s.s - route.cum[i]) < 1);
+          if (!atStop) expect(turn, `${route.id} at ${route.cum[i].toFixed(0)} m`).toBeLessThan(Math.PI / 2);
+        }
+        previous = heading;
+      }
+    }
   });
 });

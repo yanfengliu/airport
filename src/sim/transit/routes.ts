@@ -7,6 +7,9 @@ import { Transit, makeRoute, type Stop } from './trains.ts';
 
 type Kind = Rail['lines'][number]['kind'];
 
+/** The sharpest a line may bend where two mapped pieces of track meet, radians: a switch is far gentler. */
+const TURN_MOST = Math.PI / 3;
+
 interface Piece {
   a: number;
   b: number;
@@ -98,42 +101,90 @@ class Track {
     return reversed;
   }
 
-  /** The shortest way along the track from one anchor to another, as x, y, z triples, with its length. */
+  /** The way a piece runs at one of its ends, as a unit vector pointing into the piece. */
+  private outOf(piece: Piece, atA: boolean): [number, number] {
+    const p = piece.pts;
+    const n = p.length / 3;
+    // The first point far enough along to give the direction, not a kink at the very end.
+    for (let k = 1; k < n; k += 1) {
+      const i = atA ? k * 3 : (n - 1 - k) * 3;
+      const j = atA ? 0 : (n - 1) * 3;
+      const dx = p[i] - p[j];
+      const dy = p[i + 1] - p[j + 1];
+      const d = Math.hypot(dx, dy);
+      if (d > 3 || k === n - 1) return [dx / (d || 1), dy / (d || 1)];
+    }
+    return [1, 0];
+  }
+
+  /**
+   * The shortest way along the track from one anchor to another, as x, y, z triples, with its
+   * length. A train may set off either way from where it stands, but through a junction it keeps
+   * going the way it was: from one branch of a switch it can go to the line the switch serves, not
+   * back out along the other branch.
+   */
   path(from: Anchor, to: Anchor): { pts: number[]; len: number } | null {
     if (from.piece === to.piece) return { pts: this.stretch(this.pieces[from.piece], from.s, to.s), len: Math.abs(to.s - from.s) };
     const start = this.pieces[from.piece];
     const goal = this.pieces[to.piece];
-    const best = new Array<number>(this.nodes.length).fill(Infinity);
-    const via = new Array<number>(this.nodes.length).fill(-1);
-    best[start.a] = from.s;
-    best[start.b] = start.len - from.s;
-    const done = new Array<boolean>(this.nodes.length).fill(false);
-    for (;;) {
-      let node = -1;
-      for (let i = 0; i < best.length; i += 1) if (!done[i] && best[i] < Infinity && (node === -1 || best[i] < best[node])) node = i;
-      if (node === -1) break;
-      done[node] = true;
+    // A state is a piece run to one of its ends: `${piece}>${a or b}`.
+    const best = new Map<string, number>();
+    const back = new Map<string, string | null>();
+    const open: { key: string; d: number }[] = [];
+    const reach = (key: string, d: number, prev: string | null): void => {
+      if (d >= (best.get(key) ?? Infinity)) return;
+      best.set(key, d);
+      back.set(key, prev);
+      open.push({ key, d });
+    };
+    reach(`${from.piece}>a`, from.s, null);
+    reach(`${from.piece}>b`, start.len - from.s, null);
+    let found: { key: string; d: number } | null = null;
+    while (open.length) {
+      let k = 0;
+      for (let i = 1; i < open.length; i += 1) if (open[i].d < open[k].d) k = i;
+      const { key, d } = open.splice(k, 1)[0];
+      if (d > (best.get(key) ?? Infinity)) continue;
+      if (found && d >= found.d) break;
+      const [pieceText, end] = key.split('>');
+      const piece = this.pieces[Number(pieceText)];
+      const node = end === 'a' ? piece.a : piece.b;
+      // Arriving at the node along this piece, heading the opposite way to the piece leaving it.
+      const [ox, oy] = this.outOf(piece, end === 'a');
       for (const id of this.nodes[node].pieces) {
-        const piece = this.pieces[id];
-        const other = piece.a === node ? piece.b : piece.a;
-        if (best[node] + piece.len < best[other]) {
-          best[other] = best[node] + piece.len;
-          via[other] = id;
+        if (id === Number(pieceText)) continue;
+        const next = this.pieces[id];
+        const leavesA = next.a === node;
+        const [nx, ny] = this.outOf(next, leavesA);
+        // Going on, not turning back: the way out is within TURN_MOST of straight ahead.
+        if (-(ox * nx + oy * ny) < Math.cos(TURN_MOST)) continue;
+        if (id === to.piece) {
+          const total = d + (leavesA ? to.s : goal.len - to.s);
+          if (!found || total < found.d) found = { key: `${id}<${leavesA ? 'a' : 'b'}|${key}`, d: total };
+          continue;
         }
+        reach(`${id}>${leavesA ? 'b' : 'a'}`, d + next.len, key);
       }
     }
-    const viaA = best[goal.a] + to.s;
-    const viaB = best[goal.b] + (goal.len - to.s);
-    if (Math.min(viaA, viaB) === Infinity) return null;
-    // Walk back from the end of the goal piece the route arrives at.
-    let node = viaA <= viaB ? goal.a : goal.b;
-    const tail = this.stretch(goal, viaA <= viaB ? 0 : goal.len, to.s);
+    if (!found) return null;
+    // Walk back from the goal piece to the start.
+    const [arrival, last] = found.key.split('|');
+    const entersA = arrival.endsWith('a');
+    const tail = this.stretch(goal, entersA ? 0 : goal.len, to.s);
     const middle: number[][] = [];
-    while (via[node] !== -1) {
-      const piece = this.pieces[via[node]];
-      const fromNode = piece.a === node ? piece.b : piece.a;
-      middle.push(this.stretch(piece, piece.a === fromNode ? 0 : piece.len, piece.a === fromNode ? piece.len : 0));
-      node = fromNode;
+    let key: string | null = last;
+    let node = -1;
+    while (key) {
+      const [pieceText, end] = key.split('>');
+      const id = Number(pieceText);
+      const piece = this.pieces[id];
+      const prev: string | null = back.get(key) ?? null;
+      if (id === from.piece && prev === null) {
+        node = end === 'a' ? start.a : start.b;
+        break;
+      }
+      middle.push(this.stretch(piece, end === 'a' ? piece.len : 0, end === 'a' ? 0 : piece.len));
+      key = prev;
     }
     const head = this.stretch(start, from.s, node === start.a ? 0 : start.len);
     const pts: number[] = [...head];
@@ -146,7 +197,7 @@ class Track {
     };
     for (let i = middle.length - 1; i >= 0; i -= 1) append(middle[i]);
     append(tail);
-    return { pts, len: Math.min(viaA, viaB) };
+    return { pts, len: found.d };
   }
 
   /** Ends of track that lead nowhere, as anchors. */
@@ -239,21 +290,27 @@ export function buildTransit(rail: Rail): Transit {
     const cx = ring.reduce((sum, s) => sum + s.x, 0) / ring.length;
     const cy = ring.reduce((sum, s) => sum + s.y, 0) / ring.length;
     const counter = [...ring].sort((p, q) => Math.atan2(p.y - cy, p.x - cx) - Math.atan2(q.y - cy, q.x - cx));
-    const red = loopRoute(airtrain, 'AirTrain Red Line', counter, new Set(), 26, 12.5, 2, 11.8);
-    if (red) transit.addTrains(transit.addRoute(red.route), 4);
     const clockwise = [...counter].reverse();
     const out = outlying.map((name) => stations.find((s) => s.name === name)).filter((s): s is RailStation => Boolean(s));
-    // Leave the ring at the station nearest the first outlying one, and come back to it.
-    if (out.length) {
+    /** The two lines with the Red Line going round one way and the Blue Line the other, on the track the Red leaves free. */
+    const lines = (redWay: RailStation[], blueWay: RailStation[]) => {
+      const red = loopRoute(airtrain, 'AirTrain Red Line', redWay, new Set(), 26, 12.5, 2, 11.8);
+      if (!out.length) return { red, blue: null, length: red?.route.total ?? Infinity };
+      // Leave the ring at the station nearest the first outlying one, and come back to it.
       let nearest = 0;
-      clockwise.forEach((s, i) => {
-        if (Math.hypot(s.x - out[0].x, s.y - out[0].y) < Math.hypot(clockwise[nearest].x - out[0].x, clockwise[nearest].y - out[0].y)) nearest = i;
+      blueWay.forEach((s, i) => {
+        if (Math.hypot(s.x - out[0].x, s.y - out[0].y) < Math.hypot(blueWay[nearest].x - out[0].x, blueWay[nearest].y - out[0].y)) nearest = i;
       });
-      const order = [...clockwise.slice(nearest + 1), ...clockwise.slice(0, nearest + 1), ...out, ...out.slice(0, -1).reverse()];
-      // The Blue Line runs the other way round the terminals, on the track the Red Line leaves free.
+      const order = [...blueWay.slice(nearest + 1), ...blueWay.slice(0, nearest + 1), ...out, ...out.slice(0, -1).reverse()];
       const blue = loopRoute(airtrain, 'AirTrain Blue Line', order, red ? red.used : new Set(), 26, 12.5, 3, 11.8);
-      if (blue) transit.addTrains(transit.addRoute(blue.route), 5);
-    }
+      return { red, blue, length: (red?.route.total ?? Infinity) + (blue?.route.total ?? Infinity) };
+    };
+    // Which way round each goes is settled by the junctions: where the line to the car parks meets
+    // the ring, a train can only turn one way onto it. Of the two, the pair with the shorter lines.
+    const options = [lines(counter, clockwise), lines(clockwise, counter)];
+    const { red, blue } = options[0].length <= options[1].length ? options[0] : options[1];
+    if (red) transit.addTrains(transit.addRoute(red.route), 4);
+    if (blue) transit.addTrains(transit.addRoute(blue.route), 5);
   }
 
   // ---- BART: from where the line leaves the map to each of its two termini here, and back.

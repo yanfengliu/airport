@@ -83,7 +83,7 @@ export function percentile(stats: WaitStats, share: number): number {
 
 export interface TerminalStats {
   /** People, not parties. */
-  departing: { created: number; boarded: number; missed: number; cancelled: number };
+  departing: { created: number; boarded: number; missed: number; cancelled: number; placed: number };
   arriving: { created: number; left: number; alreadyGone: number };
   /**
    * Passengers who change here from one flight to another without leaving the airside: counted
@@ -192,12 +192,15 @@ export class Terminals {
   private trainsRun = false;
   private nextHousekeeping = 0;
   private now: number;
+  /** When the simulation started: only those due before it are placed already on their way. */
+  private readonly startedAt: number;
 
   constructor(layout: Layout, book: FlightBook, rng: Rng, now: number) {
     this.layout = layout;
     this.book = book;
     this.rng = rng;
     this.now = now;
+    this.startedAt = now;
     this.plan = buildTerminalPlan(layout, AIRLINES);
     for (const way of this.plan.ways) {
       if (way.kind !== 'airtrain' && way.kind !== 'bart') continue;
@@ -208,7 +211,7 @@ export class Terminals {
     }
     this.people = new People(CAPACITY, this.plan.grids, (floor) => FLOOR_HEIGHT[floor] ?? 0, STATION_SIGNALS + this.stationList.length);
     this.stats = {
-      departing: { created: 0, boarded: 0, missed: 0, cancelled: 0 },
+      departing: { created: 0, boarded: 0, missed: 0, cancelled: 0, placed: 0 },
       arriving: { created: 0, left: 0, alreadyGone: 0 },
       connecting: { created: 0, boarded: 0, missed: 0 },
       bags: { checked: 0, loaded: 0, leftBehind: 0, misrouted: 0, returned: 0, arrived: 0, delivered: 0, collected: 0, lost: 0 },
@@ -368,8 +371,9 @@ export class Terminals {
       const at = visit.rotation.dep - 5400;
       byHour[(((Math.floor(at / 3600) % 24) + 24) % 24)] += visit.rotation.paxOut;
     }
-    // The book holds two days of the same timetable.
-    const days = Math.max(1, new Set([...this.book.visits.values()].map((v) => Math.floor(v.std / 86400))).size);
+    // The book holds whole days of the same timetable: count them by the day each visit belongs to,
+    // not by the day its departure falls on, which for an overnight stay is the next.
+    const days = Math.max(1, new Set([...this.book.visits.values()].map((v) => Math.floor(v.id / 100_000))).size);
     return Math.max(...byHour) / days;
   }
 
@@ -552,7 +556,9 @@ export class Terminals {
       this.pendingAt += 1;
       const visit = this.book.visits.get(p.visit);
       if (!visit) continue;
-      this.spawnDeparting(visit, p.size, p.bags, now - p.at);
+      // A party due before the simulation started is somewhere along its way already; one due
+      // since has just arrived, a fraction of a step late at most, and starts at the door.
+      this.spawnDeparting(visit, p.size, p.bags, p.at < this.startedAt ? now - p.at : 0);
     }
     if (this.pendingAt > 4096) {
       this.pending.splice(0, this.pendingAt);
@@ -627,12 +633,14 @@ export class Terminals {
     };
     // Started in mid-day after this flight began boarding: the party is on board.
     if (sinceStart > 0 && this.now >= boardingAt && !visit.doorsClosed) {
+      this.stats.departing.placed += size;
       unseen();
       return;
     }
     // Started in mid-day: someone who came more than a usual trip through check-in and security
     // before now is already through, waiting near the gate, any bags checked and on their way.
     if (sinceStart > WARM_THROUGH || (sinceStart > 0 && this.now > boardingAt - 1800)) {
+      this.stats.departing.placed += size;
       const spot = this.around(holdroom, 16, 30);
       const id = this.addParty(KIND.departing, FLOOR.airside, holdroom.x, holdroom.y, size, visit);
       if (id < 0) {

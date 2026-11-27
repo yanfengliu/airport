@@ -60,6 +60,11 @@ export const CONFIG = {
     slotHorizon: 240,
     /** Seconds without new landings while the runways change from one plan to the other. */
     changeover: 15 * 60,
+    /**
+     * Seconds after the last landing slot on a runway end before departures may take off from its
+     * other end, towards where that arrival came from.
+     */
+    oppositeClear: 60,
     brakingHard: 2.5,
     brakingEasy: 1.4,
     takeoffAccel: { regional: 2.5, narrow: 2.3, wide: 1.9, super: 1.7 },

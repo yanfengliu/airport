@@ -90,6 +90,9 @@ export class Airside {
     const ahead: number[] = [];
     this.traffic = new Traffic(this.net);
     this.tower = new Tower(this.net, (id) => this.byId.get(id)?.runwayPosition() ?? null);
+    // On their way to the end, on it, or still climbing out from it along the line an arrival to
+    // the other end would come in on.
+    this.tower.departuresWaiting = (end) => this.aircraft.some((a) => a.runwayEnd === end && (a.phase === 'pushback' || a.phase === 'starting' || a.phase === 'taxiOut' || a.phase === 'lineUp' || a.phase === 'takeoff' || a.phase === 'climb'));
     this.book = new FlightBook(rotations);
     this.now = startTime;
     this.startTime = startTime;
@@ -226,9 +229,14 @@ export class Airside {
    * pushing back that leads to a runway it may take off from under the plan in use. A push that
    * leads nowhere is no way out, however clear it is.
    */
+  /** The runways closed, as part of a cache key: which ways out lead anywhere depends on them. */
+  private closedKey(): string {
+    return [...this.tower.closed].sort().join(',');
+  }
+
   private groundOf(stand: string, type: AircraftType): StandGround | null {
     const plan = this.tower.plan;
-    const key = `${stand}:${type.id}:${plan.name}`;
+    const key = `${stand}:${type.id}:${plan.name}:${this.closedKey()}`;
     const known = this.grounds.get(key);
     if (known !== undefined) return known;
     const ends = this.tower.departureEndsFor(type.body);
@@ -276,7 +284,7 @@ export class Airside {
     const [ax0, ay0, ax1, ay1] = from.restBox;
     const [bx0, by0, bx1, by1] = to.reachBox;
     if (ax0 > bx1 || bx0 > ax1 || ay0 > by1 || by0 > ay1) return false;
-    const key = `${s}:${a.id}>${t}:${b.id}:${this.tower.plan.name}`;
+    const key = `${s}:${a.id}>${t}:${b.id}:${this.tower.plan.name}:${this.closedKey()}`;
     let known = this.shut.get(key);
     if (known === undefined) {
       const hits = (tiles: ReadonlySet<number>): boolean => from.rest.some((tile) => tiles.has(tile));

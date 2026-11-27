@@ -481,7 +481,11 @@ export class RoadTraffic {
         if (!other || other.route[other.routeAt] !== nextId) continue;
         const otherToEnd = otherLink.len - other.s;
         // The nearer one goes first; a tie goes to the bigger road, then the lower id.
-        const ahead = otherToEnd < toEnd - 0.5 || (Math.abs(otherToEnd - toEnd) <= 0.5 && (otherLink.speed > link.speed || (otherLink.speed === link.speed && other.id < vehicle.id)));
+        // Distances to the metre, so that the order is the same whichever pair is compared and
+        // three streams cannot each wait for another: a strict order, never a ring.
+        const theirs = Math.round(otherToEnd);
+        const mine = Math.round(toEnd);
+        const ahead = theirs < mine || (theirs === mine && (otherLink.speed > link.speed || (otherLink.speed === link.speed && other.id < vehicle.id)));
         if (!ahead) continue;
         const gap = toEnd - otherToEnd - other.length;
         if (!best || gap < best.gap) best = { gap, v: other.v };

@@ -15,6 +15,7 @@ import { buildStaticWorld } from '../render/world.ts';
 import { formatClock } from '../shared/sun.ts';
 import { CONFIG } from '../sim/config.ts';
 import { AIRLINE_BY_CODE } from '../sim/fleet.ts';
+import { DAY } from '../sim/schedule.ts';
 import { Sim } from '../sim/sim.ts';
 import { WEATHER_PRESETS, type Weather } from '../sim/weather.ts';
 import { createBoard } from '../ui/board.ts';
@@ -83,7 +84,10 @@ async function start(): Promise<void> {
   const WARM_UP = 30 * 60;
   const ROAD_WARM_UP = 7 * 60;
   const startSim = (at: number): Sim => {
-    const fresh = new Sim(layout, { seed, startTime: at - WARM_UP, roads: true, people: true, weather: weatherOf(operator.weather) });
+    // Half an hour before a time just after midnight is the evening before: run it on the next day
+    // rather than at a negative time, which the roads and the trains cannot take.
+    const from = at - WARM_UP < 0 ? at - WARM_UP + DAY : at - WARM_UP;
+    const fresh = new Sim(layout, { seed, startTime: from, roads: true, people: true, weather: weatherOf(operator.weather) });
     for (const id of operator.runways) fresh.setRunwayClosed(id, true);
     for (const id of operator.checkpoints) fresh.setCheckpointClosed(id, true);
     fresh.warmUp(WARM_UP, ROAD_WARM_UP);

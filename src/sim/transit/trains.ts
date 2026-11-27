@@ -8,6 +8,8 @@ export interface Stop {
   s: number;
   /** Seconds the doors stay open. */
   dwell: number;
+  /** The line doubles back here, at the end of a spur: the train leaves the way it came. */
+  reverses?: boolean;
 }
 
 export interface TransitRoute {
@@ -54,10 +56,12 @@ const BRAKE = 0.9;
 /**
  * Track shared by two routes, or by one route twice (out and back along one line), is worked as
  * a block: one train in it at a time, others waiting short of it. Routes are compared every
- * SAMPLE metres; they share track where they run within SAME_TRACK metres of each other, level.
+ * SAMPLE metres; they share track where they run within SAME_TRACK metres of each other, level:
+ * closer than a train is wide, so that two trains side by side there would be inside each other,
+ * as on the stretch out to Long Term Parking, mapped as two tracks about two metres apart.
  */
 const SAMPLE = 4;
-const SAME_TRACK = 1.5;
+const SAME_TRACK = 2.6;
 /** Points of one route this far apart along it are different places on it, not the same one. */
 const SELF_APART = 60;
 /** A block reaches this far past where the lines meet and part, for the width of the trains. */
@@ -77,7 +81,43 @@ interface BlockSpan {
 export function makeRoute(id: string, kind: TransitRoute['kind'], pts: number[], loop: boolean, stops: Stop[], speed: number, cars: number, carLength: number): TransitRoute {
   const cum = [0];
   for (let i = 3; i < pts.length; i += 3) cum.push(cum[cum.length - 1] + Math.hypot(pts[i] - pts[i - 3], pts[i + 1] - pts[i - 2]));
-  return { id, kind, pts, cum, total: cum[cum.length - 1], loop, stops: [...stops].sort((a, b) => a.s - b.s), speed, cars, carLength };
+  const route: TransitRoute = { id, kind, pts, cum, total: cum[cum.length - 1], loop, stops: [...stops].sort((a, b) => a.s - b.s), speed, cars, carLength };
+  // Where the line turns right round at a stop, the train goes back out along the track it came in on.
+  const where = { x: 0, y: 0, z: 0 };
+  const at = (s: number): [number, number] => {
+    pointOn(route, s, where);
+    return [where.x, where.y];
+  };
+  for (const stop of route.stops) {
+    if (!loop) continue;
+    const [ax, ay] = at(stop.s - REVERSE_LOOK);
+    const [bx, by] = at(stop.s);
+    const [cx, cy] = at(stop.s + REVERSE_LOOK);
+    const turn = Math.atan2(cy - by, cx - bx) - Math.atan2(by - ay, bx - ax);
+    if (Math.abs(Math.atan2(Math.sin(turn), Math.cos(turn))) > 2.6) stop.reverses = true;
+  }
+  return route;
+}
+
+/** How far either side of a stop the line is looked at to see whether it doubles back there, metres. */
+const REVERSE_LOOK = 8;
+
+/** A point `s` along a route, which on a loop may be past its length or short of its start. */
+function pointOn(route: TransitRoute, s: number, out: { x: number; y: number; z: number }): void {
+  const d = route.loop ? ((s % route.total) + route.total) % route.total : Math.max(0, Math.min(route.total, s));
+  const cum = route.cum;
+  let lo = 0;
+  let hi = cum.length - 2;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (cum[mid] <= d) lo = mid;
+    else hi = mid - 1;
+  }
+  const t = (d - cum[lo]) / (cum[lo + 1] - cum[lo] || 1);
+  const i = lo * 3;
+  out.x = route.pts[i] + (route.pts[i + 3] - route.pts[i]) * t;
+  out.y = route.pts[i + 1] + (route.pts[i + 4] - route.pts[i + 1]) * t;
+  out.z = route.pts[i + 2] + (route.pts[i + 5] - route.pts[i + 2]) * t;
 }
 
 /** Distance along a route (x, y, z triples) of the point nearest to (x, y). */
@@ -122,6 +162,16 @@ export class Transit {
     return this.holders.length;
   }
 
+  /** A number that changes if anything about the trains does; for the determinism test. */
+  checksum(): number {
+    let h = 2166136261;
+    for (const t of this.trains) {
+      h ^= (t.id * 31 + Math.round(t.s * 4) * 7 + (t.doorsUntil >= 0 ? 1 : 0) + t.load * 13) | 0;
+      h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+  }
+
   /**
    * Find where routes share track, with one another or with themselves, and make each such place
    * a block. Called once every route is on.
@@ -133,7 +183,7 @@ export class Transit {
     this.routes.forEach((route, r) => {
       firstOf.push(samples.length);
       for (let s = 0; s <= route.total; s += SAMPLE) {
-        this.pointAt(route, s, point);
+        pointOn(route, s, point);
         samples.push({ r, s, x: point.x, y: point.y, z: point.z });
       }
     });
@@ -240,24 +290,6 @@ export class Transit {
       this.spans[r] = joined;
     }
     this.holders = [...blockOf.values()].map(() => new Set<number>());
-  }
-
-  /** A point `s` along a route. */
-  private pointAt(route: TransitRoute, s: number, out: { x: number; y: number; z: number }): void {
-    const d = Math.max(0, Math.min(route.total, s));
-    const cum = route.cum;
-    let lo = 0;
-    let hi = cum.length - 2;
-    while (lo < hi) {
-      const mid = (lo + hi + 1) >> 1;
-      if (cum[mid] <= d) lo = mid;
-      else hi = mid - 1;
-    }
-    const t = (d - cum[lo]) / (cum[lo + 1] - cum[lo] || 1);
-    const i = lo * 3;
-    out.x = route.pts[i] + (route.pts[i + 3] - route.pts[i]) * t;
-    out.y = route.pts[i + 1] + (route.pts[i + 4] - route.pts[i + 1]) * t;
-    out.z = route.pts[i + 2] + (route.pts[i + 5] - route.pts[i + 2]) * t;
   }
 
   /** Whether any of a train's body lies in a stretch of a block. */
@@ -378,6 +410,11 @@ export class Transit {
             train.ps = train.s;
             train.direction = train.direction === 1 ? -1 : 1;
           }
+        } else if (stop?.reverses) {
+          // On a loop that doubles back here: what was the back of the train leads out along the
+          // track it came in on, the length of the train further round the loop.
+          train.s = (train.s + route.cars * route.carLength) % route.total;
+          train.ps = train.s;
         }
         train.target = this.stopAhead(route, train);
       }

@@ -7,7 +7,8 @@
 //                              [--weather storm@11:00] [--close 28L@12:00] [--open 28L@13:00]
 //
 // Weather is one of the operations panel's presets: clear, low-cloud, fog, storm. Several
-// --weather, --close and --open may be given. Exit code 1 if fuselages meet or a wait passes 20 minutes.
+// --weather, --close and --open may be given. Exit code 1 if fuselages meet, two aircraft fly at
+// each other in the air, or a wait passes 20 minutes.
 
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -69,6 +70,7 @@ const phases = new Map<number, string>();
 const readyAt = new Map<number, number>();
 let gateHold = 0;
 const meetings = new Set<string>();
+const headOn = new Set<string>();
 let late = 0;
 let latest = 0;
 let lateCount = 0;
@@ -106,6 +108,27 @@ while (sim.time < end) {
       readyAt.delete(v.id);
     }
   }
+  // In the air near the field, two aircraft flying at each other: a departure climbing out towards
+  // an arrival coming the other way, or a go-around into one.
+  for (let i = 0; i < list.length; i += 1) {
+    const a = list[i];
+    if (a.alt <= 3 || a.phase === 'gone') continue;
+    for (let j = i + 1; j < list.length; j += 1) {
+      const b = list[j];
+      if (b.alt <= 3 || b.phase === 'gone') continue;
+      if (Math.hypot(a.x - b.x, a.y - b.y) > 6000 || Math.abs(a.alt - b.alt) > 450) continue;
+      const turn = Math.abs(Math.atan2(Math.sin(a.heading - b.heading), Math.cos(a.heading - b.heading)));
+      // Closing on each other along one line, not passing on parallel tracks.
+      const ux = Math.cos(a.heading);
+      const uy = Math.sin(a.heading);
+      const across = Math.abs(-(b.x - a.x) * uy + (b.y - a.y) * ux);
+      const ahead = (b.x - a.x) * ux + (b.y - a.y) * uy;
+      if (turn > 2.6 && across < 400 && ahead > 0 && !headOn.has(`${a.id}:${b.id}`)) {
+        headOn.add(`${a.id}:${b.id}`);
+        console.log(`${formatClock(sim.time)}  head-on in the air: ${a.visit.rotation.arrFlight} (${a.phase} ${a.runwayEnd}, ${Math.round(a.alt)} m) and ${b.visit.rotation.arrFlight} (${b.phase} ${b.runwayEnd}, ${Math.round(b.alt)} m), ${Math.round(Math.hypot(a.x - b.x, a.y - b.y))} m apart`);
+      }
+    }
+  }
   for (let i = 0; i < list.length; i += 1) {
     const a = list[i];
     if (a.alt > 3 || a.phase === 'gone') continue;
@@ -130,5 +153,5 @@ for (const [hour, row] of [...hourly].sort((p, q) => ((p[0] - start / 3600 + 24)
 }
 const longest = Math.round(sim.airside.totals.longestWait);
 console.log(`landings ${sim.airside.tower.stats.landings}, take-offs ${sim.airside.tower.stats.takeoffs}, go-arounds ${sim.airside.tower.stats.goArounds} ${JSON.stringify(sim.airside.tower.goAroundReasons)}`);
-console.log(`longest wait ${longest} s, longest gate hold ${Math.round(gateHold)} s, landings ${Math.round(late / Math.max(1, lateCount) / 60)} min late on average and ${Math.round(latest / 60)} at most, fuselages met ${meetings.size}, claims out of order ${sim.airside.traffic.outOfOrder}`);
-process.exit(meetings.size || longest > 1200 || gateHold > 1200 ? 1 : 0);
+console.log(`longest wait ${longest} s, longest gate hold ${Math.round(gateHold)} s, landings ${Math.round(late / Math.max(1, lateCount) / 60)} min late on average and ${Math.round(latest / 60)} at most, fuselages met ${meetings.size}, head-on in the air ${headOn.size}, claims out of order ${sim.airside.traffic.outOfOrder}`);
+process.exit(meetings.size || headOn.size || longest > 1200 || gateHold > 1200 ? 1 : 0);

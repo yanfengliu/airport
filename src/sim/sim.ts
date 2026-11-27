@@ -17,7 +17,11 @@ import type { Weather } from './weather.ts';
 
 export interface SimOptions {
   seed: number;
-  /** Clock time at which the simulation starts, seconds after midnight. */
+  /**
+   * Clock time at which the simulation starts, seconds after midnight of the first day. Below zero
+   * is the evening before, which the airside can run but the roads and trains cannot: they take a
+   * negative time to mean none, so start those a day later instead.
+   */
   startTime: number;
   /** Aircraft visits per day; defaults to the configured number. */
   visitsPerDay?: number;
@@ -51,6 +55,7 @@ export class Sim {
   steps = 0;
 
   constructor(layout: Layout, options: SimOptions) {
+    if (options.roads && options.startTime < 0) throw new Error(`The roads and trains cannot start at a negative time (${options.startTime} s): start a day later`);
     this.layout = layout;
     this.seed = options.seed;
     this.time = options.startTime;
@@ -128,6 +133,6 @@ export class Sim {
   }
 
   checksum(): number {
-    return (this.airside.checksum() ^ (this.roads ? this.roads.checksum() : 0) ^ (this.terminals ? this.terminals.checksum() : 0) ^ Math.imul(this.steps, 2654435761)) >>> 0;
+    return (this.airside.checksum() ^ (this.roads ? this.roads.checksum() : 0) ^ (this.transit ? this.transit.checksum() : 0) ^ (this.terminals ? this.terminals.checksum() : 0) ^ Math.imul(this.steps, 2654435761)) >>> 0;
   }
 }

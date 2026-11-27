@@ -124,7 +124,7 @@ function assignStands(rng: Rng, rotations: Rotation[], stands: readonly Stand[],
       const candidates = tier.flatMap((area) => byArea.get(area) ?? []).filter((b) => b.stand.span + 0.5 >= span && (b.stand.contact || tier[0] === 'remote') && free(b, r));
       if (!candidates.length) continue;
       // The tightest fit, so large stands stay free for large aircraft.
-      candidates.sort((p, q) => p.stand.span - q.stand.span || p.spans.length - q.spans.length || p.stand.id.localeCompare(q.stand.id));
+      candidates.sort((p, q) => p.stand.span - q.stand.span || p.spans.length - q.spans.length || (p.stand.id < q.stand.id ? -1 : p.stand.id > q.stand.id ? 1 : 0));
       const tight = candidates.filter((c) => c.stand.span <= candidates[0].stand.span + 4);
       chosen = tight[rng.int(tight.length)];
       break;

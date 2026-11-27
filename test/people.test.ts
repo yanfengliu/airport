@@ -107,6 +107,23 @@ describe('a closed checkpoint', () => {
   });
 });
 
+describe('departing passengers once the day is running', () => {
+  // At the start some are placed where they would be by now; after that, everyone comes in by a
+  // door and goes through check-in and security, however close to departure they come.
+  const sim = new Sim(layout, { seed: 6, startTime: 9 * 3600, people: true });
+  sim.run(10 * 60);
+  const placedAtStart = sim.terminals!.stats.departing.placed;
+  const createdAtStart = sim.terminals!.stats.departing.created;
+  sim.run(80 * 60);
+  const s = sim.terminals!.stats.departing;
+
+  it('places nobody part-way along after the start', () => {
+    expect(placedAtStart).toBeGreaterThan(0);
+    expect(s.created - createdAtStart).toBeGreaterThan(1000);
+    expect(s.placed).toBe(placedAtStart);
+  });
+});
+
 describe('people and the trains', () => {
   // With the roads on, AirTrain and BART run, and those who come and go by them ride them.
   const sim = new Sim(layout, { seed: 5, startTime: 7 * 3600, roads: true, people: true });
