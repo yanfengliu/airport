@@ -81,6 +81,7 @@ const b = s.bags;
 const failures: string[] = [];
 const share = (part: number, whole: number): number => part / Math.max(1, whole);
 if (departingBalance !== 0) failures.push(`${departingBalance} departing unaccounted`);
+if (t.lingering() > 0) failures.push(`${t.lingering()} departing people still inside an hour after their flight left`);
 if (arrivingBalance !== 0) failures.push(`${arrivingBalance} arriving unaccounted`);
 if (b.loaded + b.leftBehind + b.misrouted + b.returned !== b.checked) failures.push('checked bags without an outcome');
 if (b.collected + b.lost + t.arrivingBagsInside() !== b.arrived) failures.push('arriving bags without an outcome');

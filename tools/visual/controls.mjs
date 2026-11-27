@@ -62,6 +62,10 @@ try {
   await page.waitForFunction(() => window.__sfo.settled(), null, { timeout: 30_000 });
   const gpu = await sfo('window.__sfo.gpu');
   await check('opens on the GPU with the operations panel', /apple|metal|angle/i.test(gpu) && !/swiftshader|llvmpipe|software/i.test(gpu) && (await page.isVisible('.ops')), gpu);
+  // The first frame is a running airport: aircraft taxiing and in the air, traffic on the roads.
+  const first = await sfo('JSON.parse(window.render_game_to_text())');
+  const moving = ['taxiIn', 'taxiOut', 'approach', 'landing', 'takeoff', 'climb', 'pushback'].reduce((n, phase) => n + (first.aircraft[phase] ?? 0), 0);
+  await check('opens with the airport already running', moving >= 3 && (first.aircraft.parked ?? 0) >= 20 && first.vehicles > 300, `${moving} aircraft moving, ${first.aircraft.parked} parked, ${first.vehicles} vehicles`);
 
   // Speed: buttons and the keyboard.
   await page.click('[data-speed="60"]');
@@ -203,7 +207,7 @@ try {
   await page.click('[data-runway="01R/19L"]');
   await run(300);
   const closedRunway = await sfo('window.__sfo.ops()');
-  await check('closing 01R stops departures from it', closedRunway.runways.find((r) => r.id === '01R/19L').closed && !closedRunway.departing.includes('01R'), closedRunway.departing.join(' '));
+  await check('closing 01R sends no new departures to it', closedRunway.runways.find((r) => r.id === '01R/19L').closed && !closedRunway.departing.includes('01R'), closedRunway.departing.join(' '));
   await page.click('[data-runway="01R/19L"]');
   const c = await sfo(`window.__sfo.ops().checkpoints.find((cp) => cp.name === 'C').id`);
   await page.click(`[data-checkpoint="${c}"]`);

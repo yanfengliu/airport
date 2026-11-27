@@ -1244,6 +1244,21 @@ export class Terminals {
   // ---- what the panel and the tests read ---------------------------------------------------------
 
   /** Everyone is somewhere: created = boarded + missed + still here, for departures and arrivals. */
+  /**
+   * Departing people still in the building an hour after their flight left, or whose flight the
+   * book has forgotten: walkers that should have boarded or gone home by now.
+   */
+  lingering(): number {
+    let n = 0;
+    const people = this.people;
+    for (let id = 0; id < people.high; id += 1) {
+      if (!people.alive[id] || (people.flags[id] & KIND_MASK) !== KIND.departing) continue;
+      const visit = this.book.visits.get(people.visit[id]);
+      if (!visit || (visit.doorsClosed && this.now - visit.etd > 3600)) n += people.size[id];
+    }
+    return n;
+  }
+
   /** People in the building by kind, and departing people still on the train to it. */
   audit(): { departingHere: number; departingRiding: number; arrivingHere: number; staffHere: number } {
     let departingHere = 0;
