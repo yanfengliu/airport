@@ -50,6 +50,17 @@ describe('people in the terminals, over a morning', () => {
   });
 });
 
+describe('a start after boarding has begun', () => {
+  it('has the travellers of flights already boarding on board, not left to miss them', () => {
+    // At 06:00 a first wave of flights leaves within minutes, their boarding begun before the start.
+    const sim = new Sim(layout, { seed: 3, startTime: 6 * 3600, people: true });
+    sim.run(1800);
+    const s = sim.terminals!.stats.departing;
+    expect(s.boarded).toBeGreaterThan(1000);
+    expect(s.missed).toBeLessThan(0.02 * (s.boarded + s.missed));
+  });
+});
+
 describe('a closed checkpoint', () => {
   // The same morning twice, with Checkpoint C open and with it closed from the start.
   const run = (close: boolean): Sim => {

@@ -27,6 +27,8 @@ export const CAPACITY = 40_000;
 const LOOKAHEAD = 5 * 3600;
 /** Seconds between the slower decisions: who arrives, which lanes are open, whose doors close. */
 const HOUSEKEEPING = 5;
+/** At a mid-day start, travellers who came more than this many seconds before are through security. */
+const WARM_THROUGH = 2400;
 
 const EVENT = { airside: 1, board: 2, atClaim: 3, leave: 4, shop: 5, roam: 6 } as const;
 /** What a walker is, in the low bits of `people.flags`. */
@@ -487,8 +489,17 @@ export class Terminals {
     const sinceStart = late;
     const boardingAt = visit.etd - CONFIG.turnaround.boardingStarts[AIRCRAFT[visit.rotation.type].body] * 60;
     this.stats.departing.created += size;
-    // Started in mid-day: someone who came well before now is already through security.
-    if (sinceStart > 2400 || (sinceStart > 0 && this.now > boardingAt - 1800)) {
+    // Started in mid-day after this flight began boarding: the party is on board, bags and all.
+    if (sinceStart > 0 && this.now >= boardingAt && !visit.doorsClosed) {
+      visit.boarded += size;
+      this.stats.departing.boarded += size;
+      this.stats.bags.checked += bags;
+      this.stats.bags.loaded += bags;
+      return;
+    }
+    // Started in mid-day: someone who came more than a usual trip through check-in and security
+    // before now is already through, waiting near the gate.
+    if (sinceStart > WARM_THROUGH || (sinceStart > 0 && this.now > boardingAt - 1800)) {
       const spot = this.around(holdroom, 16, 30);
       const id = this.addParty(KIND.departing, FLOOR.airside, holdroom.x, holdroom.y, size, visit);
       if (id < 0) return;
