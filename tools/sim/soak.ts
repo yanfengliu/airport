@@ -49,6 +49,7 @@ import { bodyClearance, fuselageClearance, shapeClearance, shapeOf, type Parked,
 import { LAYOUT_FILES, type Layout } from '../../src/shared/layout.ts';
 import type { Aircraft } from '../../src/sim/airside/aircraft.ts';
 import { NOT_YET } from '../../src/sim/airside/flights.ts';
+import { CONFIG } from '../../src/sim/config.ts';
 import { Sim } from '../../src/sim/sim.ts';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -93,8 +94,8 @@ const AHEAD = 1500;
 const REACH_SECONDS = 20;
 const REACH_LEAST = 300;
 /** A departure ahead is out of the way once it is this far down the runway and this fast: the tower's own rule. */
-const AWAY_ALONG = 1500;
-const AWAY = 55;
+const AWAY_ALONG = CONFIG.runway.departedAlongForLanding;
+const AWAY = CONFIG.runway.departedSpeedForLanding;
 
 interface Strip {
   id: string;

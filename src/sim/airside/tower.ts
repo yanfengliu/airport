@@ -18,7 +18,22 @@ export interface RunwayPlan {
 // (CONFIG.runway.crossHoldsDeparture) by traffic crossing in front of it. Without such a turn, a
 // runway with a queue of departures is never crossed: the next lines up before the last is past
 // the crossing.
-const { crossHoldsDeparture: CROSS_HOLDS_DEPARTURE, crossLiningUp: CROSS_LINING_UP, firstCome: FIRST_COME, askLapses: ASK_LAPSES, oppositeClear: OPPOSITE_CLEAR } = CONFIG.runway;
+const {
+  crossHoldsDeparture: CROSS_HOLDS_DEPARTURE,
+  crossLiningUp: CROSS_LINING_UP,
+  firstCome: FIRST_COME,
+  askLapses: ASK_LAPSES,
+  oppositeClear: OPPOSITE_CLEAR,
+  departedAlongForLanding: DEPARTED_ALONG_FOR_LANDING,
+  departedSpeedForLanding: DEPARTED_SPEED_FOR_LANDING,
+  departedAlongForTakeoff: DEPARTED_ALONG_FOR_TAKEOFF,
+  lineUpBehind: LINE_UP_BEHIND,
+  rollMargin: ROLL_MARGIN,
+  lineUpMargin: LINE_UP_MARGIN,
+  crossingPassed: CROSSING_PASSED,
+  rollShare: ROLL_SHARE,
+  lineUpLength: LINE_UP_LENGTH,
+} = CONFIG.runway;
 
 export const WEST_PLAN: RunwayPlan ={ name: 'West', arrivals: ['28L', '28R'], departures: ['01L', '01R'], longDepartures: ['28L', '28R'] };
 export const SOUTHEAST_PLAN: RunwayPlan = { name: 'Southeast', arrivals: ['19L', '19R'], departures: ['10L', '10R'], longDepartures: ['10L', '10R'] };
@@ -301,7 +316,7 @@ export class Tower {
       if (id === aircraft) continue;
       // A departure already well down the runway will be gone before the wheels touch.
       const p = this.position(id);
-      if (occupant.kind === 'departing' && occupant.end === end && p && p.along > 1500 && p.speed > 55) continue;
+      if (occupant.kind === 'departing' && occupant.end === end && p && p.along > DEPARTED_ALONG_FOR_LANDING && p.speed > DEPARTED_SPEED_FOR_LANDING) continue;
       return occupant.kind === 'landing' ? 'landing not yet clear' : occupant.kind === 'crossing' ? 'aircraft crossing' : occupant.kind === 'departing' ? 'departure rolling' : 'departure lined up';
     }
     return null;
@@ -381,14 +396,14 @@ export class Tower {
       // Someone still on the pavement behind where this aircraft will start, or yet to pass it.
       if (occupant.kind === 'crossing' || occupant.kind === 'linedUp') return this.deny(`runway has one ${occupant.kind}`, id);
       if (occupant.end !== end) return this.deny('runway in use the other way', id);
-      if (!p || p.along < 600) return this.deny(`runway has one ${occupant.kind} not yet past`, id);
+      if (!p || p.along < LINE_UP_BEHIND) return this.deny(`runway has one ${occupant.kind} not yet past`, id);
     }
     // On a runway that also takes landings there must be room before the next one: from when it
     // can roll, lined up and clear of the last departure's wake, the take-off clearance's own margin.
     const next = runway.inbound[0];
     const last = runway.lastDeparture;
     const rollAt = Math.max(now + lineUpSeconds, last && last.end === end ? last.time + CONFIG.runway.departureGap[last.wake] : now);
-    if (next && next.threshold - rollAt < rollSeconds + 20 + 6) return this.deny('landing too close to line up', next.aircraft);
+    if (next && next.threshold - rollAt < rollSeconds + ROLL_MARGIN + LINE_UP_MARGIN) return this.deny('landing too close to line up', next.aircraft);
     runway.cleared = aircraft;
     return true;
   }
@@ -440,7 +455,7 @@ export class Tower {
     for (const [id, occupant] of runway.occupants) {
       if (id === aircraft) continue;
       const p = this.position(id);
-      if (occupant.kind === 'departing' && occupant.end === end && p && p.along > 1700) continue;
+      if (occupant.kind === 'departing' && occupant.end === end && p && p.along > DEPARTED_ALONG_FOR_TAKEOFF) continue;
       return this.deny(`runway has one ${occupant.kind}`, id);
     }
     const last = runway.lastDeparture;
@@ -448,7 +463,7 @@ export class Tower {
     const headOn = this.landingTowards(end, now);
     if (headOn !== null) return this.deny('landing the other way', headOn);
     const next = runway.inbound[0];
-    if (next && next.threshold - now < rollSeconds + 20) return this.deny('landing too close to take off', next.aircraft);
+    if (next && next.threshold - now < rollSeconds + ROLL_MARGIN) return this.deny('landing too close to take off', next.aircraft);
     const margin = CONFIG.runway.crossingMargin;
     for (const c of toCrossings) {
       // A departure fitted between landings on the other runway goes first: its gap will not wait.
@@ -499,7 +514,7 @@ export class Tower {
       const at = occupant.end === referenceEnd ? p.along : length - p.along;
       const towards = occupant.end === referenceEnd ? 1 : -1;
       // Already past the crossing point and moving away from it: no conflict.
-      const passed = (along - at) * towards < -90;
+      const passed = (along - at) * towards < -CROSSING_PASSED;
       if (!passed) return this.deny(`runway has one ${occupant.kind} not yet past`, id);
     }
     if (runway.cleared !== null) {
@@ -539,5 +554,5 @@ export class Tower {
 export function shortestRunway(body: BodyClass): number {
   let vRot = 0;
   for (const type of Object.values(AIRCRAFT)) if (type.body === body) vRot = Math.max(vRot, type.vRot);
-  return (1.15 * vRot * vRot) / (2 * CONFIG.runway.takeoffAccel[body]) + 150;
+  return (ROLL_SHARE * vRot * vRot) / (2 * CONFIG.runway.takeoffAccel[body]) + LINE_UP_LENGTH;
 }

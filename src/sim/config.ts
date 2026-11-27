@@ -65,6 +65,23 @@ export const CONFIG = {
      * other end, towards where that arrival came from.
      */
     oppositeClear: 60,
+    /**
+     * A departure ahead on the runway is out of a landing's way once it is this far down the
+     * runway, metres, and this fast, m/s; out of a following departure's way once this far.
+     */
+    departedAlongForLanding: 1500,
+    departedSpeedForLanding: 55,
+    departedAlongForTakeoff: 1700,
+    /** How far down the runway, metres, the one before must be for a departure to line up behind it. */
+    lineUpBehind: 600,
+    /** Seconds of margin a landing leaves a departure's roll, and the line-up's own on top. */
+    rollMargin: 20,
+    lineUpMargin: 6,
+    /** Metres past a crossing point and moving away beyond which a runway user no longer holds a crossing. */
+    crossingPassed: 90,
+    /** Margin on the longest roll to rotation when judging whether a runway is long enough, and metres to line up. */
+    rollShare: 1.15,
+    lineUpLength: 150,
     brakingHard: 2.5,
     brakingEasy: 1.4,
     takeoffAccel: { regional: 2.5, narrow: 2.3, wide: 1.9, super: 1.7 },
