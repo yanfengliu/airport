@@ -8,7 +8,11 @@
 import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import { buildTower } from '../src/render/static/landmarks.ts';
-import { visibleRuns } from '../src/render/static/rail.ts';
+import { buildRail, visibleRuns } from '../src/render/static/rail.ts';
+import { junctionDiscs } from '../src/render/static/roads.ts';
+import { piers } from '../src/render/static/structures.ts';
+import { MeshBuilder } from '../src/render/builder.ts';
+import { withinAny } from '../src/sim/terminal/fittings.ts';
 import { mappedBuildings } from '../src/render/world.ts';
 import { loadLayoutFromDisk } from './helpers/layout.ts';
 import { loadModelsFromDisk } from './helpers/models.ts';
@@ -85,5 +89,53 @@ describe('the railways', () => {
     }
     // BART goes under the airport.
     expect(mouths).toBeGreaterThan(0);
+  });
+});
+
+describe('piers', () => {
+  const layout = loadLayoutFromDisk();
+
+  it('stand nowhere in a terminal, which carries the railways that pass through it', () => {
+    const inTerminal = withinAny(layout.terminals.buildings.map((b) => b.poly));
+    const standing: string[] = [];
+    let piers = 0;
+    buildRail(layout.rail, inTerminal).traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh || mesh.name !== 'rail-piers') return;
+      const p = mesh.geometry.getAttribute('position');
+      piers += p.count;
+      for (let i = 0; i < p.count; i += 1) if (inTerminal(p.getX(i), -p.getZ(i))) standing.push(`at ${p.getX(i).toFixed(0)},${(-p.getZ(i)).toFixed(0)}`);
+    });
+    expect(piers).toBeGreaterThan(0);
+    expect(standing.slice(0, 5)).toEqual([]);
+  });
+
+  it('are left out where a building carries the deck', () => {
+    const line = [0, 0, 12, 100, 0, 12];
+    const count = (carried?: (x: number, y: number) => boolean): number => {
+      const b = new MeshBuilder();
+      piers(b, line, 8, [0.5, 0.5, 0.5], 20, carried);
+      return b.vertexCount;
+    };
+    expect(count()).toBeGreaterThan(0);
+    expect(count((x) => x < 50)).toBeLessThan(count());
+    expect(count(() => true)).toBe(0);
+  });
+});
+
+describe('road junctions', () => {
+  const layout = loadLayoutFromDisk();
+
+  it('pave each junction at its own height, under the ground where its roads are sunk, not on the lawn above', () => {
+    const discs = junctionDiscs(layout.roads);
+    expect(discs.length).toBeGreaterThan(50);
+    let sunk = 0;
+    for (const d of discs) {
+      const node = layout.roads.nodes.find((n) => n.x === d.x && n.y === d.y)!;
+      expect(d.z).toBeCloseTo(Math.min(0, node.z), 6);
+      if (node.z < -0.3) sunk += 1;
+    }
+    // Some are: the lower terminal roads.
+    expect(sunk).toBeGreaterThan(0);
   });
 });

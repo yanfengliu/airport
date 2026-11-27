@@ -2,6 +2,7 @@
 
 import * as THREE from 'three';
 import type { Building, Layout } from '../shared/layout.ts';
+import { withinAny } from '../sim/terminal/fittings.ts';
 import { Lights } from './lights.ts';
 import type { Models } from './models/library.ts';
 import { airfieldFurniture, airfieldLamps, buildAirfieldProps } from './static/airfield-props.ts';
@@ -79,8 +80,10 @@ export function buildStaticWorld(layout: Layout, models: Models = new Map()): St
   const ground = buildGround(layout.land);
   group.add(ground.group);
   group.add(buildAirfieldGround(layout.airfield));
-  group.add(buildRoads(layout.roads));
-  group.add(buildRail(layout.rail));
+  // Where a road or a railway passes through a terminal, the building carries it: no piers in the halls.
+  const inTerminal = withinAny(layout.terminals.buildings.map((b) => b.poly));
+  group.add(buildRoads(layout.roads, inTerminal));
+  group.add(buildRail(layout.rail, inTerminal));
   // The airfield's furniture, drawn with the models: the gates' floodlights are on its masts.
   const furniture = models.size ? airfieldFurniture(layout) : null;
   if (furniture) group.add(buildAirfieldProps(furniture, models));

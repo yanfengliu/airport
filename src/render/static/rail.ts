@@ -97,10 +97,12 @@ function trackHeading(rail: Rail, station: RailStation): number {
   return heading;
 }
 
-export function buildRail(rail: Rail): THREE.Group {
+/** The railways; `carried` says where a building carries a viaduct, so that no pier stands there. */
+export function buildRail(rail: Rail, carried: (x: number, y: number) => boolean = () => false): THREE.Group {
   const group = new THREE.Group();
   group.name = 'rail';
   const structure = new MeshBuilder();
+  const columns = new MeshBuilder();
   const running = new MeshBuilder();
   const ballast = new MeshBuilder();
   const steel = new MeshBuilder();
@@ -117,7 +119,7 @@ export function buildRail(rail: Rail): THREE.Group {
       for (let i = 2; i < run.length; i += 3) top = Math.max(top, run[i]);
       if (top > ELEVATED_FROM) {
         deck(structure, run, width, concrete, 0.55);
-        piers(structure, run, width, concrete, 24);
+        piers(columns, run, width, concrete, 24, carried);
         ribbon(running, run, 3, width, guideway, { lift: 0.1 });
       } else {
         ribbon(ballast, run, 3, width, gravel);
@@ -162,7 +164,9 @@ export function buildRail(rail: Rail): THREE.Group {
     if (s.kind !== 'caltrain') box(structure, s.x, s.y, roof, roof + 0.6, length / 2 + 2, halfWidth + 1, heading, canopyTone, canopyTone);
   }
 
-  group.add(solidMesh(structure, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88, metalness: 0 }), 'rail-structures'));
+  const structureMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88, metalness: 0 });
+  group.add(solidMesh(structure, structureMaterial, 'rail-structures'));
+  if (columns.vertexCount) group.add(solidMesh(columns, structureMaterial, 'rail-piers'));
   group.add(solidMesh(running, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, metalness: 0 }), 'rail-running', false));
   group.add(decalMesh(ballast, ORDER.roadCasing, decalMaterial(), 'rail-ballast'));
   group.add(decalMesh(steel, ORDER.road, decalMaterial(), 'rail-steel'));

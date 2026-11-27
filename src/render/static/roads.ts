@@ -11,6 +11,8 @@ import { deck, piers } from './structures.ts';
 /** Classes drawn as plain asphalt, without lane paint. */
 const PLAIN = new Set<RoadClass>(['local', 'service', 'airside']);
 const ELEVATED_FROM = 0.6;
+/** Above this height a road on the ground has sides down to it. */
+const RAISED_FROM = 0.05;
 
 export function laneSpec(e: RoadEdge): LaneSpec {
   return { forward: e.lanes, back: e.back, laneWidth: LANE_WIDTH[e.cls], shoulder: SHOULDER[e.cls] };
@@ -26,7 +28,28 @@ const maxZ = (e: RoadEdge): number => {
   return z;
 };
 
-export function buildRoads(roads: Roads): THREE.Group {
+/**
+ * Plain asphalt where surface streets meet, so lane paint does not run through the junction: a
+ * disc at each, at the junction's own height, below the ground where the roads there are sunk.
+ */
+export function junctionDiscs(roads: Roads): { x: number; y: number; z: number; radius: number }[] {
+  const incident = new Map<number, RoadEdge[]>();
+  roads.edges.forEach((e) => {
+    for (const end of [e.a, e.b]) (incident.get(end) ?? incident.set(end, []).get(end)!).push(e);
+  });
+  const discs: { x: number; y: number; z: number; radius: number }[] = [];
+  for (const [index, list] of incident) {
+    const node = roads.nodes[index];
+    if (list.length < 3 || node.z > ELEVATED_FROM) continue;
+    if (list.some((e) => e.cls.startsWith('motorway') || e.tunnel || PLAIN.has(e.cls))) continue;
+    const widths = list.map(roadWidth).sort((p, q) => q - p);
+    discs.push({ x: node.x, y: node.y, z: Math.min(0, node.z), radius: Math.min(widths[0], widths[1] + 2) / 2 });
+  }
+  return discs;
+}
+
+/** The roads; `carried` says where a building carries a deck, so that no pier stands there. */
+export function buildRoads(roads: Roads, carried: (x: number, y: number) => boolean = () => false): THREE.Group {
   const group = new THREE.Group();
   group.name = 'roads';
 
@@ -47,7 +70,11 @@ export function buildRoads(roads: Roads): THREE.Group {
     const up = elevated[index];
     if (up) {
       deck(structure, e.pts, width, concrete);
-      piers(structure, e.pts, width, concrete);
+      piers(structure, e.pts, width, concrete, undefined, carried);
+    } else if (maxZ(e) > RAISED_FROM) {
+      // Raised a little, as where a road comes off a deck or onto one: its sides down to the
+      // ground, so that it does not float.
+      deck(structure, e.pts, width, concrete, 0);
     }
     if (PLAIN.has(e.cls)) {
       const tone = e.cls === 'airside' ? shade(PALETTE.asphalt, 1.25) : PALETTE.asphalt;
@@ -71,18 +98,7 @@ export function buildRoads(roads: Roads): THREE.Group {
     }
   });
 
-  // Plain asphalt where surface streets meet, so lane paint does not run through the junction.
-  const incident = new Map<number, RoadEdge[]>();
-  roads.edges.forEach((e) => {
-    for (const end of [e.a, e.b]) (incident.get(end) ?? incident.set(end, []).get(end)!).push(e);
-  });
-  for (const [index, list] of incident) {
-    const node = roads.nodes[index];
-    if (list.length < 3 || node.z > ELEVATED_FROM) continue;
-    if (list.some((e) => e.cls.startsWith('motorway') || e.tunnel || PLAIN.has(e.cls))) continue;
-    const widths = list.map(roadWidth).sort((p, q) => q - p);
-    disc(junction, node.x, node.y, 0, Math.min(widths[0], widths[1] + 2) / 2, PALETTE.asphalt);
-  }
+  for (const j of junctionDiscs(roads)) disc(junction, j.x, j.y, j.z, j.radius, PALETTE.asphalt);
 
   const grain = grainTexture();
   group.add(decalMesh(casing, ORDER.roadCasing, decalMaterial(), 'road-casing'));

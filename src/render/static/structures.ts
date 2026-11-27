@@ -5,6 +5,9 @@ import { MeshBuilder, box, shade, type RGB } from '../builder.ts';
 export const DECK_THICKNESS = 1.3;
 /** Below this height a structure is drawn as a solid ramp down to the ground. */
 export const PIER_FROM = 3.6;
+/** A deck's parapet starts at this height and reaches its full height this much higher, metres. */
+const PARAPET_FROM = 0.6;
+const PARAPET_OVER = 1.5;
 
 /**
  * Sides, underside and parapets of a deck following a polyline of (x, y, z) triples. The running
@@ -27,7 +30,8 @@ export function deck(b: MeshBuilder, pts: readonly number[], width: number, c: R
     ty /= tl;
     const lx = -ty;
     const ly = tx;
-    const top = z + parapet;
+    // The parapet rises with the deck: none on a road at the ground's height, all of it from a couple of metres up.
+    const top = z + parapet * Math.max(0, Math.min(1, (z - PARAPET_FROM) / PARAPET_OVER));
     const bottom = z > PIER_FROM ? z - DECK_THICKNESS : Math.min(0, z - DECK_THICKNESS);
     const dark = shade(c, 0.7);
     const ring = [
@@ -55,10 +59,13 @@ export function deck(b: MeshBuilder, pts: readonly number[], width: number, c: R
   }
 }
 
-/** Columns under a deck, one bent every `spacing` metres wherever it is high enough to need them. */
-export function piers(b: MeshBuilder, pts: readonly number[], width: number, c: RGB, spacing = 28): void {
+/**
+ * Columns under a deck, one bent every `spacing` metres wherever it is high enough to need them,
+ * and not where `carried` says a building carries the deck instead.
+ */
+export function piers(b: MeshBuilder, pts: readonly number[], width: number, c: RGB, spacing = 28, carried: (x: number, y: number) => boolean = () => false): void {
   const n = pts.length / 3;
-  let carried = spacing / 2;
+  let over = spacing / 2;
   for (let i = 1; i < n; i += 1) {
     const x0 = pts[(i - 1) * 3];
     const y0 = pts[(i - 1) * 3 + 1];
@@ -69,13 +76,17 @@ export function piers(b: MeshBuilder, pts: readonly number[], width: number, c: 
     const len = Math.hypot(x1 - x0, y1 - y0);
     if (len < 0.01) continue;
     const heading = Math.atan2(y1 - y0, x1 - x0);
-    let s = spacing - carried;
+    let s = spacing - over;
     while (s <= len) {
       const t = s / len;
       const z = z0 + (z1 - z0) * t;
-      if (z > PIER_FROM) {
-        const x = x0 + (x1 - x0) * t;
-        const y = y0 + (y1 - y0) * t;
+      const x = x0 + (x1 - x0) * t;
+      const y = y0 + (y1 - y0) * t;
+      // Its footprint's corners, along the deck and across it: a bent's beam reaches furthest across.
+      const across = width > 13 ? width * 0.42 : Math.min(1.4, Math.max(0.6, width * 0.2));
+      const [ux, uy, nx, ny] = [Math.cos(heading), Math.sin(heading), -Math.sin(heading), Math.cos(heading)];
+      const footprint = [-1, 1].flatMap((a) => [-1, 1].map((c) => [x + ux * 0.9 * a + nx * across * c, y + uy * 0.9 * a + ny * across * c]));
+      if (z > PIER_FROM && !footprint.some(([fx, fy]) => carried(fx, fy))) {
         if (width > 13) {
           const ox = -Math.sin(heading) * width * 0.27;
           const oy = Math.cos(heading) * width * 0.27;
@@ -88,6 +99,6 @@ export function piers(b: MeshBuilder, pts: readonly number[], width: number, c: 
       }
       s += spacing;
     }
-    carried = (carried + len) % spacing;
+    over = (over + len) % spacing;
   }
 }

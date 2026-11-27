@@ -149,6 +149,10 @@ export interface RibbonOptions {
   lift?: number;
   /** Shift the ribbon sideways, positive to the left of travel. */
   offset?: number;
+  /** A width for each point, in place of the one width. */
+  widths?: readonly number[];
+  /** How far a corner's mitre may lengthen the strip's width, as the least cosine of half its turn. */
+  mitre?: number;
 }
 
 /**
@@ -203,13 +207,14 @@ export function ribbon(b: MeshBuilder, pts: readonly number[], stride: 2 | 3, wi
       ty /= tl;
     }
     // Left normal of the averaged tangent, lengthened so the strip keeps its width round the bend.
-    const cos = Math.max(0.5, tx * ax + ty * ay);
+    const cos = Math.max(options.mitre ?? 0.5, tx * ax + ty * ay);
     const lx = -ty / cos;
     const ly = tx / cos;
     if (i > 0) run += al;
     const v = vLength ? run / vLength : 0;
-    const left = b.vertex(x + lx * (half + offset), y + ly * (half + offset), h, 0, 0, 1, c, 0, v);
-    const right = b.vertex(x - lx * (half - offset), y - ly * (half - offset), h, 0, 0, 1, c, 1, v);
+    const w = options.widths ? options.widths[i] / 2 : half;
+    const left = b.vertex(x + lx * (w + offset), y + ly * (w + offset), h, 0, 0, 1, c, 0, v);
+    const right = b.vertex(x - lx * (w - offset), y - ly * (w - offset), h, 0, 0, 1, c, 1, v);
     if (i > 0) b.quad(prevRight, right, left, prevLeft);
     prevLeft = left;
     prevRight = right;
