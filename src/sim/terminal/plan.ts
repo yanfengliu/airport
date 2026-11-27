@@ -127,6 +127,14 @@ const CHECKIN_NAMES: [RegExp, string][] = [
   [/delta/i, 'DL'],
 ];
 
+/**
+ * Longest walkway from a station, and from the middle of a garage, to the hall it serves, metres:
+ * SFO's BART station is about 100 m from the International Terminal's hall, and the garages'
+ * middles up to about 230 m from theirs.
+ */
+const STATION_WALK = 160;
+const GARAGE_WALK = 260;
+
 /** Boarding areas in the order they stand round the ring of terminals, each joined to the next after security. */
 const RING = ['A', 'B', 'C', 'D', 'E', 'F', 'G'];
 /** Longest connector, metres: farther apart than this, two concourses are not joined. */
@@ -361,17 +369,21 @@ export function buildTerminalPlan(layout: Layout, airlines: readonly { code: str
     const floor = e.name === 'Departures' ? FLOOR.landside : FLOOR.arrivals;
     pushWay(add(e.name === 'Departures' ? 'curb' : 'pickup', `${e.name} curb`, floor, e.pts[mid], e.pts[mid + 1]));
   }
+  // Stations and garages stand apart from the halls, joined to them by walkways and skybridges:
+  // people from them come in where the walkway meets the nearest hall.
+  const viaWalkway = (kind: PlaceKind, name: string, x: number, y: number, reach: number): void => {
+    const grid = grids[FLOOR.landside];
+    const cell = grid.nearestCell(x, y, reach);
+    if (cell >= 0) pushWay(add(kind, name, FLOOR.landside, grid.cx[cell], grid.cy[cell]));
+  };
   for (const s of layout.rail.stations) {
     if (s.kind === 'caltrain') continue;
-    const grid = grids[FLOOR.landside];
-    if (grid.nearestCell(s.x, s.y, 140) < 0) continue;
-    pushWay(add(s.kind === 'bart' ? 'bart' : 'airtrain', s.name, FLOOR.landside, s.x, s.y));
+    viaWalkway(s.kind === 'bart' ? 'bart' : 'airtrain', s.name, s.x, s.y, STATION_WALK);
   }
   for (const b of layout.buildings.buildings) {
     if (b.kind !== 'garage' || !b.name) continue;
     const [x, y] = centroid(b.poly);
-    if (grids[FLOOR.landside].nearestCell(x, y, 160) < 0) continue;
-    pushWay(add('garage', b.name, FLOOR.landside, x, y));
+    viaWalkway('garage', b.name, x, y, GARAGE_WALK);
   }
 
   // ---- shops, places to eat, lounges ---------------------------------------------------------

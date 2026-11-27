@@ -22,6 +22,13 @@ describe('the floor plan of the terminals', () => {
     expect(unreached).toEqual([]);
   });
 
+  it('has every way in and out: curbs on both levels, AirTrain, BART and the garages', () => {
+    // A way the plan cannot place is dropped without a word, and its travellers quietly take the curb.
+    const kinds = new Set(plan.ways.map((w) => w.kind));
+    for (const kind of ['curb', 'pickup', 'airtrain', 'bart', 'garage'] as const) expect(kinds.has(kind), kind).toBe(true);
+    expect(plan.ways.filter((w) => w.kind === 'garage').length).toBeGreaterThanOrEqual(3);
+  });
+
   it('joins the concourses after security, A to D and E to G, as far as the map has buildings between them', () => {
     const joined = (a: string, b: string): boolean => plan.field(plan.exit.get(a)!)[plan.exit.get(b)!.cell] !== UNREACHABLE;
     for (const [a, b] of [['A', 'B'], ['B', 'C'], ['C', 'D'], ['E', 'F'], ['F', 'G']]) expect(joined(a, b), `${a} to ${b}`).toBe(true);
