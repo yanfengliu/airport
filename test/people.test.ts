@@ -30,6 +30,13 @@ describe('people in the terminals, over a morning', () => {
     expect(s.departing.missed).toBeLessThan(0.02 * (s.departing.boarded + s.departing.missed));
   });
 
+  it('has passengers change planes airside, and almost all of them make their connection', () => {
+    expect(s.connecting.created).toBeGreaterThan(50);
+    expect(s.connecting.boarded).toBeGreaterThan(0);
+    expect(s.connecting.boarded + s.connecting.missed).toBeLessThanOrEqual(s.connecting.created);
+    expect(s.connecting.missed).toBeLessThan(0.02 * Math.max(50, s.connecting.boarded + s.connecting.missed));
+  });
+
   it('keeps the wait at security under half an hour for 95 in 100', () => {
     expect(s.security.served).toBeGreaterThan(3000);
     expect(percentile(s.security, 0.95)).toBeLessThan(30 * 60);

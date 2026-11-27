@@ -12,7 +12,7 @@
 import type { Layout } from '../../shared/layout.ts';
 import type { FlightBook, Visit } from '../airside/flights.ts';
 import { CONFIG } from '../config.ts';
-import { AIRCRAFT, AIRLINES } from '../fleet.ts';
+import { AIRCRAFT, AIRLINES, AIRLINE_BY_CODE } from '../fleet.ts';
 import type { Rng } from '../rng.ts';
 import { UNREACHABLE } from './grid.ts';
 import { ACT, People, ROLE, STEP } from './people.ts';
@@ -38,6 +38,11 @@ const INTERNATIONAL = 1 << 2;
 const MISSED = 1 << 3;
 /** An arriving party on its way out of the building. */
 const LEAVING = 1 << 4;
+/** A departing party that came in on another flight and changed here, never leaving the airside. */
+const CONNECTING = 1 << 5;
+/** Seconds between an arrival and an onward flight that a connection may have, at least and at most. */
+const CONNECT_SHORTEST = 45 * 60;
+const CONNECT_LONGEST = 4 * 3600;
 
 /** Travel party sizes and how often each comes. */
 const PARTY: [number, number][] = [[1, 52], [2, 30], [3, 11], [4, 7]];
@@ -75,6 +80,11 @@ export interface TerminalStats {
   /** People, not parties. */
   departing: { created: number; boarded: number; missed: number; cancelled: number };
   arriving: { created: number; left: number; alreadyGone: number };
+  /**
+   * Passengers who change here from one flight to another without leaving the airside: counted
+   * among the departing as well, as the travellers of their onward flight.
+   */
+  connecting: { created: number; boarded: number; missed: number };
   bags: { checked: number; loaded: number; leftBehind: number; misrouted: number; delivered: number; collected: number; lost: number };
   security: WaitStats;
   checkin: WaitStats;
@@ -110,6 +120,8 @@ export class Terminals {
   readonly events: { time: number; kind: string; text: string }[] = [];
   /** Checked bags in the bag system: pairs of the time each lot is ready to go out, and how many. */
   private readonly bagsMoving: number[] = [];
+  /** Per arriving flight being deplaned: the flights its connecting passengers may change to. */
+  private readonly onwardChoices = new Map<number, Visit[]>();
   /** Queues by place: check-in halls, checkpoints, customs, gates. */
   readonly queues = new Map<number, ServiceQueue>();
   private readonly queueId = new Map<number, number>();
@@ -148,6 +160,7 @@ export class Terminals {
     this.stats = {
       departing: { created: 0, boarded: 0, missed: 0, cancelled: 0 },
       arriving: { created: 0, left: 0, alreadyGone: 0 },
+      connecting: { created: 0, boarded: 0, missed: 0 },
       bags: { checked: 0, loaded: 0, leftBehind: 0, misrouted: 0, delivered: 0, collected: 0, lost: 0 },
       security: newWaits(),
       checkin: newWaits(),
@@ -396,7 +409,8 @@ export class Terminals {
       this.planned.add(visit.id);
       this.partiesOf.set(visit.id, new Set());
       const international = visit.rotation.internationalOut;
-      let left = visit.rotation.paxOut;
+      // The airline's connecting passengers fill the rest, coming off its arrivals airside.
+      let left = Math.round(visit.rotation.paxOut * (1 - (AIRLINE_BY_CODE[visit.rotation.airline]?.connecting ?? 0)));
       while (left > 0) {
         const size = Math.min(left, this.partySize());
         left -= size;
@@ -564,6 +578,7 @@ export class Terminals {
     const visit = this.book.visits.get(people.visit[person]);
     if (cancelled) this.stats.departing.cancelled += people.size[person];
     else this.stats.departing.missed += people.size[person];
+    if (!cancelled && people.flags[person] & CONNECTING) this.stats.connecting.missed += people.size[person];
     if (visit) this.partiesOf.get(visit.id)?.delete(person);
     this.leaveBuilding(person, visit ? this.areaOf(visit) : 'B', 'pickup');
   }
@@ -610,6 +625,7 @@ export class Terminals {
       const visit = this.book.visits.get(id);
       if (!visit || visit.deplaned >= visit.rotation.paxIn) {
         this.deplaning.delete(id);
+        this.onwardChoices.delete(id);
         continue;
       }
       let at = next;
@@ -624,10 +640,55 @@ export class Terminals {
     }
   }
 
+  /**
+   * A flight of the same airline that a passenger off `arrival` could change to: leaving between
+   * three quarters of an hour and four hours from now, still taking passengers, its travellers
+   * already planned, and its gate one that can be walked to from `from` without leaving the
+   * airside. Null when there is none. The choices are worked out once per arriving flight.
+   */
+  private onwardFlight(arrival: Visit, from: Place): Visit | null {
+    let choices = this.onwardChoices.get(arrival.id);
+    if (!choices) {
+      choices = [];
+      for (const v of this.book.visits.values()) {
+        if (v.id === arrival.id || v.rotation.airline !== arrival.rotation.airline || v.doorsClosed || v.state === 'done' || !this.partiesOf.has(v.id)) continue;
+        const wait = v.etd - this.now;
+        if (wait < CONNECT_SHORTEST || wait > CONNECT_LONGEST) continue;
+        const gate = this.holdroomOf(v);
+        if (!gate || this.plan.field(gate)[from.cell] === UNREACHABLE) continue;
+        choices.push(v);
+      }
+      this.onwardChoices.set(arrival.id, choices);
+    }
+    const open = choices.filter((v) => !v.doorsClosed);
+    return open.length ? this.rng.pick(open) : null;
+  }
+
   private spawnArriving(visit: Visit, size: number): void {
     const holdroom = this.holdroomOf(visit);
     if (!holdroom) return;
     const international = visit.rotation.customs;
+    // Some of an airline's passengers change here for another of its flights, walking airside to
+    // its gate: those who need not clear customs first, to a gate they can walk to.
+    if (!international && this.rng.chance(AIRLINE_BY_CODE[visit.rotation.airline]?.connecting ?? 0)) {
+      const onward = this.onwardFlight(visit, holdroom);
+      if (onward) {
+        const id = this.addParty(KIND.departing, FLOOR.airside, holdroom.x, holdroom.y, size, onward);
+        this.stats.departing.created += size;
+        this.stats.connecting.created += size;
+        if (id < 0) {
+          // No room for another walker: counted as having made the connection.
+          onward.boarded += size;
+          this.stats.departing.boarded += size;
+          this.stats.connecting.boarded += size;
+          return;
+        }
+        this.people.flags[id] |= CONNECTING;
+        // From here on as anyone else through security: the shops if there is time, then the gate.
+        this.people.setScript(id, [STEP.notify, EVENT.airside]);
+        return;
+      }
+    }
     // From a gate with no customs hall of its own, international passengers are bussed to the
     // nearest one, and leave the building from there.
     let start: Place = holdroom;
@@ -705,6 +766,7 @@ export class Terminals {
         }
         visit.boarded += people.size[person];
         this.stats.departing.boarded += people.size[person];
+        if (people.flags[person] & CONNECTING) this.stats.connecting.boarded += people.size[person];
         this.partiesOf.get(visit.id)?.delete(person);
         people.setScript(person, [STEP.leave, 0]);
         return;

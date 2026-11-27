@@ -69,7 +69,7 @@ const a = t.audit();
 console.log(`bags: ${JSON.stringify(s.bags)}`);
 console.log(`takings: ${Object.entries(s.takings).map(([k, v]) => `${k} $${Math.round(v)}`).join(', ')}`);
 const departingBalance = s.departing.created - s.departing.boarded - s.departing.missed - s.departing.cancelled - a.departingHere;
-console.log(`departing: ${JSON.stringify(s.departing)}; arriving: ${JSON.stringify(s.arriving)}`);
+console.log(`departing: ${JSON.stringify(s.departing)}; arriving: ${JSON.stringify(s.arriving)}; connecting, among the departing: ${JSON.stringify(s.connecting)}`);
 const lines = [...t.queues.entries()].map(([id, q]) => ({ name: t.plan.places[id].name, line: q.line.length, open: q.openServers, of: q.servers.length, longest: Math.round(q.longestWait / 60) })).filter((q) => q.longest > 0).sort((p, q) => q.longest - p.longest).slice(0, 8);
 console.log(`longest waits by queue (min): ${lines.map((q) => `${q.name} ${q.longest} (${q.open}/${q.of} open, ${q.line} in line)`).join('; ')}`);
 const arrivingBalance = s.arriving.created - s.arriving.left - a.arrivingHere;
