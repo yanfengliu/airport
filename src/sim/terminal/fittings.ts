@@ -125,6 +125,7 @@ export const EDGE = { solid: 0, glass: 1, door: 2, open: 3 } as const;
 
 /** A mapped room drawn with walls. */
 export interface WalledRoom {
+  floor: number;
   /** Index into the layout's indoor areas. */
   room: number;
   kind: AreaKind;
@@ -552,18 +553,18 @@ export function buildFittings(layout: Layout, plan: TerminalPlan, queues: Readon
   const claims = [...new Set([...plan.claim.values()].flatMap((c) => [c.domestic, c.international]))].sort((a, b) => a.id - b.id);
   for (const claim of claims) carousels(out, layout, claim);
   // Shops, cafés, lounges and toilets: the mapped rooms, each with walls and what is inside, where
-  // rooms mapped on different levels do not lie over one another.
-  const kept = keptRooms(layout);
+  // rooms shown on the same passenger floor do not lie over one another.
+  const kept = keptRooms(layout, plan);
   const byRoom = new Map<number, Place>();
   for (const p of plan.places) if (p.room >= 0 && (p.kind === 'shop' || p.kind === 'food' || p.kind === 'lounge')) byRoom.set(p.room, p);
   for (const room of kept) {
     const area = layout.terminals.areas[room];
     const place = byRoom.get(room);
-    const floor = place?.floor ?? FLOOR.airside;
+    const floor = place?.floor ?? (plan.mappedFloors.rooms[room] === 'arrivals' ? FLOOR.arrivals : FLOOR.airside);
     // A room the desks or lanes already stand in is not a room any more: no walls, no fittings.
     if (out.takenShare(floor, area.poly) > 0.05) continue;
     const front = frontOf(out, area.poly, floor);
-    out.rooms.push({ room, kind: area.kind, edges: walls(out, area.poly, floor) });
+    out.rooms.push({ room, kind: area.kind, floor, edges: walls(out, area.poly, floor) });
     if (!place) continue;
     if (place.kind === 'shop') shop(out, place, area.poly, front);
     else if (place.kind === 'food') food(out, place, area.poly, front);
@@ -572,17 +573,18 @@ export function buildFittings(layout: Layout, plan: TerminalPlan, queues: Readon
   return out.done();
 }
 
-/** The rooms that get walls and furniture: shops, cafés, lounges and toilets, upper levels first, none over another. */
-function keptRooms(layout: Layout): number[] {
+/** The rooms that get walls and furniture: shops, cafés, lounges and toilets, upper mapped levels first within each passenger floor. */
+function keptRooms(layout: Layout, plan: TerminalPlan): number[] {
   const kinds = new Set<AreaKind>(['shop', 'food', 'lounge', 'toilets']);
   const order = layout.terminals.areas
     .map((a, i) => ({ a, i }))
     .filter(({ a }) => kinds.has(a.kind))
     .sort((p, q) => q.a.level - p.a.level || p.i - q.i);
-  const covered = new Set<number>();
+  const coveredByFloor = { arrivals: new Set<number>(), departures: new Set<number>() };
   const key = (x: number, y: number): number => Math.floor(y / 2 + 10_000) * 100_000 + Math.floor(x / 2 + 10_000);
   const kept: number[] = [];
   for (const { a, i } of order) {
+    const covered = coveredByFloor[plan.mappedFloors.rooms[i]];
     const f = orient(a.poly);
     const cells: number[] = [];
     let overlap = 0;

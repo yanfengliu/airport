@@ -86,7 +86,7 @@ export const GSE_MODELS: Record<GseKind, GseModel> = {
 export const LOW_STAIRS = { from: 1.2, platform: 4.8, to: 3.45 };
 
 /** What a piece is out for: it shows while that goes on. */
-export type GseTask = 'push' | 'power' | 'bags' | 'catering' | 'fuel' | 'lavatory' | 'stairs' | 'bus' | 'arrival';
+export type GseTask = 'push' | 'power' | 'bags' | 'catering' | 'fuel' | 'inspection' | 'lavatory' | 'stairs' | 'bus' | 'arrival';
 
 /**
  * One piece of equipment: `along` metres from the middle of the aircraft towards its nose, `side`
@@ -102,16 +102,18 @@ export interface GsePlace {
   length?: number;
 }
 
+type RampJob = Pick<NonNullable<Aircraft['visit']['service']>['jobs']['fuel'], 'status'>;
+
 /** What the placement needs to know of an aircraft and its visit. */
 export interface Served {
   phase: Aircraft['phase'];
   type: Aircraft['type'];
-  visit: Pick<Aircraft['visit'], 'onBlockAt' | 'etd' | 'doorsClosed' | 'deplaned' | 'boardingOpen'> & { rotation: Pick<Aircraft['visit']['rotation'], 'paxIn'> };
+  visit: Pick<Aircraft['visit'], 'onBlockAt' | 'doorsClosed' | 'deplaned' | 'boardingOpen'> & {
+    rotation: Pick<Aircraft['visit']['rotation'], 'paxIn'>;
+    service: { jobs: Record<'fuel' | 'inspection', RampJob> } | null;
+  };
 }
 
-/** Seconds after reaching the stand that the fuel truck arrives, and before departure that it leaves. */
-const FUEL_FROM = 600;
-const FUEL_UNTIL = 900;
 /** Seconds after reaching the stand that the marshaller still stands before it. */
 const MARSHALLING = 90;
 /** Metres ahead of the nose the marshaller stands. */
@@ -197,7 +199,7 @@ export function turnaroundLayout(type: Aircraft['type'], remote: boolean): reado
   put('power', 'power', f.noseGearX + 1.5, -(ry + 1.4 + GSE_MODELS.power.left), 0);
   // An engineer between the power unit and the fuselage, facing the aircraft; the marshaller ahead
   // of the nose, facing it, while the aircraft comes onto the stand.
-  put('power', 'engineer', f.noseGearX + 1.5, -(ry + 0.7), Math.PI / 2);
+  put('inspection', 'engineer', f.noseGearX + 1.5, -(ry + 0.7), Math.PI / 2);
   put('arrival', 'marshaller', f.half + MARSHAL_AHEAD, 0, Math.PI);
 
   // Catering at the right rear door: behind the wing, whose trailing edge sweeps back further the
@@ -311,7 +313,8 @@ function busy(task: GseTask, a: Served, now: number, remote: boolean): boolean {
     case 'catering':
       return v.deplaned >= v.rotation.paxIn && !v.boardingOpen && !v.doorsClosed;
     case 'fuel':
-      return onStand > FUEL_FROM && v.etd - now > FUEL_UNTIL;
+    case 'inspection':
+      return v.service?.jobs[task].status === 'working';
     case 'lavatory':
       return onStand > LAVATORY[0] && onStand < LAVATORY[1];
     case 'arrival':

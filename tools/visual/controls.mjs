@@ -207,8 +207,17 @@ try {
   const picked = await sfo('window.__sfo.selected()');
   const ofVisit = await sfo(`(window.__sfo.sim().airside.aircraft.find((a) => a.visit.id === ${visit} && a.phase !== 'gone') || { id: null }).id`);
   await check('a board row picks and follows the aircraft of that flight', picked !== null && picked === ofVisit && (await sfo('window.__sfo.following()')) === picked, `row for visit ${visit}, picked #${picked}, its aircraft #${ofVisit}`);
+  const parked = await page.locator('.board-row[data-visit]').evaluateAll((rows) =>
+    rows.map((row) => Number(row.dataset.visit)).find((id) => window.__sfo.sim().airside.aircraft.some((a) => a.visit.id === id && a.phase === 'parked')));
+  if (parked !== undefined) await page.locator(`.board-row[data-visit="${parked}"]`).click();
+  await check('parked aircraft card shows fuel, maintenance and cabin cleaning', parked !== undefined && /Fuel uplift/.test(await page.textContent('.inspector')) && /inspection/i.test(await page.textContent('.inspector')) && /Cabin cleaning/.test(await page.textContent('.inspector')));
   await page.keyboard.press('Escape');
   await page.keyboard.press('KeyB');
+  for (const [cell, label] of [['cleaning', 'ground handling'], ['takings', 'staffed concessions'], ['curbFlow', 'flight-driven curb demand']]) {
+    const value = page.locator(`.ops [data-stat="${cell}"]`);
+    await value.scrollIntoViewIfNeeded();
+    await check(`operations shows ${label}`, /[0-9]/.test(await value.textContent()));
+  }
 
   // Weather: a southeast storm turns the runways round, through the changeover.
   await page.click('[data-weather="storm"]');
@@ -254,12 +263,13 @@ try {
   await page.click(`[data-checkpoint="${c}"]`);
   await run(300);
   await check('closing Checkpoint C is taken up', (await sfo('window.__sfo.operator().checkpoints')).includes(c) && (await page.textContent('.ops-log')).includes('Checkpoint C closed'));
-  for (const name of ['E', 'F', 'G']) {
+  for (const name of ['E', 'F', 'G', 'A', 'B', 'D']) {
     const id = await sfo(`window.__sfo.ops().checkpoints.find((cp) => cp.name === '${name}').id`);
     await page.click(`[data-checkpoint="${id}"]`);
     await run(200);
   }
-  await check('closing the last way through security to E, F and G is refused, and says why', /No other way/.test(await page.textContent('.ops-notice')), await page.textContent('.ops-notice'));
+  const remaining = (await sfo('window.__sfo.ops().checkpoints')).filter((c) => !c.closed).map((c) => c.name);
+  await check('closing the last open passenger checkpoint is refused, and says why', remaining.length === 1 && remaining[0] === 'D' && /No other way/.test(await page.textContent('.ops-notice')), await page.textContent('.ops-notice'));
 
   // The cut-away view: what is drawn, not just which button is lit.
   await page.click('[data-preset="terminals"]');
@@ -277,12 +287,35 @@ try {
   const roofsBack = await sfo('window.__sfo.layers()');
   await check('I a third time puts the roofs back', roofsBack.roofs && !roofsBack.departures && !roofsBack.arrivals);
 
+  // The map sends the real camera to a selected public place and draws its floor.
+  await page.keyboard.press('KeyM');
+  await page.getByRole('combobox', { name: 'Passenger terminal' }).selectOption({ label: 'Terminal 2' });
+  await page.getByRole('combobox', { name: 'Passenger destination' }).selectOption({ label: 'Gate D1' });
+  await page.waitForFunction(() => window.__sfo.settled(), null, { timeout: 30_000 });
+  const located = await page.evaluate(() => {
+    const gate = window.__sfo.sim().terminals.plan.holdroom.get('D1');
+    const v = window.__sfo.view();
+    return window.__sfo.layers().departures && Math.hypot(gate.x - v.x, gate.y - v.y) < 1;
+  });
+  await check('passenger map locates gate D1 inside Terminal 2', located && await page.isVisible('.terminal-map'));
+  await page.getByRole('combobox', { name: 'Passenger floor' }).selectOption('arrivals');
+  await page.getByRole('combobox', { name: 'Passenger destination' }).selectOption({ label: 'Baggage Claim D' });
+  await page.waitForFunction(() => window.__sfo.settled(), null, { timeout: 30_000 });
+  const claimLocated = await page.evaluate(() => {
+    const claim = window.__sfo.sim().terminals.plan.claim.get('D').domestic;
+    const v = window.__sfo.view();
+    return window.__sfo.layers().arrivals && Math.hypot(claim.x - v.x, claim.y - v.y) < 1;
+  });
+  await check('passenger map locates baggage claim on arrivals', claimLocated);
+  await page.keyboard.press('Escape');
+  await check('Escape closes the passenger map', !(await page.isVisible('.terminal-map')));
+
   // The day jump keeps what the viewer set up, and goes to the time asked for.
   await page.click('[data-jump="dusk"]');
   await page.waitForFunction(() => window.__sfo.settled(), null, { timeout: 60_000 });
   const after = await sfo('window.__sfo.ops()');
   const clock = await sfo('window.__sfo.time()');
-  await check('a jump in time goes to dusk and keeps the closed checkpoints', Math.abs(clock - 19 * 3600) < 120 && after.checkpoints.filter((cp) => cp.closed).length === 3, `${(clock / 3600).toFixed(2)} h; closed: ${after.checkpoints.filter((cp) => cp.closed).map((cp) => cp.name).join(' ')}`);
+  await check('a jump in time goes to dusk and keeps the closed checkpoints', Math.abs(clock - 19 * 3600) < 120 && after.checkpoints.filter((cp) => cp.closed).length === 6, `${(clock / 3600).toFixed(2)} h; closed: ${after.checkpoints.filter((cp) => cp.closed).map((cp) => cp.name).join(' ')}`);
 } catch (error) {
   results.push({ name: 'run', ok: false, detail: error.message });
   console.log(`FAIL  ${error.message}`);

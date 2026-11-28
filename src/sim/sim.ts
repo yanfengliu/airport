@@ -7,6 +7,7 @@ import { Airside } from './airside/airside.ts';
 import { usableStands } from './airside/stands.ts';
 import { SOUTHEAST_PLAN, WEST_PLAN } from './airside/tower.ts';
 import { CONFIG } from './config.ts';
+import { passengerHalls } from './terminal/passenger-halls.ts';
 import { Rng } from './rng.ts';
 import { RoadSim } from './roads/roads.ts';
 import { DAY, buildSchedule, type Rotation } from './schedule.ts';
@@ -68,7 +69,7 @@ export class Sim {
     this.usableStands = usable.span;
     const stands = layout.airfield.stands.filter((s) => usable.span.has(s.id)).map((s) => ({ ...s, span: usable.span.get(s.id)! }));
     this.rotations = buildSchedule(rng.fork('schedule'), stands, { visits: options.visitsPerDay ?? CONFIG.visitsPerDay, conflicts: usable.conflicts });
-    this.airside = new Airside(net, usable, this.rotations, rng.fork('airside'), options.startTime);
+    this.airside = new Airside(net, usable, this.rotations, rng.fork('airside'), options.startTime, options.people);
     if (options.weather) this.airside.setWeather(options.weather, true);
     // The middle of the terminals: the gates stand all round it.
     const gates = layout.airfield.stands.filter((s) => s.contact);
@@ -76,8 +77,7 @@ export class Sim {
     this.roads = options.roads ? new RoadSim(layout.roads, layout.land.bounds, centre, rng.fork('roads')) : null;
     this.transit = options.roads ? buildTransit(layout.rail) : null;
     this.terminals = options.people ? new Terminals(layout, this.airside.book, rng.fork('terminals'), options.startTime) : null;
-    // With people simulated, they are counted off and on the aircraft one party at a time.
-    if (this.terminals) this.airside.passengersElsewhere = true;
+    this.roads?.airport.connectFlights(this.airside.book, layout.airfield.stands, this.terminals?.plan ?? passengerHalls(layout));
     // With trains as well, those who come and go by AirTrain and BART ride them.
     if (this.terminals && this.transit) this.terminals.connectTrains(this.transit);
   }

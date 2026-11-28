@@ -3,6 +3,7 @@
 // keeping to the right-hand track so the two directions of a line do not share one.
 
 import type { Rail, RailStation } from '../../shared/layout.ts';
+import { CONFIG } from '../config.ts';
 import { Transit, makeRoute, type Stop } from './trains.ts';
 
 type Kind = Rail['lines'][number]['kind'];
@@ -270,7 +271,8 @@ function loopRoute(track: Track, id: string, calls: RailStation[], taken: Set<st
   let total = 0;
   for (let i = 0; i < n; i += 1) {
     const leg = track.path(best[i], best[(i + 1) % n])!;
-    stops.push({ name: kept[i].name, s: total, dwell });
+    // The closed station remains a waypoint on both tracks. Neither line opens its doors there.
+    if (kept[i].name !== CONFIG.transit.closedAirTrainStation) stops.push({ name: kept[i].name, s: total, dwell });
     for (let k = i === 0 ? 0 : 3; k < leg.pts.length; k += 3) pts.push(leg.pts[k], leg.pts[k + 1], leg.pts[k + 2]);
     total += leg.len;
   }

@@ -335,9 +335,7 @@ export class People {
           this.moveTowards(id, this.tx[id], this.ty[id], this.speed[id] * 1.2 * dt);
           break;
         case ACT.served:
-          // By way of the lane's mouth, where there is one, so as not to cut through the next lanes.
-          if (Number.isNaN(this.viaX[id])) this.moveTowards(id, this.tx[id], this.ty[id], this.speed[id] * dt);
-          else if (this.moveTowards(id, this.viaX[id], this.viaY[id], this.speed[id] * dt)) this.viaX[id] = NaN;
+          this.approachServer(id, this.speed[id] * dt);
           break;
         case ACT.wait:
           if (now >= this.until[id]) this.next(id);
@@ -479,6 +477,24 @@ export class People {
       cell = now;
       this.h[id] = this.floorHeight(this.floor[id], now);
     }
+  }
+
+  /** Someone called from the side of a bank of lanes first gets behind their mouths, then
+   * crosses the clear aisle to their own lane. A diagonal from the side cuts through its neighbours. */
+  private approachServer(id: number, distance: number): void {
+    const mx = this.viaX[id], my = this.viaY[id];
+    if (Number.isNaN(mx)) {
+      this.moveTowards(id, this.tx[id], this.ty[id], distance);
+      return;
+    }
+    const dx = this.tx[id] - mx, dy = this.ty[id] - my;
+    const length2 = dx * dx + dy * dy;
+    const ahead = length2 ? ((this.x[id] - mx) * dx + (this.y[id] - my) * dy) / length2 : 0;
+    if (ahead > 0.01) {
+      this.moveTowards(id, this.x[id] - ahead * dx, this.y[id] - ahead * dy, distance);
+      return;
+    }
+    if (this.moveTowards(id, mx, my, distance)) this.viaX[id] = NaN;
   }
 
   /** Step towards a point; true once there. */

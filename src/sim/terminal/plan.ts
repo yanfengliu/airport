@@ -9,7 +9,10 @@
 // airside. A concourse's checkpoint is where its walking route from the hall crosses into it.
 // Rooms the map does have are used where they are; the rest are placed by those rules.
 
+import { mappedFloors } from './mapped-floors.ts';
+import { courtyard3 } from '../../shared/courtyard3.ts';
 import type { ClosedRoom, IndoorFloor, Layout, PolygonData } from '../../shared/layout.ts';
+import { CONFIG } from '../config.ts';
 import { insidePolygon, withinAny } from './fittings.ts';
 import { NavGrid, UNREACHABLE } from './grid.ts';
 
@@ -89,6 +92,7 @@ export interface Place {
 }
 
 export interface TerminalPlan {
+  mappedFloors: ReturnType<typeof mappedFloors>;
   grids: NavGrid[];
   /** The rooms closed to travellers that stay closed: none of them cuts off floor that could be walked to without it. */
   closed: ClosedRoom[];
@@ -267,7 +271,12 @@ export function buildTerminalPlan(layout: Layout, airlines: readonly { code: str
   }
   const road = new SegmentIndex(segments, HALL_DEPTH);
   const landside = (x: number, y: number): boolean => road.distance(x, y) < HALL_DEPTH;
-  const whole = new NavGrid(buildings, CELL);
+  // Courtyard 3 is a departures-level gallery, mapped separately from the two terminal shells.
+  // Only passengers already on the gate side may use its floor outside those shells.
+  const gallery = courtyard3(layout.terminals);
+  const departures = gallery ? [...buildings, gallery] : buildings;
+  const floorPolygons = [buildings, buildings, departures];
+  const whole = new NavGrid(departures, CELL);
   const doorsByArea = new Map<string, Vec[]>();
   for (const s of layout.airfield.stands) {
     if (!s.contact || !s.door || !/^[A-G]$/.test(s.area)) continue;
@@ -275,7 +284,7 @@ export function buildTerminalPlan(layout: Layout, airlines: readonly { code: str
     list.push(s.door);
     doorsByArea.set(s.area, list);
   }
-  const connectors = postSecurityConnectors(whole, new NavGrid(buildings, CELL, (x, y) => !landside(x, y)), doorsByArea);
+  const connectors = postSecurityConnectors(whole, new NavGrid(departures, CELL, (x, y) => !landside(x, y)), doorsByArea);
   // The floors people walk: the halls as mapped, without the rooms closed to travellers in them.
   // A closed room at a gate's door is open after all, and so is one whose closing would split
   // floor that could be walked across without it, as a corridor mapped as a room would.
@@ -289,7 +298,7 @@ export function buildTerminalPlan(layout: Layout, airlines: readonly { code: str
   if (known) {
     for (const floor of [FLOOR.arrivals, FLOOR.landside, FLOOR.airside]) {
       const inRoom = withinAny(closed.filter((r) => r.floor === floorOf(floor)).map((r) => r.poly));
-      grids[floor] = new NavGrid(buildings, CELL, (x, y) => keep[floor](x, y) && !inRoom(x, y));
+      grids[floor] = new NavGrid(floorPolygons[floor], CELL, (x, y) => keep[floor](x, y) && !inRoom(x, y));
     }
   }
   for (let round = 0; round < 6 && !known; round += 1) {
@@ -297,9 +306,9 @@ export function buildTerminalPlan(layout: Layout, airlines: readonly { code: str
     for (const floor of [FLOOR.arrivals, FLOOR.landside, FLOOR.airside]) {
       const rooms = closed.filter((r) => r.floor === floorOf(floor));
       const inRoom = withinAny(rooms.map((r) => r.poly));
-      const grid = new NavGrid(buildings, CELL, (x, y) => keep[floor](x, y) && !inRoom(x, y));
+      const grid = new NavGrid(floorPolygons[floor], CELL, (x, y) => keep[floor](x, y) && !inRoom(x, y));
       grids[floor] = grid;
-      const open = new NavGrid(buildings, CELL, keep[floor]);
+      const open = new NavGrid(floorPolygons[floor], CELL, keep[floor]);
       const was = components(open);
       const is = components(grid);
       // Within each stretch of floor that was one, the parts it now falls into, by size.
@@ -474,7 +483,7 @@ export function buildTerminalPlan(layout: Layout, airlines: readonly { code: str
     if (cell >= 0) pushWay(add(kind, name, FLOOR.landside, grid.cx[cell], grid.cy[cell]));
   };
   for (const s of layout.rail.stations) {
-    if (s.kind === 'caltrain') continue;
+    if (s.kind === 'caltrain' || (s.kind === 'airtrain' && s.name === CONFIG.transit.closedAirTrainStation)) continue;
     viaWalkway(s.kind === 'bart' ? 'bart' : 'airtrain', s.name, s.x, s.y, STATION_WALK);
   }
   for (const b of layout.buildings.buildings) {
@@ -495,6 +504,7 @@ export function buildTerminalPlan(layout: Layout, airlines: readonly { code: str
 
   const fields = new Map<number, Uint16Array>();
   return {
+    mappedFloors: mappedFloors(layout.terminals, places),
     grids,
     closed,
     places,

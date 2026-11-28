@@ -10,6 +10,7 @@ import type { Rng } from '../rng.ts';
 import type { Rotation } from '../schedule.ts';
 import { Aircraft, approachSeconds, leadInPath, pushPlansFor, standPath, wayInPath, waysIn, type AirsideServices } from './aircraft.ts';
 import { FlightBook, NOT_YET, TAXI_IN_NOMINAL, type Visit } from './flights.ts';
+import { GroundService } from './ground-service.ts';
 import { flowCosts } from './flows.ts';
 import { CLEAR_WEST, pairedApproaches, planFor, type Weather } from '../weather.ts';
 import type { UsableStands } from './stands.ts';
@@ -52,6 +53,7 @@ export class Airside {
   readonly traffic: Traffic;
   readonly tower: Tower;
   readonly book: FlightBook;
+  private readonly groundService: GroundService;
   readonly aircraft: Aircraft[] = [];
   readonly events: SimEvent[] = [];
   now: number;
@@ -76,13 +78,14 @@ export class Airside {
   private nextId = 1;
   private nextHousekeeping = 0;
   /** Set when the terminals simulate passengers: they then count people off and on. */
-  passengersElsewhere = false;
+  private readonly passengersElsewhere: boolean;
   /** The weather the runways are run for; set with `setWeather`. */
   weather: Weather = CLEAR_WEST;
   /** Totals for the tests and the operations panel. */
   totals = { arrived: 0, departed: 0, gateChanges: 0, longestWait: 0, heldForStand: 0 };
 
-  constructor(net: TaxiNet, usable: UsableStands, rotations: readonly Rotation[], rng: Rng, startTime: number) {
+  constructor(net: TaxiNet, usable: UsableStands, rotations: readonly Rotation[], rng: Rng, startTime: number, passengersElsewhere = false) {
+    this.passengersElsewhere = passengersElsewhere;
     this.net = net;
     this.usable = usable.span;
     this.conflicts = usable.conflicts;
@@ -98,6 +101,8 @@ export class Airside {
     this.book = new FlightBook(rotations);
     this.now = startTime;
     this.startTime = startTime;
+    this.nextHousekeeping = startTime;
+    this.groundService = new GroundService(rng.fork('ground-service'));
     this.svc = {
       net: this.net,
       traffic: this.traffic,
@@ -133,6 +138,11 @@ export class Airside {
       const aircraft = this.create(visit);
       if (!aircraft.startParked(this.svc)) this.discard(aircraft);
     }
+    const onStand = this.aircraft.map((a) => a.visit);
+    if (!passengersElsewhere) {
+      for (const v of onStand) if (startTime - v.onBlockAt > CONFIG.groundService.prestartPassengersGoneAfter) v.deplaned = v.rotation.paxIn;
+    }
+    this.groundService.step(onStand, startTime, true);
     // Anything due in before the start that is not parked has been and gone.
     for (const visit of this.book.visits.values()) {
       if (visit.state === 'scheduled' && visit.std <= startTime) visit.state = 'done';
@@ -579,10 +589,11 @@ export class Airside {
     this.schedule();
   }
 
-  /** Time-driven turnaround: when boarding opens, when doors close, when to ask to push. */
+  /** Dispatch stand crews, release the cleaned cabin to gate staff, then release the aircraft to ground control. */
   private turnarounds(): void {
-    for (const a of this.aircraft) {
-      if (a.phase !== 'parked') continue;
+    const parked = this.aircraft.filter((a) => a.phase === 'parked');
+    this.groundService.step(parked.map((a) => a.visit), this.now);
+    for (const a of parked) {
       const v = a.visit;
       const type = a.type;
       const earliest = v.onBlockAt + type.turn[0] * 60;
@@ -591,14 +602,25 @@ export class Airside {
       // When the terminals are simulated they count people off and on, and close the doors;
       // otherwise people get off and on at a steady rate.
       if (!this.passengersElsewhere && v.deplaned < v.rotation.paxIn && this.now > v.onBlockAt + 100) v.deplaned = Math.min(v.rotation.paxIn, v.deplaned + 5 * 0.45 * type.doors);
+      const jobs = v.service!.jobs;
+      // Let the gate and flight board know as soon as the assigned work forecasts a delay.
+      const cleanFinish = jobs.cleaning.endsAt;
+      const boardSeconds = v.rotation.paxOut * CONFIG.groundService.boardingSecondsPerPassengerPerDoor / type.doors;
+      const afterCabin = cleanFinish + boardSeconds + CONFIG.turnaround.doorsClose * 60;
+      for (const [finish, reason] of [[jobs.fuel.endsAt, 'Fuel service'], [jobs.inspection.endsAt, 'Maintenance inspection'], [afterCabin, 'Cabin turnaround']] as const) {
+        if (Number.isFinite(finish) && finish > v.etd) {
+          v.etd = finish;
+          v.delayNote = reason;
+        }
+      }
       const boardingAt = v.etd - CONFIG.turnaround.boardingStarts[type.body] * 60;
-      if (!v.boardingOpen && !v.doorsClosed && this.now >= boardingAt && v.deplaned >= v.rotation.paxIn) v.boardingOpen = true;
+      if (!v.boardingOpen && !v.doorsClosed && jobs.cleaning.status === 'done' && this.now >= boardingAt && v.deplaned >= v.rotation.paxIn) v.boardingOpen = true;
       if (!this.passengersElsewhere && v.boardingOpen && v.boarded < v.rotation.paxOut) v.boarded = Math.min(v.rotation.paxOut, v.boarded + 5 * 0.3 * type.doors);
       if (!v.doorsClosed && v.boardingOpen && v.boarded >= v.rotation.paxOut && this.now >= v.etd - CONFIG.turnaround.doorsClose * 60) {
         v.doorsClosed = true;
         v.boardingOpen = false;
       }
-      if (v.doorsClosed && this.now >= v.etd) a.tryPushback(this.svc);
+      if (v.doorsClosed && jobs.fuel.status === 'done' && jobs.inspection.status === 'done' && jobs.cleaning.status === 'done' && this.now >= v.etd) a.tryPushback(this.svc);
     }
   }
 

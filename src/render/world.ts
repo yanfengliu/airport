@@ -1,8 +1,9 @@
 // The static world: everything that does not move, built once from the layout.
 
 import * as THREE from 'three';
-import type { Building, Layout } from '../shared/layout.ts';
-import { withinAny } from '../sim/terminal/fittings.ts';
+import { courtyard3 } from '../shared/courtyard3.ts';
+import type { Building, Layout, TerminalBuilding } from '../shared/layout.ts';
+import { insidePolygon, withinAny } from '../sim/terminal/fittings.ts';
 import { Lights } from './lights.ts';
 import type { Models } from './models/library.ts';
 import { airfieldFurniture, airfieldLamps, buildAirfieldProps } from './static/airfield-props.ts';
@@ -15,7 +16,7 @@ import { buildGround } from './static/ground.ts';
 import { buildTower } from './static/landmarks.ts';
 import { buildRail } from './static/rail.ts';
 import { buildRoads } from './static/roads.ts';
-import { buildTerminalShells } from './static/terminals.ts';
+import { INTERNATIONAL_MAIN_HALL, buildTerminalShells } from './static/terminals.ts';
 import { facadeTextures } from './textures.ts';
 
 export interface FrameView {
@@ -47,10 +48,10 @@ export interface StaticWorld {
  * on the glass and flicker against it. The tower's mapped shaft and cab, which stand on a terminal's
  * roof, are neither: the tower is our model of it (src/render/static/landmarks.ts).
  */
-export function mappedBuildings(layout: Layout, replaced: ReadonlySet<Building> = new Set()): { own: Building[]; aboveRoofs: Building[] } {
+export function mappedBuildings(layout: Layout, replaced: ReadonlySet<Building> = new Set()): { own: Building[]; aboveRoofs: Building[]; mainHallParts: Building[] } {
   const [towerX, towerY] = layout.airfield.tower;
   const mappedTower = (b: Building): boolean => b.height > 40 && Math.hypot(b.poly.outer[0] - towerX, b.poly.outer[1] - towerY) < 40;
-  const terminalOf = (outer: number[]): { height: number } | null => {
+  const terminalOf = (outer: number[]): TerminalBuilding | null => {
     for (const t of layout.terminals.buildings) {
       const ring = t.poly.outer;
       let within = 0;
@@ -59,15 +60,21 @@ export function mappedBuildings(layout: Layout, replaced: ReadonlySet<Building> 
     }
     return null;
   };
+  const gallery = courtyard3(layout.terminals);
   const own: Building[] = [];
   const aboveRoofs: Building[] = [];
+  const mainHallParts: Building[] = [];
   for (const b of layout.buildings.buildings) {
     if (mappedTower(b) || replaced.has(b)) continue;
     const terminal = terminalOf(b.poly.outer);
-    if (!terminal) own.push(b);
+    // Courtyard 3's office stands over the passenger gallery. It comes away with the
+    // terminal roofs so a cut-away shows the walk between the two concourses.
+    if (!terminal && b.kind === 'office' && gallery?.outer.some((x, i, ring) => i % 2 === 0 && insidePolygon(b.poly, x, ring[i + 1]))) aboveRoofs.push(b);
+    else if (!terminal) own.push(b);
+    else if (terminal.name === INTERNATIONAL_MAIN_HALL) mainHallParts.push(b);
     else if (b.height > terminal.height + 0.3) aboveRoofs.push({ ...b, minHeight: Math.max(b.minHeight ?? 0, terminal.height) });
   }
-  return { own, aboveRoofs };
+  return { own, aboveRoofs, mainHallParts };
 }
 
 /** `models`: the library's models, for what is drawn with them; without them it is drawn plainly. */
@@ -97,7 +104,7 @@ export function buildStaticWorld(layout: Layout, models: Models = new Map()): St
   group.add(buildings.group);
   glows.push(...buildings.glows);
 
-  const terminals = buildTerminalShells(layout.terminals, facades);
+  const terminals = buildTerminalShells(layout.terminals, facades, drawn.mainHallParts);
   // The parts of the terminals above their roofs only: the houses are in the buildings above already.
   const roofParts = buildBuildings({ buildings: drawn.aboveRoofs, boxes: [] }, facades, () => false, false);
   terminals.shell.add(roofParts.group);

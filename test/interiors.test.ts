@@ -182,7 +182,7 @@ describe('the terminals, furnished', () => {
   });
 
   it("raises no room's wall or glass through a seat or a piece of furniture", () => {
-    const { f } = fitted();
+    const { t, f } = fitted();
     const level = (floor: number): number => (floor === FLOOR.arrivals ? 0 : 1);
     const toSegment = (px: number, py: number, ax: number, ay: number, bx: number, by: number): number => {
       const [dx, dy] = [bx - ax, by - ay];
@@ -192,15 +192,18 @@ describe('the terminals, furnished', () => {
     const walls: { ax: number; ay: number; bx: number; by: number; level: number }[] = [];
     for (const room of f.rooms) {
       const area = layout.terminals.areas[room.room];
+      const actualLevel = level(room.floor);
+      expect(actualLevel).toBe(t.plan.mappedFloors.rooms[room.room] === 'arrivals' ? 0 : 1);
       const ring = area.poly.outer;
       const n = ring.length / 2;
       room.edges.forEach((edge, i) => {
         if (edge !== EDGE.solid && edge !== EDGE.glass) return;
         const j = (i + 1) % n;
-        walls.push({ ax: ring[i * 2], ay: ring[i * 2 + 1], bx: ring[j * 2], by: ring[j * 2 + 1], level: area.kind === 'claim' ? 0 : 1 });
+        walls.push({ ax: ring[i * 2], ay: ring[i * 2 + 1], bx: ring[j * 2], by: ring[j * 2 + 1], level: actualLevel });
       });
     }
     expect(walls.length).toBeGreaterThan(300);
+    expect(walls.some((wall) => wall.level === 0)).toBe(true);
     const through: string[] = [];
     for (const g of f.groups) {
       for (let k = g.first; k < g.first + g.count; k += 1) {

@@ -1,5 +1,6 @@
 // Terminals section: the terminal buildings and what is mapped inside them.
 
+import { COURTYARD_3 } from '../../src/shared/courtyard3.ts';
 import { closestOnSegment, pointInRing, ringArea, ringCentroid, round1, type Vec2 } from '../../src/shared/geo.ts';
 import type { AreaKind, ClosedRoom, IndoorArea, IndoorFloor, IndoorWall, Poi, PoiKind, PolygonData, TerminalBuilding, Terminals } from '../../src/shared/layout.ts';
 import { flat } from './airfield.ts';
@@ -99,7 +100,10 @@ export function buildTerminals(osm: OsmData, log: (line: string) => void): Termi
   for (const w of osm.ways.values()) {
     if (!isIndoor(w.tags)) continue;
     const ring = osm.wayRing(w);
-    if (ring) addArea(w.tags, { outer: ring, holes: [] });
+    // SFO identifies this 570-foot gallery as the T2–T3 post-security connector. The
+    // level-1 footway (1173346238) traverses this same public indoor polygon.
+    const tags = w.id === 1241804696 && w.tags.indoor === 'corridor' ? { ...w.tags, name: COURTYARD_3 } : w.tags;
+    if (ring) addArea(tags, { outer: ring, holes: [] });
   }
   for (const r of osm.relations.values()) {
     if (!isIndoor(r.tags)) continue;

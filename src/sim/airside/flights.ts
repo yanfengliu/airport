@@ -1,6 +1,7 @@
 // The flight book: each day's instance of every scheduled visit, with its estimated and actual
 // times and the status a flight board would show.
 
+import type { Turnaround } from './ground-service.ts';
 import { DESTINATIONS } from '../fleet.ts';
 import { DAY, type Rotation } from '../schedule.ts';
 
@@ -32,6 +33,7 @@ export interface Visit {
   delayNote: string;
   aircraft: number;
   /** Passengers off and on so far, and whether doors are open for each. */
+  service: Turnaround | null;
   deplaned: number;
   boarded: number;
   boardingOpen: boolean;
@@ -102,6 +104,7 @@ export class FlightBook {
           departureRunway: '',
           delayNote: '',
           aircraft: -1,
+          service: null,
           deplaned: 0,
           boarded: 0,
           boardingOpen: false,

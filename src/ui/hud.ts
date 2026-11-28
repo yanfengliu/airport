@@ -22,8 +22,9 @@ export const INSIDE: { id: Inside; label: string; title: string }[] = [
 ];
 
 /** Panels the top bar opens and closes, with the key that does the same. */
-export type PanelId = 'flights' | 'ops';
+export type PanelId = 'flights' | 'ops' | 'map';
 export const PANELS: { id: PanelId; label: string; key: string; title: string }[] = [
+  { id: 'map', label: 'Map', key: 'M', title: 'Passenger terminal maps and destinations (M)' },
   { id: 'flights', label: 'Flights', key: 'B', title: 'Departure and arrival boards (B)' },
   { id: 'ops', label: 'Operations', key: 'O', title: 'Runways, weather, delays, security, bags and roads (O)' },
 ];

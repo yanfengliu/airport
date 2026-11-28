@@ -14,8 +14,10 @@ import { NOT_YET, type FlightBook, type Visit } from '../airside/flights.ts';
 import { CONFIG } from '../config.ts';
 import { AIRCRAFT, AIRLINES, AIRLINE_BY_CODE } from '../fleet.ts';
 import type { Rng } from '../rng.ts';
+import { Concessions, tradingHours, type ConcessionSummary } from './concessions.ts';
 import { BOOTH_FROM_PASSENGER, BRANDS, DESK_FROM_PASSENGER, LANE, SIZE, buildFittings, InnerWalls, insidePolygon, orient, withinAny, type Fittings, type SeatKind } from './fittings.ts';
 import { UNREACHABLE } from './grid.ts';
+import { arrivalStart, holdroomForStand } from './passenger-halls.ts';
 import { People, POSE, ROLE, STEP } from './people.ts';
 import { FLOOR, FLOOR_HEIGHT, buildTerminalPlan, type Place, type PlaceKind, type TerminalPlan } from './plan.ts';
 import { ServiceQueue } from './queue.ts';
@@ -55,7 +57,7 @@ const LOOKAHEAD = 5 * 3600;
 const HOUSEKEEPING = 5;
 /** At a mid-day start, travellers who came more than this many seconds before are through security. */
 const WARM_THROUGH = 2400;
-const { shiftsFrom: SHIFTS_FROM, shiftHours: SHIFT_HOURS, shopsOpen: SHOPS_OPEN } = CONFIG.staff;
+const { shiftsFrom: SHIFTS_FROM, shiftHours: SHIFT_HOURS } = CONFIG.staff;
 const { lateShare: LATE_SHARE, lateLead: LATE_LEAD } = CONFIG.travellers;
 /** Metres from its gate within which a party can be boarding that gate's flight. */
 const GATE_REACH = 60;
@@ -64,6 +66,15 @@ const EVENT = { airside: 1, board: 2, atClaim: 3, leave: 4, shop: 5, roam: 6, ab
 /** Boarding is called in this many groups, over this share of the time from the start of boarding to the doors closing. */
 const BOARDING_GROUPS = 6;
 const GROUPS_OVER = 0.5;
+
+/** Leave time to walk to the gate and board even when the cabin was released late. */
+export function boardingGroupDelay(visit: Visit, openedAt: number, rng: Rng): number {
+  const normalWindow = (CONFIG.turnaround.boardingStarts[AIRCRAFT[visit.rotation.type].body] - CONFIG.turnaround.doorsClose) * 60;
+  const timeLeft = visit.etd - CONFIG.turnaround.doorsClose * 60 - openedAt;
+  const interval = GROUPS_OVER * Math.max(0, Math.min(normalWindow, timeLeft)) / BOARDING_GROUPS;
+  return Math.floor(rng.int(BOARDING_GROUPS) * interval + rng.range(0, Math.min(40, interval)));
+}
+
 /** Suitcases drawn with a party at most. */
 const LUGGAGE_SHOWN = 4;
 /** How long a check-in's bag drop is remembered, for the bags riding its belt, seconds. */
@@ -218,6 +229,7 @@ export class Terminals {
   private readonly withinWalls: (x: number, y: number) => boolean;
   private readonly nearShops = new Map<number, Place[]>();
   private readonly shops: Place[];
+  private readonly concessions: Concessions;
   private readonly pending: Pending[] = [];
   private pendingAt = 0;
   private readonly planned = new Set<number>();
@@ -293,23 +305,10 @@ export class Terminals {
       byTrain: { off: 0, on: 0 },
     };
     this.shops = this.plan.places.filter((p) => p.kind === 'shop' || p.kind === 'food' || p.kind === 'lounge');
+    this.concessions = new Concessions(this.shops.map((p) => ({ ...p, area: p.area || this.nearestArea(p) })), rng.fork('concessions'), now);
     for (const s of layout.airfield.stands) {
-      const own = this.plan.holdroom.get(s.id);
-      if (own) {
-        this.holdroomOfStand.set(s.id, own);
-        continue;
-      }
-      // A remote stand boards from the nearest gate, by bus.
-      let best: Place | null = null;
-      let bestD = Infinity;
-      for (const h of this.plan.holdroom.values()) {
-        const d = Math.hypot(h.x - s.x, h.y - s.y);
-        if (d < bestD) {
-          bestD = d;
-          best = h;
-        }
-      }
-      if (best) this.holdroomOfStand.set(s.id, best);
+      const holdroom = holdroomForStand(this.plan, s);
+      if (holdroom) this.holdroomOfStand.set(s.id, holdroom);
     }
     this.people.events = {
       notify: (person, event) => this.onNotify(person, event),
@@ -869,8 +868,9 @@ export class Terminals {
   private shopsNear(holdroom: Place): Place[] {
     let list = this.nearShops.get(holdroom.id);
     if (!list) {
+      const walkToGate = this.plan.field(holdroom);
       list = this.shops
-        .filter((s) => s.floor === FLOOR.airside)
+        .filter((s) => s.floor === FLOOR.airside && walkToGate[s.cell] !== UNREACHABLE)
         .map((s) => ({ s, d: Math.hypot(s.x - holdroom.x, s.y - holdroom.y) }))
         .filter((e) => e.d < 450)
         .sort((a, b) => a.d - b.d)
@@ -879,6 +879,15 @@ export class Terminals {
       this.nearShops.set(holdroom.id, list);
     }
     return list;
+  }
+
+  private staffedShop(id: number): boolean {
+    const post = this.posts.get(`shop:${id}`);
+    return !!post && !!this.people.alive[post.person];
+  }
+
+  private canVisitShop(shop: Place, size: number): boolean {
+    return shop.kind === 'lounge' || this.concessions.canServe(shop.id, size, this.now, this.staffedShop(shop.id));
   }
 
   private holdroomOf(visit: Visit): Place | null {
@@ -984,6 +993,7 @@ export class Terminals {
   private housekeeping(first: boolean): void {
     const now = this.now;
     this.nextHousekeeping = now + HOUSEKEEPING;
+    this.concessions.advance(now);
     this.planDepartures(now, first);
     this.startDeplaning(now, first);
     this.manageBoarding(now);
@@ -1112,7 +1122,7 @@ export class Terminals {
       this.stats.bags.loaded += bags;
     };
     // Started in mid-day after this flight began boarding: the party is on board.
-    if (sinceStart > 0 && this.now >= boardingAt && !visit.doorsClosed) {
+    if (sinceStart > 0 && visit.service?.jobs.cleaning.status === 'done' && this.now >= boardingAt && !visit.doorsClosed) {
       this.stats.departing.placed += size;
       unseen();
       return;
@@ -1198,7 +1208,7 @@ export class Terminals {
       return;
     }
     const spare = this.boardingStarts(visit) - this.now;
-    const shops = this.shopsNear(holdroom);
+    const shops = this.shopsNear(holdroom).filter((shop) => this.canVisitShop(shop, this.people.size[person]));
     if (visit.boardingOpen || spare < 1500 || !shops.length || !this.rng.chance(0.7)) {
       this.people.setScript(person, [STEP.walk, this.field(holdroom), STEP.notify, EVENT.atGate]);
       return;
@@ -1253,28 +1263,49 @@ export class Terminals {
     const spare = this.boardingStarts(visit) - this.now;
     const dwell = Math.round(Math.min(spare - 900, this.rng.range(600, 2400)));
     const toGate = [STEP.walk, this.field(holdroom), STEP.notify, EVENT.atGate];
-    if (dwell < 120 || visit.boardingOpen) {
+    if (dwell < 120 || visit.boardingOpen || !this.canVisitShop(shop, this.people.size[person])) {
       this.claimAt[person] = -1;
       this.people.setScript(person, toGate);
       return;
     }
     const aisles = this.aislePoints.get(shop.id);
     const stand = (): number => (aisles?.length ? this.rng.pick(aisles) : this.rng.pick(this.around(shop, 7, 10)));
-    if (shop.kind === 'food' || shop.kind === 'lounge') {
-      const seat = this.takeSeats(person, shop, shop.kind);
+    if (shop.kind === 'lounge') {
+      const seat = this.takeSeats(person, shop, 'lounge');
       const here = seat >= 0 ? [STEP.sit, seat] : [STEP.point, stand()];
-      this.people.setScript(person, [...here, STEP.notify, EVENT.shop, STEP.wait, dwell, ...toGate]);
+      this.claimAt[person] = -1;
+      this.people.setScript(person, [...here, STEP.wait, dwell, ...toGate]);
       return;
     }
-    // A shop: from one shelf to another.
+    if (shop.kind === 'food') {
+      this.people.setScript(person, [STEP.point, stand(), STEP.notify, EVENT.shop]);
+      return;
+    }
+    // Browse the shelves, then pay at the till (the first aisle point where one fits).
     const half = Math.round(dwell / 2);
-    this.people.setScript(person, [STEP.point, stand(), STEP.notify, EVENT.shop, STEP.wait, half, STEP.point, stand(), STEP.wait, dwell - half, ...toGate]);
+    this.people.setScript(person, [STEP.point, stand(), STEP.wait, half, STEP.point, stand(), STEP.wait, dwell - half, STEP.point, aisles?.[0] ?? stand(), STEP.notify, EVENT.shop]);
   }
 
-  /** How long a party waits after boarding starts before its group is called, seconds. */
-  private groupCall(visit: Visit): number {
-    const window = (CONFIG.turnaround.boardingStarts[AIRCRAFT[visit.rotation.type].body] - CONFIG.turnaround.doorsClose) * 60;
-    return Math.round(this.rng.int(BOARDING_GROUPS) * ((window * GROUPS_OVER) / BOARDING_GROUPS) + this.rng.range(0, 40));
+  /** A customer has reached the till. A café customer takes a seat once the meal is paid for. */
+  private checkout(person: number, visit: Visit): void {
+    const shop = this.plan.places[this.claimAt[person]];
+    const holdroom = this.holdroomOf(visit);
+    this.claimAt[person] = -1;
+    if (!holdroom) return;
+    const toGate = [STEP.walk, this.field(holdroom), STEP.notify, EVENT.atGate];
+    this.people.setScript(person, toGate);
+    if (!shop || visit.boardingOpen || visit.doorsClosed) return;
+    if (shop.kind === 'shop' && !this.rng.chance(CONFIG.concessions.retailPurchaseChance)) return;
+    const sale = this.concessions.sell(shop.id, this.people.size[person], this.now, this.staffedShop(shop.id));
+    if (!sale) return;
+    this.stats.takings[sale.area] = (this.stats.takings[sale.area] ?? 0) + sale.cents / 100;
+    if (shop.kind === 'food') {
+      const dwell = Math.round(Math.min(this.boardingStarts(visit) - this.now - 900, this.rng.range(600, 2400)));
+      if (dwell < 120) return;
+      const seat = this.takeSeats(person, shop, 'food');
+      // A customer with no table available takes the meal to the gate.
+      if (seat >= 0) this.people.setScript(person, [STEP.sit, seat, STEP.wait, dwell, ...toGate]);
+    }
   }
 
   /** The flight left without this departing party, or never came: it goes home. */
@@ -1324,7 +1355,7 @@ export class Terminals {
     for (const visit of this.book.visits.values()) {
       if (visit.onBlockAt === NOT_YET || visit.deplaned >= visit.rotation.paxIn || this.deplaning.has(visit.id)) continue;
       // Already off and away before the simulation started.
-      if (first && now - visit.onBlockAt > 1800) {
+      if (first && now - visit.onBlockAt > CONFIG.groundService.prestartPassengersGoneAfter) {
         this.stats.arriving.alreadyGone += visit.rotation.paxIn - visit.deplaned;
         visit.deplaned = visit.rotation.paxIn;
         continue;
@@ -1402,16 +1433,8 @@ export class Terminals {
     }
     // From a gate with no customs hall of its own, international passengers are bussed to the
     // nearest one, and leave the building from there.
-    let start: Place = holdroom;
-    let area = holdroom.area;
-    if (international && !this.plan.customs.has(area)) {
-      let best: Place | null = null;
-      for (const c of this.plan.customs.values()) if (!best || Math.hypot(c.x - holdroom.x, c.y - holdroom.y) < Math.hypot(best.x - holdroom.x, best.y - holdroom.y)) best = c;
-      if (best) {
-        start = best;
-        area = best.area;
-      }
-    }
+    const start = arrivalStart(this.plan, holdroom, international);
+    const area = start.area;
     const id = this.addParty(KIND.arriving, FLOOR.airside, start.x, start.y, size, visit);
     this.stats.arriving.created += size;
     if (id < 0) {
@@ -1469,18 +1492,10 @@ export class Terminals {
         if (visit) this.atShop(person, visit);
         else this.missed(person);
         return;
-      case EVENT.shop: {
-        const shop = this.plan.places[this.claimAt[person]];
-        // Closed at night: nobody there to take the money.
-        const hour = (((this.now / 3600) % 24) + 24) % 24;
-        if (shop && hour > SHOPS_OPEN[0] && hour < SHOPS_OPEN[1]) {
-          const spend = shop.kind === 'food' ? this.rng.range(8, 28) : shop.kind === 'shop' ? (this.rng.chance(0.35) ? this.rng.range(12, 90) : 0) : 0;
-          const key = shop.area || this.nearestArea(shop);
-          this.stats.takings[key] = (this.stats.takings[key] ?? 0) + spend * people.size[person];
-        }
-        this.claimAt[person] = -1;
+      case EVENT.shop:
+        if (visit) this.checkout(person, visit);
+        else this.missed(person);
         return;
-      }
       case EVENT.board: {
         if (!visit || visit.doorsClosed) {
           this.missed(person);
@@ -1688,7 +1703,7 @@ export class Terminals {
         for (const person of this.partiesOf.get(visit.id) ?? []) {
           if (!holdroom || this.people.floor[person] !== FLOOR.airside || this.people.waitingFor(person) !== signal) continue;
           const away = Math.hypot(this.people.x[person] - holdroom.x, this.people.y[person] - holdroom.y) > 40;
-          const call = away ? [] : [STEP.wait, this.groupCall(visit)];
+          const call = away ? [] : [STEP.wait, boardingGroupDelay(visit, now, this.rng)];
           this.people.setScript(person, [...call, STEP.walk, this.field(holdroom), STEP.queue, this.queueAt(holdroom), STEP.notify, EVENT.board]);
         }
       }
@@ -1783,8 +1798,7 @@ export class Terminals {
         wanted.set(`${placeId}:${i}`, { x: s.x + ux * along - uy * aside, y: s.y + uy * along + ux * aside, floor: place.floor, role });
       });
     }
-    const hour = (now / 3600) % 24;
-    if (hour > SHOPS_OPEN[0] && hour < SHOPS_OPEN[1]) {
+    if (tradingHours(now)) {
       for (const shop of this.shops) {
         if (shop.kind === 'lounge') continue;
         const [x, y] = this.freeSpot(shop);
@@ -1862,6 +1876,10 @@ export class Terminals {
   }
 
   // ---- what the panel and the tests read ---------------------------------------------------------
+
+  concessionSummary(): ConcessionSummary {
+    return this.concessions.summary(this.now, (id) => this.staffedShop(id));
+  }
 
   /** Everyone is somewhere: created = boarded + missed + still here, for departures and arrivals. */
   /**

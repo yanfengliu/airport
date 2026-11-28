@@ -12,7 +12,8 @@ import { buildRail, visibleRuns } from '../src/render/static/rail.ts';
 import { junctionDiscs } from '../src/render/static/roads.ts';
 import { piers } from '../src/render/static/structures.ts';
 import { MeshBuilder } from '../src/render/builder.ts';
-import { withinAny } from '../src/sim/terminal/fittings.ts';
+import { courtyard3 } from '../src/shared/courtyard3.ts';
+import { insidePolygon, withinAny } from '../src/sim/terminal/fittings.ts';
 import { mappedBuildings } from '../src/render/world.ts';
 import { loadLayoutFromDisk } from './helpers/layout.ts';
 import { loadModelsFromDisk } from './helpers/models.ts';
@@ -61,6 +62,15 @@ describe('the control tower', () => {
     expect(tower.group.position.x).toBe(x);
     expect(tower.group.position.z).toBe(-y);
   });
+});
+
+it('lifts the office above Courtyard 3 away with the terminal roofs', () => {
+  const ring = courtyard3(layout.terminals)!.outer;
+  const offices = layout.buildings.buildings.filter((b) => b.kind === 'office' && ring.some((x, i) => i % 2 === 0 && insidePolygon(b.poly, x, ring[i + 1])));
+  expect(offices).toHaveLength(1);
+  const { aboveRoofs, own } = mappedBuildings(layout);
+  expect(aboveRoofs).toContain(offices[0]);
+  expect(own).not.toContain(offices[0]);
 });
 
 describe('the railways', () => {

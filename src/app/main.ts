@@ -22,6 +22,9 @@ import { WEATHER_PRESETS, type Weather } from '../sim/weather.ts';
 import { createBoard } from '../ui/board.ts';
 import { INSIDE, SPEEDS, createHud, type Inside, type PanelId } from '../ui/hud.ts';
 import { createInspector } from '../ui/inspector.ts';
+import { passengerMaps } from '../ui/terminal-map-data.ts';
+import { createTerminalMap } from '../ui/terminal-map.ts';
+import { FLOOR, FLOOR_HEIGHT } from '../sim/terminal/plan.ts';
 import { createOpsPanel } from '../ui/ops.ts';
 import { describeAircraft, pickAircraft } from './inspect.ts';
 import { loadLayout } from './layout-loader.ts';
@@ -153,7 +156,7 @@ async function start(): Promise<void> {
 
   // ---- panels: operations, flight boards, the aircraft inspector ----------------------------
   const hudRoot = document.querySelector<HTMLElement>('#hud')!;
-  const panels: Record<PanelId, boolean> = { flights: params.get('board') === '1', ops: params.get('ops') !== '0' };
+  const panels: Record<PanelId, boolean> = { map: false, flights: params.get('board') === '1', ops: params.get('ops') !== '0' };
   const ops = createOpsPanel(WEATHER_PRESETS, {
     setWeather: (id) => {
       operator.weather = id;
@@ -223,7 +226,15 @@ async function start(): Promise<void> {
       else ops.notice('That flight has no aircraft here yet');
     },
   );
+  const map = createTerminalMap(passengerMaps(layout, sim.terminals!.plan), (p) => {
+    select(null);
+    presetId = null;
+    setInside(p.floor);
+    const h = FLOOR_HEIGHT[p.floor === 'arrivals' ? FLOOR.arrivals : FLOOR.landside];
+    camera.setView({ x: p.x, y: p.y, h, distance: p.distance, bearing: 0, tilt: 12 });
+  }, () => togglePanel('map'));
   const refreshPanels = (): void => {
+    map.root.hidden = !panels.map;
     ops.root.hidden = !panels.ops;
     board.root.hidden = !panels.flights;
     if (panels.ops) ops.update(opsSnapshot(sim), operator.weather);
@@ -232,7 +243,19 @@ async function start(): Promise<void> {
   };
   const togglePanel = (id: PanelId): void => {
     panels[id] = !panels[id];
+    if (id === 'map') {
+      if (panels.map) {
+        panels.flights = false;
+        map.open(inside === 'arrivals' ? 'arrivals' : 'departures');
+      } else hudRoot.querySelector<HTMLButtonElement>('[data-panel="map"]')?.focus();
+    } else if (id === 'flights' && panels.flights) panels.map = false;
     refreshPanels();
+  };
+  const showLevel = (next: Inside): void => {
+    setInside(next);
+    if (!panels.map) return;
+    if (next === 'off') togglePanel('map');
+    else map.open(next);
   };
   camera.onClick = (x, y) => {
     const a = pickAircraft(sim, stage.camera, canvas, x, y, aircraftLayer);
@@ -252,10 +275,10 @@ async function start(): Promise<void> {
       refreshPanels();
     },
     goToPreset: (id) => goToPreset(id),
-    setInside,
+    setInside: showLevel,
     togglePanel,
   });
-  hudRoot.append(board.root, ops.root, inspector.root);
+  hudRoot.append(board.root, ops.root, inspector.root, map.root);
   refreshPanels();
   if (params.get('hud') === '0') hud.setVisible(false);
 
@@ -280,9 +303,11 @@ async function start(): Promise<void> {
       setSpeed(running[Math.max(0, Math.min(running.length - 1, index + step))]);
     } else if (event.code === 'KeyI') {
       const order = INSIDE.map((o) => o.id);
-      setInside(order[(order.indexOf(inside) + 1) % order.length]);
+      showLevel(order[(order.indexOf(inside) + 1) % order.length]);
     } else if (event.code === 'KeyH') {
       hud.setVisible(!hud.visible);
+    } else if (event.code === 'KeyM') {
+      togglePanel('map');
     } else if (event.code === 'KeyB') {
       togglePanel('flights');
     } else if (event.code === 'KeyO') {
@@ -290,6 +315,7 @@ async function start(): Promise<void> {
     } else if (event.code === 'KeyF') {
       if (selected !== null) follow(!(camera.isFollowing && followed === selected));
     } else if (event.code === 'Escape') {
+      if (panels.map) togglePanel('map');
       select(null);
     }
   });
@@ -367,8 +393,8 @@ async function start(): Promise<void> {
   const screenOf = (id: number, forward = 0, right = 0, up = 2): { x: number; y: number; onScreen: boolean } | null => {
     const a = sim.airside.byIdMap.get(id);
     if (!a) return null;
-    const h = a.heading;
-    const p = new THREE.Vector3(a.x + Math.cos(h) * forward + Math.sin(h) * right, a.alt + up, -(a.y + Math.sin(h) * forward - Math.cos(h) * right)).project(stage.camera);
+    const p = aircraftLayer.projectPoint(a, new THREE.Vector3(forward, up, right), stage.camera);
+    if (!p) return null;
     const box = canvas.getBoundingClientRect();
     return { x: box.left + ((p.x + 1) / 2) * box.width, y: box.top + ((1 - p.y) / 2) * box.height, onScreen: p.z > -1 && p.z < 1 && Math.abs(p.x) < 1 && Math.abs(p.y) < 1 };
   };

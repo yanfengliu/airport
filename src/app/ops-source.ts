@@ -1,3 +1,4 @@
+import { SERVICE_KINDS } from '../sim/airside/ground-service.ts';
 // What the operations panel shows, read from the simulation: plain numbers and words, so that the
 // panel itself knows nothing of how the airport works. Cheap enough to take once a second.
 
@@ -43,8 +44,16 @@ export function opsSnapshot(sim: Sim): OpsSnapshot {
   let approaching = 0;
   let taxiing = 0;
   let queuedForTakeoff = 0;
+  const crews = { fuel: 0, inspection: 0, cleaning: 0, queued: 0 };
   const occupied = new Set<string>();
   for (const a of airside.aircraft) {
+    if (a.phase === 'parked' && a.visit.service) {
+      for (const kind of SERVICE_KINDS) {
+        const job = a.visit.service.jobs[kind];
+        if (job.status === 'working') crews[kind]++;
+        if (job.status === 'waiting' && job.requestedAt <= now) crews.queued++;
+      }
+    }
     if (a.phase === 'approach') approaching += 1;
     else if (a.phase === 'taxiIn' || a.phase === 'taxiOut' || a.phase === 'pushback') taxiing += 1;
     if (a.phase === 'lineUp' || (a.phase === 'taxiOut' && a.holdKind.startsWith('line up'))) queuedForTakeoff += 1;
@@ -104,6 +113,9 @@ export function opsSnapshot(sim: Sim): OpsSnapshot {
     weather: { windFrom: w.windFrom, windKnots: w.windKnots, visibility: w.visibility, ceiling: w.ceiling, tailwind28: tailwindOn28(w) },
     movements: { arrivals: (arrivals * HOUR) / span, departures: (departures * HOUR) / span, goArounds: tower.stats.goArounds, arrivalDelay: arrivals ? arrivalLate / arrivals : 0, departureDelay: offBlock ? departureLate / offBlock : 0, approaching, taxiing, waitingToLand, queuedForTakeoff },
     gates: { occupied: [...occupied].filter((id) => contact.has(id)).length, usable },
+    crews,
+    concessions: t?.concessionSummary() ?? null,
+    curbs: sim.roads?.airport.curbDemandPerHour ?? null,
     checkpoints,
     bags,
     roads,

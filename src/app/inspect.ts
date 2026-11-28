@@ -35,8 +35,7 @@ export function pickAircraft(sim: Sim, camera: THREE.Camera, canvas: HTMLCanvasE
   let bestDistance = PICK_RADIUS;
   for (const a of sim.airside.aircraft) {
     if (a.phase === 'gone') continue;
-    scratch.set(a.x, a.alt + 2, -a.y).project(camera);
-    if (scratch.z < -1 || scratch.z > 1) continue;
+    if (!drawn.projectPoint(a, scratch.set(0, 2, 0), camera) || scratch.z < -1 || scratch.z > 1) continue;
     const x = box.left + ((scratch.x + 1) / 2) * box.width;
     const y = box.top + ((1 - scratch.y) / 2) * box.height;
     const d = Math.hypot(x - clientX, y - clientY);
@@ -62,7 +61,7 @@ const PHASES: Record<string, string> = {
   climb: 'Climbing out',
 };
 
-const clock = (t: number): string => (t >= 0 ? formatClock(((t % DAY) + DAY) % DAY) : '—');
+const clock = (t: number): string => (Number.isFinite(t) ? formatClock(((t % DAY) + DAY) % DAY) : '—');
 
 export function describeAircraft(sim: Sim, a: Aircraft, following: boolean): InspectorInfo {
   const v = a.visit;
@@ -85,6 +84,20 @@ export function describeAircraft(sim: Sim, a: Aircraft, following: boolean): Ins
     ['Passengers', `${Math.round(v.deplaned)} of ${r.paxIn} off, ${Math.round(v.boarded)} of ${r.paxOut} on`],
     ['Speed', a.speed > 0.5 ? `${Math.round(a.speed * 1.944)} kt${a.alt > 3 ? `, ${Math.round(a.alt * 3.281).toLocaleString('en-US')} ft` : ''}` : 'Standing'],
   ];
+  if (a.phase === 'parked' && v.service) {
+    const s = v.service;
+    const status = (kind: 'fuel' | 'inspection' | 'cleaning'): string => {
+      const w = s.jobs[kind];
+      if (w.status === 'done') return 'Complete';
+      if (w.status === 'working') return `In progress until ${clock(Math.ceil(w.endsAt / 60) * 60)}`;
+      if (!Number.isFinite(w.requestedAt)) return 'After passengers leave';
+      if (w.requestedAt > sim.time) return 'Scheduled';
+      return 'Crew requested';
+    };
+    const tonnes = (kg: number): string => (kg / 1000).toFixed(1);
+    rows.push(['Fuel uplift', `${tonnes(s.fuelDeliveredKg)} / ${tonnes(s.fuelKg)} t · ${status('fuel')}`],
+      [s.followup ? 'Extended inspection' : 'Maintenance inspection', status('inspection')], ['Cabin cleaning', status('cleaning')]);
+  }
   if (v.delayNote) rows.push(['Delay', v.delayNote]);
   if (v.goArounds) rows.push(['Go-arounds', String(v.goArounds)]);
   return { title: `${airline?.name ?? r.airline} ${departing ? r.depFlight : r.arrFlight}`, subtitle: `${type.name} · ${r.tail}`, rows, following };

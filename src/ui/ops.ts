@@ -22,6 +22,9 @@ export interface OpsSnapshot {
   /** Each checkpoint: lanes open of all, people waiting, and the recent wait in seconds. */
   checkpoints: { id: number; name: string; open: number; lanes: number; line: number; wait: number; closed: boolean }[];
   bags: { inSystem: number; onBelts: number; mishandled: number };
+  crews: { fuel: number; inspection: number; cleaning: number; queued: number };
+  concessions: { open: number; outlets: number; soldOut: number; unitsSold: number; deliveries: number; revenue: number } | null;
+  curbs: { dropOff: number; pickUp: number } | null;
   roads: { name: string; mph: number; vehicles: number }[];
   vehicles: number;
   people: number;
@@ -100,7 +103,10 @@ export function createOpsPanel(presets: readonly { id: string; label: string }[]
     ['onBelts', 'Bags on the claim belts'],
     ['mishandled', 'Mishandled today'],
   ]);
+  const crews = stats([['fuel', 'Stands refuelling'], ['inspection', 'Aircraft in inspection'], ['cleaning', 'Cabins being cleaned'], ['crewQueue', 'Jobs awaiting a crew']]);
+  const retail = stats([['open', 'Staffed outlets'], ['soldOut', 'Out of stock'], ['sales', 'Items sold'], ['takings', 'Takings'], ['loads', 'Concourse deliveries']]);
   const roads = stats([
+    ['curbFlow', 'Curb demand per hour'],
     ['US-101', 'US-101'],
     ['I-380', 'I-380'],
     ['Airport spur', 'Airport spur'],
@@ -117,8 +123,10 @@ export function createOpsPanel(presets: readonly { id: string; label: string }[]
     section('Runways', [plan, planDetail, runwayRow]),
     section('Weather', [el('div', { class: 'ops-chips' }, weatherButtons), weatherLine]),
     section('Movements', [moves.node]),
+    section('Ground handling', [crews.node]),
     section('Security', [security]),
     section('Bags', [bags.node]),
+    section('Concessions', [retail.node]),
     section('Roads', [roads.node]),
     section('Log', [log]),
   ]);
@@ -156,6 +164,18 @@ export function createOpsPanel(presets: readonly { id: string; label: string }[]
     moves.set('queued', String(m.queuedForTakeoff), m.queuedForTakeoff > 10 ? 'warn' : undefined);
     moves.set('goArounds', String(m.goArounds));
     moves.set('gates', `${s.gates.occupied} of ${s.gates.usable}`);
+
+    crews.set('fuel', String(s.crews.fuel));
+    crews.set('inspection', String(s.crews.inspection));
+    crews.set('cleaning', String(s.crews.cleaning));
+    crews.set('crewQueue', String(s.crews.queued));
+    const c = s.concessions;
+    retail.set('open', c ? `${c.open} of ${c.outlets}` : '—');
+    retail.set('soldOut', c ? String(c.soldOut) : '—');
+    retail.set('sales', c ? c.unitsSold.toLocaleString('en-US') : '—');
+    retail.set('takings', c ? c.revenue.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }) : '—');
+    retail.set('loads', c ? String(c.deliveries) : '—');
+    roads.set('curbFlow', s.curbs ? `${Math.round(s.curbs.dropOff)} drop-off · ${Math.round(s.curbs.pickUp)} pickup` : '—');
 
     for (const c of s.checkpoints) {
       let row = securityRows.get(c.id);

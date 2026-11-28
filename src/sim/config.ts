@@ -1,7 +1,30 @@
 // Tunable numbers of the simulation, in one place. Units: metres, seconds, m/s unless a name says
 // otherwise.
 
+import { CONCESSION_CONFIG } from './terminal/concession-config.ts';
+
 export const CONFIG = {
+  concessions: CONCESSION_CONFIG,
+  groundService: {
+    // Airport-wide dispatch teams and travel time before each can serve its next stand.
+    crews: { fuel: 12, inspection: 8, cleaning: 10 },
+    transferSeconds: { fuel: 120, inspection: 90, cleaning: 120 },
+    // Synthetic uplift per outbound route, in kg, and delivery rate in kg per second.
+    kgPerKm: { regional: 1.7, narrow: 3.0, wide: 6.2, super: 11.5 },
+    localUpliftKg: { regional: 380, narrow: 650, wide: 1700, super: 2500 },
+    pumpKgPerSecond: { regional: 10, narrow: 16, wide: 32, super: 48 },
+    fuelSetup: 120,
+    fuelCallAfter: 150,
+    inspectionCallAfter: 45,
+    inspectionSeconds: { regional: 360, narrow: 480, wide: 840, super: 1080 },
+    followupShare: 0.045,
+    followupSeconds: [600, 1500],
+    cleaningSetup: 120,
+    cleaningSecondsPerPassenger: { regional: 3.2, narrow: 2.7, wide: 2.8, super: 2.7 },
+    // Mid-day initialization treats these older arrivals as having cleared the cabin.
+    prestartPassengersGoneAfter: 1800,
+    boardingSecondsPerPassengerPerDoor: 3.34,
+  },
   /** Fixed step of the simulation. */
   dt: 0.5,
   /** Aircraft visits per day: each is one arrival and one departure. */
@@ -134,6 +157,8 @@ export const CONFIG = {
   },
 
   transit: {
+    /** November 2026 Terminal 3 West construction. Both lines use the combined T2/T3 station. */
+    closedAirTrainStation: 'Terminal 3',
     /**
      * Each kind of train's cars, metres: the length of a car coupled to the next, and the width of
      * its body. These are the bodies the shared track is worked for: wherever two of them could
@@ -146,6 +171,18 @@ export const CONFIG = {
     },
     /** Room kept between the bodies of two trains on tracks side by side; any closer, and the track there is one block. */
     passingClearance: 0.3,
+  },
+
+  curbTraffic: {
+    /** Curb vehicles represented per local passenger, including shared rides and shuttles. */
+    tripsPerPassenger: 0.14,
+    /** Minimum, peak and maximum time differences, in minutes before departure or after parking. */
+    domesticDeparture: [45, 105, 180],
+    internationalDeparture: [90, 160, 240],
+    domesticArrival: [6, 22, 55],
+    customsArrival: [18, 45, 90],
+    /** Eligible curb frontages extend up to this far beyond the one closest to the hall, metres. */
+    frontageSpread: 65,
   },
 
   travellers: {

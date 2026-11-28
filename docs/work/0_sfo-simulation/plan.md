@@ -3,7 +3,7 @@
 Status: active
 Owner: Claude Code session in airport worktree sfo-sim
 Created: 2026-11-26
-Updated: 2026-11-26
+Updated: 2026-11-28
 
 ## Problem and outcome
 
@@ -121,6 +121,16 @@ Running one branch rather than three is a choice of cost, not of evidence: the t
 
 **Benchmark change.** `tools/sim/soak.ts` also fails a seed on any departure held at its stand more than 20 minutes after it is ready (doors closed, departure time reached). The evidence that the old measures misstated the requirement: the acceptance criterion is "no aircraft waiting more than 20 minutes for a taxi clearance", a departure refused pushback is waiting for one, and runs that passed every old limit held departures at their stands for up to 6,890 s. The old measures and their limits are unchanged.
 
+## Daily operations milestone · 2026-11-28
+
+The airport worktree based on 73e3db2 connects stand servicing, concession stock and curb traffic to the simulation clock. The integration owner handles crew dispatch, aircraft release, operations readouts and verification. The concessions, curb and apron contributors own their respective systems and targeted tests. Acceptance requires finite crews, no boarding before cabin release, no pushback before fuel and inspection release, stock conservation, pickups after on-block, and deterministic replay across midnight. The normal repository gates and browser controls exercise the integrated result.
+
+SFO’s published indoor maps and architectural references guide the passenger directory, cutaway finishes and International Terminal roof. The November 2026 AirTrain service follows the construction advisory. The reference sheets and the limits of the map are in [the passenger map guide](../../../README.md#public-terminal-maps).
+
+This milestone is complete. The D1–E4 transfer follows the mapped Courtyard 3 gallery in either direction. Curb pickups share the passenger simulation’s customs halls, and cabin release controls the time available to call each boarding group. The original roof is registered in Form Foundry at `a5f284e`, version 1, and its six meshes and 604 steel placements were compared against the production airport.
+
+All 177 tests passed with the browser closed, including the full days of flights, vehicles and passengers. Strict types, production build, work-document validation and dependency audit passed. The final Metal sweep produced 84 captures at 2560 × 1440 and passed all 37 controls. Measured running frame rates were 47.2–59.9 fps at 1920 × 1080 on an Apple M3. An earlier run alongside the GPU sweep exceeded the CPU timing checks. [Implementation review](reviews/2_integration.md) · [Repair review](reviews/3_integration.md)
+
 ## Outcome
 
 A browser application that opens on the running airport, built from OpenStreetMap's SFO, with one deterministic simulation of aircraft and their tower and ground control, road traffic, AirTrain, BART and Caltrain, and the people, bags, queues, shops and staff in the terminals, drawn in 3D by day and night, with an operations panel, flight boards, an aircraft inspector and controls that change the weather and close runways and checkpoints. Each criterion above is checked as recorded beside it. The whole repository was reviewed independently by both lanes at the end of M5 (review 0) and its repairs checked by one (review 1); the records are in `reviews/`.
@@ -131,7 +141,7 @@ Where the work falls short of the scope as written, or of what the reviewers ask
 - **A runway closed** takes no new traffic; departures already sent to it still use it (review finding F1, by design: re-planning a taxiing departure's claimed way mid-journey is not something the ground model does).
 - **Road junctions**: traffic crossing inside a junction is not kept apart; the lights and merges are (F78).
 - **Tuning numbers**: the tower's, the slots', the schedule's, the weather's and the staff's are in `src/sim/config.ts`, as `AGENTS.md` asks; about seventy in the ground traffic, roads, trains and terminals are still in their modules (F8).
-- **Road errands** at the curbs and garages are not tied to the passengers in the terminals, who come and go on their own schedule.
+- **Road errands** at the curbs follow flight loads and actual gate arrival times. Individual cars and traveller parties still have separate identities. Garage trips retain their traffic profile.
 - **The edge of the map** shows in the widest views; the camera no longer looks past it.
 
 Follow-ups proposed to the owner: re-planning a departure to another runway when its runway closes; the remaining tuning numbers into the config, checked by unchanged checksums; crossing traffic inside road junctions.

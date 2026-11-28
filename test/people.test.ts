@@ -65,7 +65,13 @@ describe('people in the terminals, over a morning', () => {
     const roles = new Map<number, number>();
     for (let id = 0; id < t.people.high; id += 1) if (t.people.alive[id]) roles.set(t.people.role[id], (roles.get(t.people.role[id]) ?? 0) + 1);
     for (const role of [ROLE.security, ROLE.agent, ROLE.gate, ROLE.shop, ROLE.cleaner, ROLE.officer]) expect(roles.get(role) ?? 0).toBeGreaterThan(0);
-    expect(Object.values(s.takings).reduce((a, b) => a + b, 0)).toBeGreaterThan(1000);
+    const takings = Object.values(s.takings).reduce((a, b) => a + b, 0);
+    const concessions = t.concessionSummary();
+    expect(takings).toBeGreaterThan(1000);
+    expect(concessions.revenue).toBeCloseTo(takings, 2);
+    expect(concessions.open).toBe(t.onPosts().filter((id) => t.people.role[id] === ROLE.shop).length);
+    expect(concessions.unitsSold).toBeGreaterThan(100);
+    expect(concessions.unitsDelivered).toBeGreaterThan(0);
   });
 });
 
@@ -110,10 +116,9 @@ describe('a closed checkpoint', () => {
 
   it('is refused when it would leave a concourse with no way through security', () => {
     const t = both().closed.terminals!;
-    // E, F and G are joined to each other after security and to nothing else: two of them can close, not all three.
-    expect(t.setCheckpointClosed(t.plan.checkpoint.get('E')!.id, true)).toBeNull();
-    expect(t.setCheckpointClosed(t.plan.checkpoint.get('F')!.id, true)).toBeNull();
-    expect(t.setCheckpointClosed(t.plan.checkpoint.get('G')!.id, true)).toMatch(/No other way/);
+    // C is already closed. With the D–E gallery, all the other areas can still reach D.
+    for (const area of ['E', 'F', 'G', 'A', 'B']) expect(t.setCheckpointClosed(t.plan.checkpoint.get(area)!.id, true)).toBeNull();
+    expect(t.setCheckpointClosed(t.plan.checkpoint.get('D')!.id, true)).toMatch(/No other way/);
   });
 });
 

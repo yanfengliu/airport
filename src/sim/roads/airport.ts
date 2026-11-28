@@ -2,6 +2,10 @@
 // someone down at Departures or pick someone up at Arrivals and then leave, and cars that go
 // into the garages or come out of them.
 
+import type { Stand } from '../../shared/layout.ts';
+import type { FlightBook } from '../airside/flights.ts';
+import type { PassengerHalls } from '../terminal/passenger-halls.ts';
+import { FlightCurbDemand } from './flight-curbs.ts';
 import type { Rng } from '../rng.ts';
 import { hourlyShare, paintFor } from './demand.ts';
 import type { Link, RoadNet } from './net.ts';
@@ -38,6 +42,9 @@ export class AirportTraffic {
   readonly arrivalsCurbs: Link[];
   private readonly net: RoadNet;
   private readonly rng: Rng;
+  private flights: FlightCurbDemand | null = null;
+  /** Vehicles per hour requested at the two curbs, including the current traffic scale. */
+  readonly curbDemandPerHour = { dropOff: 0, pickUp: 0 };
   private readonly ways: { link: Link; weight: number }[];
   private readonly out: (link: Link) => boolean;
   private readonly garagesIn: Link[];
@@ -67,6 +74,11 @@ export class AirportTraffic {
     this.garagesOut = net.links.filter((l) => l.enters && !atEdge(...start(l)) && near(start(l), 1500) && l.cls !== 'motorway');
   }
 
+  /** Drive the terminal curbs from the flight book when running with the airfield. */
+  connectFlights(book: FlightBook, stands: readonly Stand[], plan: PassengerHalls): void {
+    this.flights = new FlightCurbDemand(book, stands, this.net, this.departuresCurbs, this.arrivalsCurbs, plan);
+  }
+
   private route(from: number, goal: number | ((l: Link) => boolean)): number[] | null {
     if (typeof goal !== 'number') return this.net.route(from, goal);
     const key = `${from}>${goal}`;
@@ -83,13 +95,13 @@ export class AirportTraffic {
   }
 
   /** Start one errand; false if there was no way to do it or no room to start. */
-  private start(traffic: RoadTraffic, errand: keyof typeof PEAK, now: number): boolean {
+  private start(traffic: RoadTraffic, errand: keyof typeof PEAK): boolean {
     const rng = this.rng;
     if (errand === 'dropOff' || errand === 'pickUp') {
       const curbs = errand === 'dropOff' ? this.departuresCurbs : this.arrivalsCurbs;
       if (!curbs.length || !this.ways.length) return false;
       const way = this.pickWay();
-      const curb = rng.pick(curbs);
+      const curb = this.flights?.pick(errand, rng) ?? rng.pick(curbs);
       const inbound = this.route(way.id, curb.id);
       const outbound = inbound && this.route(curb.id, this.out);
       if (!inbound || !outbound) return false;
@@ -122,7 +134,6 @@ export class AirportTraffic {
     if (!vehicle) return false;
     vehicle.purpose = PURPOSE.fromGarage;
     this.stats.outOfGarages += 1;
-    void now;
     return true;
   }
 
@@ -139,13 +150,19 @@ export class AirportTraffic {
 
   step(traffic: RoadTraffic, dt: number, now: number, secondsOfDay: number): void {
     const share = hourlyShare(secondsOfDay) * this.scale;
+    this.flights?.update(now);
     for (const errand of Object.keys(PEAK) as (keyof typeof PEAK)[]) {
-      this.owed[errand] += (PEAK[errand] * share * dt) / 3600;
+      let rate = PEAK[errand] * share;
+      if (errand === 'dropOff' || errand === 'pickUp') {
+        if (this.flights) rate = this.flights.perHour[errand] * this.scale;
+        this.curbDemandPerHour[errand] = rate;
+      }
+      this.owed[errand] += rate * dt / 3600;
       let tries = 0;
       while (this.owed[errand] >= 1 && tries < 2) {
         tries += 1;
         this.owed[errand] -= 1;
-        if (!this.start(traffic, errand, now)) this.stats.turnedAway += 1;
+        if (!this.start(traffic, errand)) this.stats.turnedAway += 1;
       }
     }
   }

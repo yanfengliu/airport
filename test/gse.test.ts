@@ -9,7 +9,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { GSE_MODELS, gseAround, pushbackLayout, turnaroundLayout, type GseKind, type GsePlace } from '../src/render/dynamic/gse-places.ts';
+import { GSE_MODELS, gseAround, pushbackLayout, turnaroundLayout, type GseKind, type GsePlace, type Served } from '../src/render/dynamic/gse-places.ts';
 import { airframe, surfaceOver, type Surface } from '../src/shared/airframe.ts';
 import { AIRCRAFT, type AircraftType } from '../src/sim/fleet.ts';
 import { repoRoot } from './helpers/layout.ts';
@@ -124,7 +124,13 @@ describe('ground equipment round a parked aircraft', () => {
 
   it('has every piece out for a busy turnaround, and stairs and a bus only where there is no bridge', () => {
     // Everything out at once: doors open with bags coming and going, catering, fuel, the lavatory truck.
-    const busy = (type: AircraftType) => ({ phase: 'parked' as const, type, visit: { onBlockAt: 0, etd: 20_000, doorsClosed: false, deplaned: 100, boardingOpen: false, rotation: { paxIn: 100 } } });
+    const busy = (type: AircraftType): Served => ({
+      phase: 'parked', type,
+      visit: {
+        onBlockAt: 0, doorsClosed: false, deplaned: 100, boardingOpen: false, rotation: { paxIn: 100 },
+        service: { jobs: { fuel: { status: 'working' }, inspection: { status: 'working' } } },
+      },
+    });
     for (const type of types) {
       const wide = type.body === 'wide' || type.body === 'super';
       const count = (list: GsePlace[], kind: GseKind) => list.filter((p) => p.kind === kind).length;
@@ -141,6 +147,31 @@ describe('ground equipment round a parked aircraft', () => {
       expect(count(remote, wide ? 'stairs' : 'stairsLow'), type.id).toBe(wide ? 1 : 2);
       expect(count(remote, 'tanker'), type.id).toBe(1);
       expect(count(remote, 'hydrant'), type.id).toBe(0);
+    }
+  });
+
+  it('shows fuel crews and engineers only while their own dispatched job is working', () => {
+    const aircraft: Served = {
+      phase: 'parked', type: AIRCRAFT.B738,
+      visit: { onBlockAt: 0, doorsClosed: false, deplaned: 0, boardingOpen: false, rotation: { paxIn: 100 }, service: null },
+    };
+    for (const remote of [false, true]) {
+      const equipment = remote ? 'tanker' : 'hydrant';
+      const absent = gseAround(aircraft, 1000, remote).map(p => p.kind);
+      expect(absent).not.toContain(equipment);
+      expect(absent).not.toContain('fueller');
+      expect(absent).not.toContain('engineer');
+      for (const fuel of ['waiting', 'working', 'done'] as const) {
+        for (const inspection of ['waiting', 'working', 'done'] as const) {
+          aircraft.visit.service = { jobs: { fuel: { status: fuel }, inspection: { status: inspection } } };
+          const visible = gseAround(aircraft, 1000, remote).map(p => p.kind);
+          expect(visible.includes(equipment)).toBe(fuel === 'working');
+          expect(visible.includes('fueller')).toBe(fuel === 'working');
+          expect(visible.includes('engineer')).toBe(inspection === 'working');
+          expect(visible).toContain('power');
+        }
+      }
+      aircraft.visit.service = null;
     }
   });
 

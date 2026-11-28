@@ -7,6 +7,7 @@
 // belts, and trays the x-ray belts. One group per level; the view shows one at a time.
 
 import * as THREE from 'three';
+import { courtyard3 } from '../../shared/courtyard3.ts';
 import type { AreaKind, Layout, PolygonData } from '../../shared/layout.ts';
 import { CAROUSEL_STRAIGHT, CAROUSEL_WIDTH, DESK_FROM_PASSENGER, EDGE, LANE, SIZE, type Carousel, type Fitting, type FittingKind } from '../../sim/terminal/fittings.ts';
 import { FLOOR, FLOOR_HEIGHT } from '../../sim/terminal/plan.ts';
@@ -14,10 +15,10 @@ import type { Terminals } from '../../sim/terminal/terminals.ts';
 import { MeshBuilder, box, fillPolygon, rgb, shade, type RGB } from '../builder.ts';
 import { flatMaterial, placement, propInstances, type Model, type Models } from '../models/library.ts';
 import { ORDER, solidMesh } from './common.ts';
+import { terminalGlazing, type Wall } from './gallery-walls.ts';
+import { GATE_SIGN_MODEL, gateSignFaces, gateSigns } from './gate-signs.ts';
+import { buildingFinishes, finishFor, panelledWall } from './terminal-finishes.ts';
 
-const SLAB: RGB = rgb(0xdcd8cf);
-const LOWER_SLAB: RGB = rgb(0xd3cec4);
-const CARPET: RGB = rgb(0x4f5e74);
 /** Floors of the rooms, by what they are for: tile, carpet or wood, in the colours they come in. */
 const ROOM_FLOOR: Partial<Record<AreaKind, { colour: RGB; carpet?: boolean }>> = {
   checkin: { colour: rgb(0xe6e1d6) },
@@ -31,7 +32,6 @@ const ROOM_FLOOR: Partial<Record<AreaKind, { colour: RGB; carpet?: boolean }>> =
   toilets: { colour: rgb(0xe3e7ea) },
 };
 /** Rooms of these kinds are on the arrivals level; everything else is upstairs. */
-const DOWNSTAIRS = new Set<AreaKind>(['claim']);
 const WALL: Partial<Record<AreaKind, RGB>> = {
   shop: rgb(0xe9e5dd),
   food: rgb(0xe4d8c6),
@@ -152,11 +152,30 @@ function floorTexture(carpet: boolean): THREE.CanvasTexture {
   }
   ctx.putImageData(image, 0, 0);
   if (!carpet) {
-    // Four tiles a side, with grout between.
-    ctx.fillStyle = 'rgba(0,0,0,0.16)';
-    for (let k = 0; k < 4; k += 1) {
-      ctx.fillRect(k * 64, 0, 1, size);
-      ctx.fillRect(0, k * 64, size, 1);
+    // Small mineral chips in the terrazzo matrix, divided by narrow strips between pours.
+    const chips = ['#c1b9aa', '#c8c9c9', '#ece9e3', '#a3a4a4'];
+    for (let k = 0; k < 2400; k += 1) {
+      const x = random() * size;
+      const y = random() * size;
+      const radius = 0.3 + random() * 1.3;
+      ctx.fillStyle = chips[k % chips.length];
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + radius, y + 0.4 * radius);
+      ctx.lineTo(x + 0.3 * radius, y + radius);
+      ctx.fill();
+    }
+    ctx.fillStyle = 'rgba(70,76,80,.25)';
+    ctx.fillRect(0, 0, 1, size);
+    ctx.fillRect(0, 0, size, 1);
+  } else {
+    // Carpet tiles laid in alternating quarter-turns.
+    ctx.fillStyle = 'rgba(58,67,77,.11)';
+    for (let row = 0; row < 8; row += 1) for (let col = 0; col < 8; col += 1) {
+      for (let k = 0; k < 32; k += 4) {
+        if ((row + col) % 2) ctx.fillRect(col * 32 + k, row * 32, 1, 32);
+        else ctx.fillRect(col * 32, row * 32 + k, 32, 1);
+      }
     }
   }
   const texture = new THREE.CanvasTexture(canvas);
@@ -196,18 +215,9 @@ function pane(b: MeshBuilder, x0: number, y0: number, x1: number, y1: number, h0
  * metres, a base and a cut line on top. An edge with floor on both sides is where two of the
  * map's building parts meet inside a hall: no wall stands there.
  */
-function glassRing(glass: MeshBuilder, frame: MeshBuilder, ring: readonly number[], h: number, height: number, bay: number, floorAt: (x: number, y: number) => boolean): void {
-  const n = ring.length / 2;
-  for (let i = 0; i < n; i += 1) {
-    const j = (i + 1) % n;
-    const [x0, y0, x1, y1] = [ring[i * 2], ring[i * 2 + 1], ring[j * 2], ring[j * 2 + 1]];
+function glassWalls(glass: MeshBuilder, frame: MeshBuilder, walls: readonly Wall[], h: number, height: number, bay: number): void {
+  for (const [x0, y0, x1, y1] of walls) {
     const len = Math.hypot(x1 - x0, y1 - y0);
-    if (len < 0.05) continue;
-    const mx = (x0 + x1) / 2;
-    const my = (y0 + y1) / 2;
-    const nx = (y1 - y0) / len;
-    const ny = -(x1 - x0) / len;
-    if (floorAt(mx + nx * 2.6, my + ny * 2.6) && floorAt(mx - nx * 2.6, my - ny * 2.6)) continue;
     pane(glass, x0, y0, x1, y1, h + 0.25, h + height, rgb(0xffffff));
     wallAlong(frame, x0, y0, x1, y1, h - 0.05, h + 0.25, 0.22, MULLION, MULLION);
     wallAlong(frame, x0, y0, x1, y1, h + height, h + height + 0.28, 0.3, CUT, CUT);
@@ -223,6 +233,7 @@ type Placed = { x: number; y: number; h: number; facing: number; sx?: number; sy
 
 export function buildInteriors(layout: Layout, terminals: Terminals, models: Models): Interiors {
   const fittings = terminals.fittings;
+  const finishAt = buildingFinishes(layout.terminals.buildings);
   const upstairs = FLOOR_HEIGHT[FLOOR.landside];
   const downstairs = FLOOR_HEIGHT[FLOOR.arrivals];
   const heightOf = (floor: number): number => FLOOR_HEIGHT[floor] ?? upstairs;
@@ -242,11 +253,18 @@ export function buildInteriors(layout: Layout, terminals: Terminals, models: Mod
   groups.up.name = 'interior-departures';
   groups.down.name = 'interior-arrivals';
 
+  const gallery = courtyard3(layout.terminals);
+
   // ---- floors -----------------------------------------------------------------------------
   const UV = 1 / 4.8;
-  for (const [lv, h, slab] of [['up', upstairs, SLAB], ['down', downstairs, LOWER_SLAB]] as const) {
+  for (const [lv, h] of [['up', upstairs], ['down', downstairs]] as const) {
     const floor = new MeshBuilder();
-    for (const b of layout.terminals.buildings) fillPolygon(floor, b.poly, h - 0.05, slab, UV);
+    for (const b of layout.terminals.buildings) {
+      const colour = finishFor(b.name).slab;
+      fillPolygon(floor, b.poly, h - 0.05, lv === 'down' ? shade(colour, 0.9) : colour, UV);
+    }
+    // One continuous gallery floor, slightly above the adjoining slabs where their footprints overlap.
+    if (lv === 'up' && gallery) fillPolygon(floor, gallery, h - 0.025, finishFor('Terminal 2').slab, UV);
     const mesh = solidMesh(floor, tiles, `interior-${lv}-floor`, false);
     // Drawn after the paint on the ground: the paint is pulled towards the camera so the layers on
     // the ground do not fight, and from far off that is enough to cover a floor half a metre up.
@@ -256,13 +274,15 @@ export function buildInteriors(layout: Layout, terminals: Terminals, models: Mod
     // mesh per mapped level and kind of floor, drawn over the floor in order of level, so that
     // where two overlap in plan the upper one shows, every frame, instead of the two flickering.
     const byLevel = new Map<string, { builder: MeshBuilder; rank: number; carpet: boolean }>();
-    for (const a of layout.terminals.areas) {
+    for (const [i, a] of layout.terminals.areas.entries()) {
       const look = ROOM_FLOOR[a.kind];
-      if (!look || DOWNSTAIRS.has(a.kind) !== (lv === 'down')) continue;
+      if (!look || terminals.plan.mappedFloors.rooms[i] !== (lv === 'down' ? 'arrivals' : 'departures')) continue;
       const key = `${a.level ?? 0}:${look.carpet ? 1 : 0}`;
       let entry = byLevel.get(key);
       if (!entry) byLevel.set(key, (entry = { builder: new MeshBuilder(), rank: a.level ?? 0, carpet: Boolean(look.carpet) }));
-      fillPolygon(entry.builder, a.poly as PolygonData, h + 0.02, look.colour, UV);
+      const finish = finishAt(a.poly.outer[0], a.poly.outer[1]);
+      const colour = a.kind === 'gate' ? finish.carpet : a.kind === 'checkin' || a.kind === 'claim' ? finish.slab : look.colour;
+      fillPolygon(entry.builder, a.poly as PolygonData, h + 0.02, colour, UV);
     }
     const ranks = [...new Set([...byLevel.values()].map((e) => e.rank))].sort((p, q) => p - q);
     for (const [key, e] of byLevel) {
@@ -284,7 +304,13 @@ export function buildInteriors(layout: Layout, terminals: Terminals, models: Mod
       const [x0, y0, x1, y1] = [seats[a * 3], seats[a * 3 + 1], seats[z * 3], seats[z * 3 + 1]];
       const facing = seats[a * 3 + 2];
       const h = heightOf(row.floor);
-      box(rug, (x0 + x1) / 2 + Math.cos(facing) * 0.2, (y0 + y1) / 2 + Math.sin(facing) * 0.2, h + 0.03, h + 0.035, Math.hypot(x1 - x0, y1 - y0) / 2 + 1.2, 1.0, Math.atan2(y1 - y0, x1 - x0), CARPET, CARPET);
+      const cx = (x0 + x1) / 2 + Math.cos(facing) * 0.2;
+      const cy = (y0 + y1) / 2 + Math.sin(facing) * 0.2;
+      const along = Math.atan2(y1 - y0, x1 - x0);
+      const half = Math.hypot(x1 - x0, y1 - y0) / 2 + 1.2;
+      const ux = Math.cos(along), uy = Math.sin(along);
+      const outer = [[-half, -1], [half, -1], [half, 1], [-half, 1]].flatMap(([u, v]) => [cx + ux * u - uy * v, cy + uy * u + ux * v]);
+      fillPolygon(rug, { outer }, h + 0.035, finishAt(cx, cy).carpet, UV);
     }
     const m = new THREE.Mesh(rug.build(), carpetOverlay);
     m.name = 'interior-gate-carpet';
@@ -299,30 +325,34 @@ export function buildInteriors(layout: Layout, terminals: Terminals, models: Mod
     const frame = new MeshBuilder();
     const grids = lv === 'up' ? [terminals.plan.grids[FLOOR.landside], terminals.plan.grids[FLOOR.airside]] : [terminals.plan.grids[FLOOR.arrivals]];
     const floorAt = (x: number, y: number): boolean => grids.some((g) => g.cellAt(x, y) >= 0);
-    for (const b of layout.terminals.buildings) for (const ring of [b.poly.outer, ...(b.poly.holes ?? [])]) glassRing(glass, frame, ring, h, GLASS_HEIGHT, 3.0, floorAt);
-    if (lv === 'up') {
-      for (const room of fittings.rooms) {
-        const area = layout.terminals.areas[room.room];
-        const r = area.poly.outer;
-        const n = r.length / 2;
-        const wall = WALL[room.kind] ?? WALL.shop!;
-        const fascia = FASCIA[(room.room * 5) % FASCIA.length];
-        for (let i = 0; i < n; i += 1) {
-          const j = (i + 1) % n;
-          const [x0, y0, x1, y1] = [r[i * 2], r[i * 2 + 1], r[j * 2], r[j * 2 + 1]];
-          const edge = room.edges[i];
-          if (edge === EDGE.solid) {
-            wallAlong(frame, x0, y0, x1, y1, h, h + ROOM_WALL, 0.16, wall, CUT);
-            continue;
-          }
-          // A shop front: a fascia band over glass, or over the way in.
-          wallAlong(frame, x0, y0, x1, y1, h + ROOM_WALL - 0.45, h + ROOM_WALL, 0.2, room.kind === 'toilets' ? wall : fascia, CUT);
-          if (edge === EDGE.glass) {
-            pane(glass, x0, y0, x1, y1, h + 0.05, h + ROOM_WALL - 0.45, rgb(0xffffff));
-            const len = Math.hypot(x1 - x0, y1 - y0);
-            const bays = Math.max(1, Math.round(len / 1.6));
-            for (let k = 0; k <= bays; k += 1) box(frame, x0 + ((x1 - x0) * k) / bays, y0 + ((y1 - y0) * k) / bays, h, h + ROOM_WALL - 0.45, 0.04, 0.05, Math.atan2(y1 - y0, x1 - x0), MULLION, MULLION);
-          }
+    const exterior = terminalGlazing(layout.terminals.buildings.map((b) => b.poly), lv === 'up' ? gallery : undefined, floorAt);
+    glassWalls(glass, frame, exterior, h, GLASS_HEIGHT, 3.0);
+    const rooms = fittings.rooms.filter((room) => level(room.floor) === lv);
+    for (const room of rooms) {
+      const area = layout.terminals.areas[room.room];
+      const r = area.poly.outer;
+      const n = r.length / 2;
+      const wall = WALL[room.kind] ?? WALL.shop!;
+      const finish = finishAt(r[0], r[1]);
+      const concession = room.kind === 'shop' || room.kind === 'food';
+      const fascia = FASCIA[(room.room * 5) % FASCIA.length];
+      for (let i = 0; i < n; i += 1) {
+        const j = (i + 1) % n;
+        const [x0, y0, x1, y1] = [r[i * 2], r[i * 2 + 1], r[j * 2], r[j * 2 + 1]];
+        const edge = room.edges[i];
+        if (edge === EDGE.solid) {
+          if (concession && finish.panel === 'limestone') panelledWall(frame, x0, y0, x1, y1, h, h + ROOM_WALL, 0.16, finish, CUT);
+          else wallAlong(frame, x0, y0, x1, y1, h, h + ROOM_WALL, 0.16, wall, CUT);
+          continue;
+        }
+        // A shop front: a fascia band over glass, or over the way in.
+        if (concession && finish.panel === 'timber') panelledWall(frame, x0, y0, x1, y1, h + ROOM_WALL - 0.45, h + ROOM_WALL, 0.2, finish, CUT);
+        else wallAlong(frame, x0, y0, x1, y1, h + ROOM_WALL - 0.45, h + ROOM_WALL, 0.2, room.kind === 'toilets' ? wall : fascia, CUT);
+        if (edge === EDGE.glass) {
+          pane(glass, x0, y0, x1, y1, h + 0.05, h + ROOM_WALL - 0.45, rgb(0xffffff));
+          const len = Math.hypot(x1 - x0, y1 - y0);
+          const bays = Math.max(1, Math.round(len / 1.6));
+          for (let k = 0; k <= bays; k += 1) box(frame, x0 + ((x1 - x0) * k) / bays, y0 + ((y1 - y0) * k) / bays, h, h + ROOM_WALL - 0.45, 0.04, 0.05, Math.atan2(y1 - y0, x1 - x0), MULLION, MULLION);
         }
       }
     }
@@ -331,11 +361,9 @@ export function buildInteriors(layout: Layout, terminals: Terminals, models: Mod
     // another of the map's, it is drawn once.
     const floorName = lv === 'up' ? 'departures' : 'arrivals';
     const drawn: number[] = [];
-    if (lv === 'up') {
-      for (const room of fittings.rooms) {
-        const r = layout.terminals.areas[room.room].poly.outer;
-        for (let i = 0, j = r.length - 2; i < r.length; j = i, i += 2) drawn.push(r[j], r[j + 1], r[i], r[i + 1]);
-      }
+    for (const room of rooms) {
+      const r = layout.terminals.areas[room.room].poly.outer;
+      for (let i = 0, j = r.length - 2; i < r.length; j = i, i += 2) drawn.push(r[j], r[j + 1], r[i], r[i + 1]);
     }
     const alongDrawn = (x0: number, y0: number, x1: number, y1: number): boolean => {
       for (let k = 0; k < drawn.length; k += 4) if (nearSegment(x0, y0, drawn, k) < 0.35 && nearSegment(x1, y1, drawn, k) < 0.35) return true;
@@ -415,12 +443,25 @@ export function buildInteriors(layout: Layout, terminals: Terminals, models: Mod
   };
   for (const f of fittings.items) fitting(f);
 
+  const signLocations = model(GATE_SIGN_MODEL) ? gateSigns(terminals) : [];
+  for (const sign of signLocations) at('up', GATE_SIGN_MODEL, sign);
+
   // Seats at the gates: rows of two four-seat modules; armchairs in the lounges.
   const seats = fittings.seats;
   for (const g of fittings.groups) {
     const lv = level(g.floor);
     const h = heightOf(g.floor);
     if (g.kind === 'gate') {
+      // T1 B and T2 D mix individual lounge chairs with beam seating. Keep every simulated
+      // seat centre, its pitch and the back-to-back clearance of the original bank.
+      const area = terminals.plan.places[g.place].area;
+      if ((area === 'B' || area === 'D') && Math.floor(g.first / 8) % 4 === 0 && model(TUB_CHAIR)) {
+        for (let k = 0; k < g.count; k += 1) {
+          const s = (g.first + k) * 3;
+          at(lv, TUB_CHAIR, { x: seats[s], y: seats[s + 1], h, facing: seats[s + 2], sx: 0.78, sz: 0.8 });
+        }
+        continue;
+      }
       for (let k = 0; k + 3 < g.count; k += 4) {
         const a = g.first + k;
         const z = a + 3;
@@ -475,6 +516,11 @@ export function buildInteriors(layout: Layout, terminals: Terminals, models: Mod
   }
 
   const detail: THREE.Object3D[] = [];
+  const faces = gateSignFaces(signLocations);
+  if (faces) {
+    groups.up.add(faces);
+    detail.push(faces);
+  }
   for (const lv of ['up', 'down'] as const) {
     for (const [id, list] of placed[lv]) {
       const m = model(id);

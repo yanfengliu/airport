@@ -160,6 +160,16 @@ export class AircraftLayer {
     }
   }
 
+  /** Project a body-local point (forward, up, right) in place, using the pose drawn this frame. */
+  projectPoint(a: Aircraft, point: THREE.Vector3, camera: THREE.Camera): THREE.Vector3 | null {
+    const entry = this.meshes.get(a.type.id);
+    if (!entry) return null;
+    const index = entry.ids.indexOf(a.id);
+    if (index < 0) return null;
+    entry.body.getMatrixAt(index, this.matrix);
+    return point.applyMatrix4(this.matrix).applyMatrix4(entry.body.matrixWorld).project(camera);
+  }
+
   /** The aircraft drawn under a ray, if any: its id and how far along the ray it was hit. */
   pick(raycaster: THREE.Raycaster): { id: number; distance: number } | null {
     let best: { id: number; distance: number } | null = null;

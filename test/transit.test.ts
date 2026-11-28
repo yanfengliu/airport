@@ -9,7 +9,7 @@ import type { Transit } from '../src/sim/transit/trains.ts';
 import { loadLayoutFromDisk } from './helpers/layout.ts';
 
 const layout = loadLayoutFromDisk();
-const airtrainStations = layout.rail.stations.filter((s) => s.kind === 'airtrain').map((s) => s.name);
+const airtrainStations = layout.rail.stations.filter((s) => s.kind === 'airtrain' && s.name !== 'Terminal 3').map((s) => s.name);
 const outlying = ['West Field Road', 'Rental Car Center', 'Long Term Parking'];
 
 describe('train routes', () => {
@@ -23,6 +23,10 @@ describe('train routes', () => {
     const ring = airtrainStations.filter((n) => !outlying.includes(n));
     expect(new Set(red!.stops.map((s) => s.name))).toEqual(new Set(ring));
     expect(new Set(blue!.stops.map((s) => s.name))).toEqual(new Set(airtrainStations));
+    for (const line of [red!, blue!]) {
+      expect(line.stops.map((s) => s.name)).toContain('Terminals 2 and 3');
+      expect(line.stops.map((s) => s.name)).not.toContain('Terminal 3');
+    }
     expect(red!.loop && blue!.loop).toBe(true);
   });
 
